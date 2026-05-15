@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { FeatureSidebar } from './feature-sidebar'
 import { LeftPanel } from './left-panel'
 import { RightPanel } from './right-panel'
 import { FEATURES, type FeatureType } from '@/lib/types'
@@ -22,6 +23,10 @@ export function Workbench() {
 
   return (
     <div className="flex min-h-screen bg-background">
+      <FeatureSidebar 
+        activeFeature={currentFeature} 
+        onFeatureChange={setCurrentFeature} 
+      />
       <LeftPanel
         feature={currentFeature}
         credits={credits}
