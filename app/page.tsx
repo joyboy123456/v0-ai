@@ -1,5 +1,5 @@
-import { AppLayout } from '@/components/workbench'
+import { Workbench } from '@/components/workbench'
 
 export default function Home() {
-  return <AppLayout />
+  return <Workbench />
 }
