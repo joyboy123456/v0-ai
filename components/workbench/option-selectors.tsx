@@ -1,6 +1,7 @@
 'use client'
 
 import { cn } from '@/lib/utils'
+import { ReactNode } from 'react'
 
 interface OptionSelectorProps {
   label: string
@@ -135,6 +136,7 @@ interface DropdownSelectorProps {
   value: string
   onChange: (value: string) => void
   className?: string
+  icon?: ReactNode
 }
 
 export function DropdownSelector({
@@ -142,11 +144,15 @@ export function DropdownSelector({
   options,
   value,
   onChange,
-  className
+  className,
+  icon
 }: DropdownSelectorProps) {
   return (
     <div className={cn('flex items-center justify-between', className)}>
-      <span className="text-sm text-foreground">{label}</span>
+      <div className="flex items-center gap-1">
+        <span className="text-sm text-foreground">{label}</span>
+        {icon}
+      </div>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}

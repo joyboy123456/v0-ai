@@ -1,6 +1,7 @@
 "use client"
 
 import { 
+  Camera,
   Repeat2,
   Copy, 
   PersonStanding,
@@ -15,6 +16,12 @@ interface FeatureSidebarProps {
 }
 
 const features = [
+  {
+    id: 'ai-photo' as FeatureType,
+    label: 'AI服装大片',
+    description: '上传参考图和提示词，AI智能生成高质量服装大片',
+    icon: Camera,
+  },
   {
     id: 'element-replace' as FeatureType,
     label: '服装大片-元素替换',

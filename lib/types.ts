@@ -1,4 +1,5 @@
 export type FeatureType = 
+  | 'ai-photo'
   | 'element-replace'
   | 'detail-fission'
   | 'photo-fission'
@@ -36,6 +37,11 @@ export interface GenerationSettings {
 }
 
 export const FEATURES: Feature[] = [
+  {
+    id: 'ai-photo',
+    name: 'AI服装大片',
+    credits: 35
+  },
   {
     id: 'element-replace',
     name: '服装大片 - 元素替换',
@@ -108,6 +114,16 @@ export const ELEMENT_TYPES = [
   { id: 'clothing', label: '服装' },
   { id: 'environment', label: '环境' },
   { id: 'person', label: '人像' }
+]
+
+// Mock model library for AI Fashion Photo
+export const MODEL_LIBRARY = [
+  { id: '1', avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=60&h=60&fit=crop&crop=face' },
+  { id: '2', avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=60&h=60&fit=crop&crop=face' },
+  { id: '3', avatar: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=60&h=60&fit=crop&crop=face' },
+  { id: '4', avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=60&h=60&fit=crop&crop=face' },
+  { id: '5', avatar: 'https://images.unsplash.com/photo-1494790108755-2616b612b786?w=60&h=60&fit=crop&crop=face' },
+  { id: '6', avatar: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=60&h=60&fit=crop&crop=face' },
 ]
 
 // Mock data for gallery

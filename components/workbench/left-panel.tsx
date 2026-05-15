@@ -3,8 +3,8 @@
 import { useState } from 'react'
 import { ImageUploadBox, SimpleUploadBox, TabButtonGroup } from './upload-components'
 import { OptionSelector, AspectRatioSelector, DropdownSelector, FissionCountSelector } from './option-selectors'
-import { ASPECT_RATIOS, RESOLUTIONS, FISSION_COUNTS, PRODUCT_CATEGORIES, VERSIONS, ELEMENT_TYPES, type FeatureType } from '@/lib/types'
-import { Coins } from 'lucide-react'
+import { ASPECT_RATIOS, RESOLUTIONS, FISSION_COUNTS, PRODUCT_CATEGORIES, VERSIONS, ELEMENT_TYPES, MODEL_LIBRARY, type FeatureType } from '@/lib/types'
+import { Coins, HelpCircle } from 'lucide-react'
 
 interface LeftPanelProps {
   feature: FeatureType
@@ -34,11 +34,128 @@ export function LeftPanel({ feature, credits, onGenerate, isGenerating }: LeftPa
   const [backDetailImage, setBackDetailImage] = useState<UploadedImage | null>(null)
   const [poseImage, setPoseImage] = useState<UploadedImage | null>(null)
   const [fissionTypeImage, setFissionTypeImage] = useState<UploadedImage | null>(null)
+  const [referenceImages, setReferenceImages] = useState<UploadedImage[]>([])
 
   const handleFileUpload = (file: File, setter: (img: UploadedImage | null) => void) => {
     const preview = URL.createObjectURL(file)
     setter({ preview, name: file.name })
   }
+
+  const handleReferenceUpload = (file: File) => {
+    if (referenceImages.length >= 10) return
+    const preview = URL.createObjectURL(file)
+    setReferenceImages([...referenceImages, { preview, name: file.name }])
+  }
+
+  const handleRemoveReference = (index: number) => {
+    setReferenceImages(referenceImages.filter((_, i) => i !== index))
+  }
+
+  const renderAIPhotoPanel = () => (
+    <div className="space-y-5">
+      {/* 版本 */}
+      <DropdownSelector
+        label="版本"
+        options={VERSIONS}
+        value={version}
+        onChange={setVersion}
+        icon={<HelpCircle className="w-3.5 h-3.5 text-muted-foreground" />}
+      />
+
+      {/* 参考图 */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-1">
+          <span className="text-primary">*</span>
+          <span className="text-sm text-foreground">参考图</span>
+          <span className="text-xs text-muted-foreground">(最多支持10张参考图)</span>
+        </div>
+        <div
+          onClick={() => document.getElementById('reference-upload')?.click()}
+          className="h-20 border border-dashed border-border rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-colors"
+        >
+          <span className="text-muted-foreground text-sm">拖放图片上传</span>
+        </div>
+        <input
+          id="reference-upload"
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => e.target.files?.[0] && handleReferenceUpload(e.target.files[0])}
+        />
+        {referenceImages.length > 0 && (
+          <div className="flex gap-2 flex-wrap mt-2">
+            {referenceImages.map((img, idx) => (
+              <div key={idx} className="relative w-12 h-12 rounded overflow-hidden group">
+                <img src={img.preview} alt="" className="w-full h-full object-cover" />
+                <button
+                  onClick={() => handleRemoveReference(idx)}
+                  className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <span className="text-white text-xs">X</span>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 找灵感 + 模特库 */}
+      <div className="space-y-2">
+        <span className="text-xs text-muted-foreground">找灵感可以试试官方素材</span>
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-muted-foreground">模特库</span>
+          <div className="flex gap-1 flex-1">
+            {MODEL_LIBRARY.map((model) => (
+              <button
+                key={model.id}
+                className="w-8 h-8 rounded-full overflow-hidden border-2 border-transparent hover:border-primary transition-colors"
+              >
+                <img src={model.avatar} alt="" className="w-full h-full object-cover" />
+              </button>
+            ))}
+          </div>
+          <button className="text-xs text-muted-foreground hover:text-foreground px-2">More</button>
+        </div>
+      </div>
+
+      {/* 提示词 */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-1">
+          <span className="text-primary">*</span>
+          <span className="text-sm text-foreground">提示词</span>
+        </div>
+        <div className="relative">
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="请输入提示词"
+            maxLength={800}
+            className="w-full h-24 bg-secondary border border-border rounded-lg p-3 text-sm text-foreground placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <span className="absolute bottom-2 right-2 text-xs text-muted-foreground">
+            {prompt.length}/800
+          </span>
+        </div>
+      </div>
+
+      {/* 图片比例 */}
+      <AspectRatioSelector
+        label="图片比例"
+        required
+        options={ASPECT_RATIOS}
+        value={aspectRatio}
+        onChange={setAspectRatio}
+      />
+
+      {/* 分辨率 */}
+      <OptionSelector
+        label="分辨率"
+        options={RESOLUTIONS}
+        value={resolution}
+        onChange={setResolution}
+      />
+    </div>
+  )
 
   const renderElementReplacePanel = () => (
     <div className="space-y-5">
@@ -342,6 +459,8 @@ export function LeftPanel({ feature, credits, onGenerate, isGenerating }: LeftPa
 
   const renderPanel = () => {
     switch (feature) {
+      case 'ai-photo':
+        return renderAIPhotoPanel()
       case 'element-replace':
         return renderElementReplacePanel()
       case 'detail-fission':
@@ -351,7 +470,7 @@ export function LeftPanel({ feature, credits, onGenerate, isGenerating }: LeftPa
       case 'pose-fission':
         return renderPoseFissionPanel()
       default:
-        return renderElementReplacePanel()
+        return renderAIPhotoPanel()
     }
   }
 
@@ -360,6 +479,7 @@ export function LeftPanel({ feature, credits, onGenerate, isGenerating }: LeftPa
       {/* Feature title */}
       <div className="p-4 border-b border-border">
         <h1 className="text-base font-medium text-foreground">
+          {feature === 'ai-photo' && 'AI服装大片'}
           {feature === 'element-replace' && '服装大片 - 元素替换'}
           {feature === 'detail-fission' && '服装详情图裂变'}
           {feature === 'photo-fission' && '服装大片裂变'}

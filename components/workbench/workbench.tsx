@@ -7,7 +7,7 @@ import { RightPanel } from './right-panel'
 import { FEATURES, type FeatureType } from '@/lib/types'
 
 export function Workbench() {
-  const [currentFeature, setCurrentFeature] = useState<FeatureType>('element-replace')
+  const [currentFeature, setCurrentFeature] = useState<FeatureType>('ai-photo')
   const [isGenerating, setIsGenerating] = useState(false)
 
   const currentFeatureData = FEATURES.find(f => f.id === currentFeature)
