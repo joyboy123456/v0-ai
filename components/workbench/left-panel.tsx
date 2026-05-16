@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ChevronDown, Coins, Loader2, Sparkles, Upload, X, Zap } from 'lucide-react'
 import { OptionSelector, RatioSelector } from './option-selectors'
 import { UploadBox } from './upload-components'
@@ -9,7 +9,6 @@ import {
   ELEMENT_REPLACE_TYPES,
   FEATURE_LABELS,
   FASHION_IMAGE_RATIOS,
-  FASHION_MODELS,
   FASHION_RESOLUTIONS,
   GENERATE_COUNTS,
   IMAGE_RATIOS,
@@ -17,11 +16,10 @@ import {
   POSE_RESOLUTIONS,
   PRODUCT_CATEGORIES,
   type BackgroundReplaceParams,
+  type CompanyModel,
   type ElementReplaceType,
   type FashionImageRatio,
-  type FashionModel,
   type FashionReferenceImage,
-  type FashionReferenceSource,
   type FashionResolution,
   type FeatureType,
   type GenerateCount,
@@ -39,20 +37,22 @@ import {
 interface LeftPanelProps {
   feature: FeatureType
   selectedPoseCase: PoseCase | null
-  selectedFashionModel: FashionModel | null
+  companyModels: CompanyModel[]
+  selectedCompanyModel: CompanyModel | null
+  onSelectCompanyModel: (model: CompanyModel) => void
+  onOpenCompanyModelLibrary: () => void
   onOpenPoseLibrary: () => void
-  onOpenFashionModelLibrary: () => void
-  onFashionModelRemove: () => void
   onTaskCreated: (taskId: string) => void
 }
 
 export function LeftPanel({
   feature,
   selectedPoseCase,
-  selectedFashionModel,
+  companyModels,
+  selectedCompanyModel,
+  onSelectCompanyModel,
+  onOpenCompanyModelLibrary,
   onOpenPoseLibrary,
-  onOpenFashionModelLibrary,
-  onFashionModelRemove,
   onTaskCreated,
 }: LeftPanelProps) {
   const [fashionReferences, setFashionReferences] = useState<FashionReferenceImage[]>([])
@@ -77,25 +77,6 @@ export function LeftPanel({
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    setFashionReferences((currentReferences) => {
-      const withoutModel = currentReferences.filter((reference) => reference.source !== 'official-model')
-
-      if (!selectedFashionModel) return withoutModel
-
-      return [
-        {
-          assetId: selectedFashionModel.id,
-          source: 'official-model' as FashionReferenceSource,
-          preview: selectedFashionModel.previewUrl,
-          name: selectedFashionModel.name,
-          modelId: selectedFashionModel.id,
-        },
-        ...withoutModel,
-      ].slice(0, 10)
-    })
-  }, [selectedFashionModel])
-
   const activeImage =
     feature === 'photo-fission'
         ? fissionMainImage
@@ -107,7 +88,7 @@ export function LeftPanel({
   const credits = isPoseFission || isAiFashionPhoto ? 35 : generateCount
 
   const helperText = useMemo(() => {
-    if (feature === 'ai-fashion-photo') return '拖放图片上传'
+    if (feature === 'ai-fashion-photo') return '上传服装、姿势或场景参考图'
     if (feature === 'element-replace') return '上传需要修改的服装大片原图'
     if (feature === 'photo-fission') return '上传清晰服装产品图，系统会自动生成多张模特展示图'
     return '请上传需要姿势裂变的清晰主图'
@@ -115,8 +96,8 @@ export function LeftPanel({
 
   const handleCreateTask = async () => {
     if (feature === 'ai-fashion-photo') {
-      if (!fashionReferences.length) {
-        setError('请先上传参考图或选择官方模特素材')
+      if (!selectedCompanyModel && !fashionReferences.length) {
+        setError('请先上传参考图或在我的模特库选择模特')
         return
       }
 
@@ -170,7 +151,10 @@ export function LeftPanel({
 
   const getInputAssetIds = () => {
     if (feature === 'ai-fashion-photo') {
-      return fashionReferences.map((reference) => reference.assetId)
+      return [
+        ...(selectedCompanyModel ? [selectedCompanyModel.assetId] : []),
+        ...fashionReferences.map((reference) => reference.assetId),
+      ]
     }
 
     if (!activeImage) return []
@@ -202,11 +186,11 @@ export function LeftPanel({
     if (feature === 'ai-fashion-photo') {
       return {
         prompt: fashionPrompt.trim(),
-        referenceImageCount: fashionReferences.length,
-        officialModelId: selectedFashionModel?.id,
-        officialModelName: selectedFashionModel?.name,
+        referenceImageCount: (selectedCompanyModel ? 1 : 0) + fashionReferences.length,
+        officialModelName: selectedCompanyModel?.name,
         imageRatio: fashionImageRatio,
         resolution: fashionResolution,
+        resultCount: 1,
         creditsCost: 35,
       }
     }
@@ -280,13 +264,16 @@ export function LeftPanel({
                 imageRatio={fashionImageRatio}
                 resolution={fashionResolution}
                 helperText={helperText}
-                selectedFashionModel={selectedFashionModel}
+                companyModels={companyModels}
+                selectedCompanyModel={selectedCompanyModel}
+                onSelectCompanyModel={onSelectCompanyModel}
+                onOpenCompanyModelLibrary={onOpenCompanyModelLibrary}
                 onAddUploadReference={(image) => {
                   setFashionReferences((currentReferences) => [
                     ...currentReferences,
                     {
                       assetId: image.assetId,
-                      source: 'upload' as FashionReferenceSource,
+                      source: 'upload' as const,
                       preview: image.preview,
                       name: image.name,
                       width: image.width,
@@ -295,11 +282,8 @@ export function LeftPanel({
                   ].slice(0, 10))
                 }}
                 onRemoveReference={(assetId) => {
-                  const reference = fashionReferences.find((item) => item.assetId === assetId)
                   setFashionReferences((currentReferences) => currentReferences.filter((item) => item.assetId !== assetId))
-                  if (reference?.source === 'official-model') onFashionModelRemove()
                 }}
-                onOpenModelLibrary={onOpenFashionModelLibrary}
                 onPromptChange={setFashionPrompt}
                 onImageRatioChange={setFashionImageRatio}
                 onResolutionChange={setFashionResolution}
@@ -550,10 +534,12 @@ function AiFashionPhotoForm({
   imageRatio,
   resolution,
   helperText,
-  selectedFashionModel,
+  companyModels,
+  selectedCompanyModel,
+  onSelectCompanyModel,
+  onOpenCompanyModelLibrary,
   onAddUploadReference,
   onRemoveReference,
-  onOpenModelLibrary,
   onPromptChange,
   onImageRatioChange,
   onResolutionChange,
@@ -563,10 +549,12 @@ function AiFashionPhotoForm({
   imageRatio: FashionImageRatio
   resolution: FashionResolution
   helperText: string
-  selectedFashionModel: FashionModel | null
+  companyModels: CompanyModel[]
+  selectedCompanyModel: CompanyModel | null
+  onSelectCompanyModel: (model: CompanyModel) => void
+  onOpenCompanyModelLibrary: () => void
   onAddUploadReference: (image: UploadedImage) => void
   onRemoveReference: (assetId: string) => void
-  onOpenModelLibrary: () => void
   onPromptChange: (value: string) => void
   onImageRatioChange: (value: FashionImageRatio) => void
   onResolutionChange: (value: FashionResolution) => void
@@ -593,9 +581,11 @@ function AiFashionPhotoForm({
         onRemoveReference={onRemoveReference}
       />
 
-      <OfficialModelStrip
-        selectedFashionModel={selectedFashionModel}
-        onOpenModelLibrary={onOpenModelLibrary}
+      <CompanyModelStrip
+        models={companyModels}
+        selectedModel={selectedCompanyModel}
+        onSelectModel={onSelectCompanyModel}
+        onOpenLibrary={onOpenCompanyModelLibrary}
       />
 
       <div className="space-y-2">
@@ -616,6 +606,52 @@ function AiFashionPhotoForm({
 
       <FashionRatioSelector value={imageRatio} onChange={onImageRatioChange} />
       <FashionResolutionSelector value={resolution} onChange={onResolutionChange} />
+    </div>
+  )
+}
+
+function CompanyModelStrip({
+  models,
+  selectedModel,
+  onSelectModel,
+  onOpenLibrary,
+}: {
+  models: CompanyModel[]
+  selectedModel: CompanyModel | null
+  onSelectModel: (model: CompanyModel) => void
+  onOpenLibrary: () => void
+}) {
+  const previewModels = models.slice(0, 5)
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-foreground">从我的模特库选择常用模特</p>
+      <div className="flex items-center gap-2 rounded-md bg-secondary p-2">
+        <span className="w-12 shrink-0 text-xs text-muted-foreground">模特库</span>
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          {previewModels.map((model) => (
+            <button
+              key={model.assetId}
+              type="button"
+              onClick={() => onSelectModel(model)}
+              className={cn(
+                'h-9 w-9 overflow-hidden rounded border bg-background',
+                selectedModel?.assetId === model.assetId ? 'border-primary' : 'border-border',
+              )}
+              aria-label={`选择${model.name}`}
+            >
+              <img src={model.preview} alt={model.name} className="h-full w-full object-cover" />
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={onOpenLibrary}
+            className="ml-auto h-9 min-w-10 rounded bg-card px-2 text-[10px] font-medium text-foreground hover:text-primary"
+          >
+            More
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -707,7 +743,7 @@ function FashionReferenceUploader({
               className="h-full w-full object-cover"
             />
             <span className="absolute left-1.5 top-1.5 max-w-[72px] truncate rounded bg-background/85 px-1.5 py-0.5 text-[10px] text-foreground">
-              {reference.source === 'official-model' ? '模特' : '参考'}
+              {reference.source === 'model' ? '模特' : '参考'}
             </span>
             <button
               type="button"
@@ -746,48 +782,6 @@ function FashionReferenceUploader({
         className="hidden"
         onChange={handleUpload}
       />
-    </div>
-  )
-}
-
-function OfficialModelStrip({
-  selectedFashionModel,
-  onOpenModelLibrary,
-}: {
-  selectedFashionModel: FashionModel | null
-  onOpenModelLibrary: () => void
-}) {
-  const previewModels = FASHION_MODELS.slice(0, 5)
-
-  return (
-    <div className="space-y-2">
-      <p className="text-xs font-medium text-foreground">找灵感可以试试官方素材</p>
-      <div className="flex items-center gap-2 rounded-md bg-secondary p-2">
-        <span className="w-12 shrink-0 text-xs text-muted-foreground">模特库</span>
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          {previewModels.map((model) => (
-            <button
-              key={model.id}
-              type="button"
-              onClick={onOpenModelLibrary}
-              className={cn(
-                'h-9 w-9 overflow-hidden rounded border bg-background',
-                selectedFashionModel?.id === model.id ? 'border-primary' : 'border-border',
-              )}
-              aria-label={`选择${model.name}`}
-            >
-              <img src={model.previewUrl} alt={model.name} className="h-full w-full object-cover" />
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={onOpenModelLibrary}
-            className="ml-auto h-9 min-w-10 rounded bg-card px-2 text-[10px] font-medium text-foreground hover:text-primary"
-          >
-            More
-          </button>
-        </div>
-      </div>
     </div>
   )
 }

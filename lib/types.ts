@@ -21,7 +21,7 @@ export type FashionModelGender = 'female' | 'male'
 export type FashionModelAgeGroup = 'adult' | 'teen'
 export type FashionModelEthnicity = 'east-asian' | 'white' | 'black' | 'latino' | 'mixed'
 export type FashionModelHairColor = 'black' | 'blonde' | 'brown' | 'red'
-export type FashionReferenceSource = 'official-model' | 'upload'
+export type FashionReferenceSource = 'model' | 'upload'
 
 export interface Feature {
   id: FeatureType
@@ -76,6 +76,7 @@ export interface AiFashionPhotoParams {
   officialModelName?: string
   imageRatio: FashionImageRatio
   resolution: FashionResolution
+  resultCount: 1
   creditsCost: 35
 }
 
@@ -164,7 +165,7 @@ export const FEATURES: Feature[] = [
   {
     id: 'ai-fashion-photo',
     name: 'AI服装大片',
-    description: '上传参考图并选择官方模特，生成高级服装商拍大片',
+    description: '上传参考图并选择我的模特，生成高级服装商拍大片',
     credits: 35,
     status: 'available',
   },

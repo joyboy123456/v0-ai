@@ -45,7 +45,7 @@ export function normalizeAiFashionPhotoParams(
   }
 
   if (officialModelId && !FASHION_MODELS.some((model) => model.id === officialModelId)) {
-    throw new Error('官方模特素材不存在')
+    throw new Error('模特素材不存在')
   }
 
   return {
@@ -55,6 +55,7 @@ export function normalizeAiFashionPhotoParams(
     officialModelName,
     imageRatio,
     resolution,
+    resultCount: 1,
     creditsCost: fashionPhotoCreditsCost,
   }
 }
@@ -63,10 +64,10 @@ export function buildAiFashionPhotoPrompt(params: AiFashionPhotoParams) {
   return [
     '你是一名专业服装电商摄影师，请基于上传参考图生成真实高级的AI服装大片。',
     params.officialModelName
-      ? `第一张参考图是官方模特素材：${params.officialModelName}。请参考该人物的脸部气质、发型、肤色、身材比例和镜头表现。`
+      ? `第一张参考图是用户从我的模特库选择的模特素材：${params.officialModelName}。请参考该人物的脸部气质、发型、肤色、身材比例和镜头表现。`
       : '上传图片均为用户参考图，请综合参考画面中的服装、人物、动作、构图和拍摄氛围。',
     params.officialModelName
-      ? '除第一张官方模特外，其余参考图只用于参考服装、动作、构图、光线或氛围，不要把其他参考图中的人物脸部错误迁移到最终结果。'
+      ? '除第一张模特素材外，其余参考图只用于参考服装、动作、构图、光线或氛围，不要把其他参考图中的人物脸部错误迁移到最终结果。'
       : '',
     `用户提示词：${params.prompt}。`,
     `画面比例：${params.imageRatio}。`,
@@ -117,7 +118,7 @@ export function createAiFashionPhotoReferenceSheet(
 
 function getReferenceLabel(index: number, params: AiFashionPhotoParams) {
   if (index === 0 && params.officialModelName) {
-    return `官方模特：${params.officialModelName}`
+    return `我的模特：${params.officialModelName}`
   }
 
   return `参考图 ${params.officialModelName ? index : index + 1}`

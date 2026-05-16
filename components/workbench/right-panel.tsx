@@ -1,18 +1,13 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { Check, CheckCircle2, Download, ImageIcon, RefreshCw, Star, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Check, CheckCircle2, Download, ImageIcon, Plus, RefreshCw, Star, Upload, X } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import {
   FEATURE_LABELS,
-  FASHION_MODELS,
   POSE_CASES,
-  type FashionModel,
-  type FashionModelAgeGroup,
-  type FashionModelEthnicity,
-  type FashionModelGender,
-  type FashionModelHairColor,
+  type CompanyModel,
   type FeatureType,
   type GenerationTask,
   type PoseCase,
@@ -26,9 +21,11 @@ interface RightPanelProps {
   tasks: GenerationTask[]
   selectedPoseCaseId: string | null
   poseLibraryRequestKey: number
-  selectedFashionModelId: string | null
-  fashionModelLibraryRequestKey: number
-  onSelectFashionModel: (model: FashionModel) => void
+  companyModels: CompanyModel[]
+  selectedCompanyModelId: string | null
+  companyModelLibraryRequestKey: number
+  onAddCompanyModel: (model: CompanyModel) => void
+  onSelectCompanyModel: (model: CompanyModel) => void
   onSelectPoseCase: (poseCase: PoseCase) => void
   onSelectTask: (taskId: string) => void
   onRefreshTasks: () => void
@@ -40,17 +37,18 @@ export function RightPanel({
   tasks,
   selectedPoseCaseId,
   poseLibraryRequestKey,
-  selectedFashionModelId,
-  fashionModelLibraryRequestKey,
-  onSelectFashionModel,
+  companyModels,
+  selectedCompanyModelId,
+  companyModelLibraryRequestKey,
+  onAddCompanyModel,
+  onSelectCompanyModel,
   onSelectPoseCase,
   onSelectTask,
   onRefreshTasks,
 }: RightPanelProps) {
-  const [activeTab, setActiveTab] = useState<'current' | 'history' | 'cases' | 'model-library'>('current')
+  const [activeTab, setActiveTab] = useState<'current' | 'history' | 'cases' | 'my-model-library'>('current')
   const [previewImage, setPreviewImage] = useState<ResultAsset | null>(null)
   const [favorites, setFavorites] = useState<Set<string>>(new Set())
-  const [modelFavorites, setModelFavorites] = useState<Set<string>>(new Set())
   const [onlyCurrentFeature, setOnlyCurrentFeature] = useState(true)
   const [onlyFavorites, setOnlyFavorites] = useState(false)
   const [poseCases, setPoseCases] = useState<PoseCase[]>(POSE_CASES)
@@ -76,10 +74,10 @@ export function RightPanel({
   }, [isPoseFission, poseLibraryRequestKey])
 
   useEffect(() => {
-    if (feature === 'ai-fashion-photo' && fashionModelLibraryRequestKey > 0) {
-      setActiveTab('model-library')
+    if (feature === 'ai-fashion-photo' && companyModelLibraryRequestKey > 0) {
+      setActiveTab('my-model-library')
     }
-  }, [fashionModelLibraryRequestKey, feature])
+  }, [companyModelLibraryRequestKey, feature])
 
   useEffect(() => {
     if (!isPoseFission) return
@@ -111,6 +109,24 @@ export function RightPanel({
 
     const data = (await response.json()) as { downloadUrl: string }
     if (data.downloadUrl) window.open(data.downloadUrl, '_blank')
+  }
+
+  if (activeTab === 'my-model-library') {
+    return (
+      <section className="flex min-h-screen flex-1 flex-col bg-background">
+        <MyModelLibraryPanel
+          models={companyModels}
+          selectedModelId={selectedCompanyModelId}
+          onAddModel={onAddCompanyModel}
+          onCancel={() => setActiveTab('current')}
+          onClose={() => setActiveTab('current')}
+          onConfirm={(model) => {
+            onSelectCompanyModel(model)
+            setActiveTab('current')
+          }}
+        />
+      </section>
+    )
   }
 
   return (
@@ -195,30 +211,7 @@ export function RightPanel({
         </div>
       </header>
 
-      {feature === 'ai-fashion-photo' && activeTab === 'model-library' ? (
-        <FashionModelLibraryPanel
-          models={FASHION_MODELS}
-          favorites={modelFavorites}
-          selectedModelId={selectedFashionModelId}
-          onCancel={() => setActiveTab('current')}
-          onClose={() => setActiveTab('current')}
-          onConfirm={(model) => {
-            onSelectFashionModel(model)
-            setActiveTab('current')
-          }}
-          onToggleFavorite={(modelId) => {
-            setModelFavorites((current) => {
-              const next = new Set(current)
-              if (next.has(modelId)) {
-                next.delete(modelId)
-              } else {
-                next.add(modelId)
-              }
-              return next
-            })
-          }}
-        />
-      ) : isPoseFission && activeTab === 'cases' ? (
+      {isPoseFission && activeTab === 'cases' ? (
         <PoseCaseLibrary
           feature={feature}
           poseCases={poseCases}
@@ -338,6 +331,165 @@ export function RightPanel({
   )
 }
 
+function MyModelLibraryPanel({
+  models,
+  selectedModelId,
+  onAddModel,
+  onCancel,
+  onClose,
+  onConfirm,
+}: {
+  models: CompanyModel[]
+  selectedModelId: string | null
+  onAddModel: (model: CompanyModel) => void
+  onCancel: () => void
+  onClose: () => void
+  onConfirm: (model: CompanyModel) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [draftSelectedId, setDraftSelectedId] = useState<string | null>(selectedModelId)
+  const [isUploading, setIsUploading] = useState(false)
+  const [error, setError] = useState('')
+  const selectedModel = models.find((model) => model.assetId === draftSelectedId) ?? null
+
+  const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+
+    setError('')
+    setIsUploading(true)
+
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const response = await fetch('/api/assets/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (!response.ok) {
+        const data = (await response.json()) as { error?: string }
+        throw new Error(data.error || '上传失败')
+      }
+
+      const data = (await response.json()) as {
+        assetId: string
+        url: string
+        fileName: string
+        width: number
+        height: number
+      }
+      const model: CompanyModel = {
+        assetId: data.assetId,
+        preview: data.url || URL.createObjectURL(file),
+        name: data.fileName,
+        width: data.width,
+        height: data.height,
+        createdAt: new Date().toISOString(),
+      }
+
+      onAddModel(model)
+      setDraftSelectedId(model.assetId)
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : '上传失败')
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-background">
+      <div className="flex items-center justify-between border-b border-border px-5 py-3">
+        <div className="flex rounded-full bg-secondary p-1">
+          <span className="rounded-full bg-card px-5 py-2 text-sm font-medium text-foreground">
+            我的模特库
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground"
+          aria-label="关闭模特库"
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-5">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-6">
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className="aspect-[3/4] rounded-md border border-dashed border-border bg-secondary text-muted-foreground transition-colors hover:border-primary/60 hover:text-foreground"
+          >
+            <span className="flex h-full flex-col items-center justify-center gap-3">
+              {isUploading ? (
+                <Upload className="h-7 w-7 animate-pulse text-primary" />
+              ) : (
+                <Plus className="h-7 w-7" />
+              )}
+              <span className="text-sm">{isUploading ? '上传中...' : '上传模特'}</span>
+              <span className="text-xs text-muted-foreground">jpg/png/webp</span>
+            </span>
+          </button>
+
+          {models.map((model) => {
+            const isSelected = draftSelectedId === model.assetId
+
+            return (
+              <button
+                key={model.assetId}
+                type="button"
+                onClick={() => setDraftSelectedId(model.assetId)}
+                className={cn(
+                  'group relative overflow-hidden rounded-md border bg-card text-left transition-colors',
+                  isSelected ? 'border-primary shadow-[0_0_0_1px_var(--primary)]' : 'border-border hover:border-primary/60',
+                )}
+              >
+                <div className="aspect-[3/4] bg-white">
+                  <img src={model.preview} alt={model.name} className="h-full w-full object-cover object-top" />
+                </div>
+                <div className="px-3 py-2">
+                  <p className="truncate text-xs font-medium text-foreground">{model.name}</p>
+                </div>
+                {isSelected && (
+                  <span className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                    <Check className="h-4 w-4" />
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+
+        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+        <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={handleUpload} />
+      </div>
+
+      <div className="flex justify-end gap-3 border-t border-border px-5 py-4">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="min-w-[116px] rounded-full border border-border px-7 py-3 text-sm text-foreground hover:border-primary/60"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={() => selectedModel && onConfirm(selectedModel)}
+          disabled={!selectedModel}
+          className="min-w-[116px] rounded-full border border-primary bg-primary/10 px-7 py-3 text-sm font-medium text-primary hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          确定
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function PoseCaseLibrary({
   feature,
   poseCases,
@@ -425,239 +577,6 @@ function PoseCaseLibrary({
         </div>
       )}
     </div>
-  )
-}
-
-function FashionModelLibraryPanel({
-  models,
-  favorites,
-  selectedModelId,
-  onCancel,
-  onClose,
-  onConfirm,
-  onToggleFavorite,
-}: {
-  models: FashionModel[]
-  favorites: Set<string>
-  selectedModelId: string | null
-  onCancel: () => void
-  onClose: () => void
-  onConfirm: (model: FashionModel) => void
-  onToggleFavorite: (modelId: string) => void
-}) {
-  const [activeSource, setActiveSource] = useState<'featured' | 'mine'>('featured')
-  const [gender, setGender] = useState<FashionModelGender | 'all'>('all')
-  const [ageGroup, setAgeGroup] = useState<FashionModelAgeGroup | 'all'>('all')
-  const [ethnicity, setEthnicity] = useState<FashionModelEthnicity | 'all'>('all')
-  const [hairColor, setHairColor] = useState<FashionModelHairColor | 'all'>('all')
-  const [onlyFavorites, setOnlyFavorites] = useState(false)
-  const [draftSelectedId, setDraftSelectedId] = useState<string | null>(selectedModelId)
-
-  const visibleModels = models.filter((model) => {
-    if (model.source !== activeSource) return false
-    if (gender !== 'all' && model.gender !== gender) return false
-    if (ageGroup !== 'all' && model.ageGroup !== ageGroup) return false
-    if (ethnicity !== 'all' && model.ethnicity !== ethnicity) return false
-    if (hairColor !== 'all' && model.hairColor !== hairColor) return false
-    if (onlyFavorites && !favorites.has(model.id) && !model.favorite) return false
-    return true
-  })
-  const selectedModel = models.find((model) => model.id === draftSelectedId) ?? null
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background">
-      <div className="flex items-center justify-between border-b border-border px-5 py-4">
-        <div className="flex items-center gap-3">
-          <div className="flex rounded-full bg-secondary p-1">
-            <button
-              type="button"
-              onClick={() => setActiveSource('featured')}
-              className={cn(
-                'rounded-full px-5 py-2 text-sm transition-colors',
-                activeSource === 'featured' ? 'bg-card text-foreground' : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              精选模特库
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveSource('mine')}
-              className={cn(
-                'rounded-full px-5 py-2 text-sm transition-colors',
-                activeSource === 'mine' ? 'bg-card text-foreground' : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              我的模特库
-            </button>
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={onClose}
-          className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground"
-          aria-label="关闭模特库"
-        >
-          <X className="h-5 w-5" />
-        </button>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-3">
-        <ModelFilterSelect
-          value={gender}
-          options={[
-            { id: 'all', label: '全部性别' },
-            { id: 'female', label: '女装' },
-            { id: 'male', label: '男装' },
-          ]}
-          onChange={(value) => setGender(value as FashionModelGender | 'all')}
-        />
-        <ModelFilterSelect
-          value={ageGroup}
-          options={[
-            { id: 'all', label: '全部年龄' },
-            { id: 'adult', label: '成人' },
-            { id: 'teen', label: '青年' },
-          ]}
-          onChange={(value) => setAgeGroup(value as FashionModelAgeGroup | 'all')}
-        />
-        <ModelFilterSelect
-          value={ethnicity}
-          options={[
-            { id: 'all', label: '全部族裔' },
-            { id: 'east-asian', label: '东亚' },
-            { id: 'white', label: '欧美' },
-            { id: 'black', label: '黑肤色' },
-            { id: 'latino', label: '拉丁' },
-            { id: 'mixed', label: '混血' },
-          ]}
-          onChange={(value) => setEthnicity(value as FashionModelEthnicity | 'all')}
-        />
-        <ModelFilterSelect
-          value={hairColor}
-          options={[
-            { id: 'all', label: '全部发色' },
-            { id: 'black', label: '黑发' },
-            { id: 'blonde', label: '金发' },
-            { id: 'brown', label: '棕发' },
-            { id: 'red', label: '红发' },
-          ]}
-          onChange={(value) => setHairColor(value as FashionModelHairColor | 'all')}
-        />
-
-        <label className="ml-1 flex cursor-pointer items-center gap-2 text-sm text-foreground">
-          <input
-            type="checkbox"
-            checked={onlyFavorites}
-            onChange={(event) => setOnlyFavorites(event.target.checked)}
-            className="h-4 w-4 accent-primary"
-          />
-          仅看收藏
-        </label>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-5">
-        {visibleModels.length > 0 ? (
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-6">
-            {visibleModels.map((model) => {
-              const isSelected = draftSelectedId === model.id
-              const isFavorite = favorites.has(model.id) || Boolean(model.favorite)
-
-              return (
-                <div
-                  key={model.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setDraftSelectedId(model.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      setDraftSelectedId(model.id)
-                    }
-                  }}
-                  className={cn(
-                    'group relative cursor-pointer overflow-hidden rounded-md border bg-card transition-colors',
-                    isSelected ? 'border-primary shadow-[0_0_0_1px_var(--primary)]' : 'border-border hover:border-primary/60',
-                  )}
-                >
-                  <div className="aspect-[4/3] bg-white">
-                    <img src={model.previewUrl} alt={model.name} className="h-full w-full object-cover object-top" />
-                  </div>
-                  <div className="flex h-8 items-center justify-center bg-[#111111] px-2">
-                    <p className="truncate text-xs font-medium text-foreground">{model.name}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onToggleFavorite(model.id)
-                    }}
-                    className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-background/85 opacity-0 transition-opacity group-hover:opacity-100"
-                    aria-label="收藏模特"
-                  >
-                    <Star className={cn('h-4 w-4', isFavorite ? 'fill-yellow-400 text-yellow-400' : 'text-muted-foreground')} />
-                  </button>
-                  {isSelected && (
-                    <span className="absolute left-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                      <Check className="h-4 w-4" />
-                    </span>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        ) : (
-          <div className="flex min-h-[420px] flex-col items-center justify-center rounded-lg border border-dashed border-border text-center">
-            <p className="text-lg text-foreground">暂无可用模特</p>
-            <p className="mt-2 max-w-[360px] text-sm text-muted-foreground">
-              调整筛选条件后再试一次。
-            </p>
-          </div>
-        )}
-      </div>
-
-      <div className="flex justify-end gap-3 border-t border-border px-5 py-4">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="min-w-[116px] rounded-full border border-border px-7 py-3 text-sm text-foreground hover:border-primary/60"
-        >
-          取消
-        </button>
-        <button
-          type="button"
-          onClick={() => selectedModel && onConfirm(selectedModel)}
-          disabled={!selectedModel}
-          className="min-w-[116px] rounded-full border border-primary bg-primary/10 px-7 py-3 text-sm font-medium text-primary hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          确定
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function ModelFilterSelect({
-  value,
-  options,
-  onChange,
-}: {
-  value: string
-  options: { id: string; label: string }[]
-  onChange: (value: string) => void
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      className="h-9 rounded-md border border-border bg-secondary px-3 text-sm text-foreground outline-none hover:border-primary/60"
-    >
-      {options.map((option) => (
-        <option key={option.id} value={option.id}>
-          {option.label}
-        </option>
-      ))}
-    </select>
   )
 }
 

@@ -4,7 +4,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { FeatureSidebar } from './feature-sidebar'
 import { LeftPanel } from './left-panel'
 import { RightPanel } from './right-panel'
-import { type FashionModel, type FeatureType, type GenerationTask, type PoseCase } from '@/lib/types'
+import { type CompanyModel, type FeatureType, type GenerationTask, type PoseCase } from '@/lib/types'
+
+const companyModelsStorageKey = 'fashion_company_models'
 
 export function Workbench() {
   const [currentFeature, setCurrentFeature] = useState<FeatureType>('ai-fashion-photo')
@@ -12,8 +14,18 @@ export function Workbench() {
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const [selectedPoseCase, setSelectedPoseCase] = useState<PoseCase | null>(null)
   const [poseLibraryRequestKey, setPoseLibraryRequestKey] = useState(0)
-  const [selectedFashionModel, setSelectedFashionModel] = useState<FashionModel | null>(null)
-  const [fashionModelLibraryRequestKey, setFashionModelLibraryRequestKey] = useState(0)
+  const [companyModelLibraryRequestKey, setCompanyModelLibraryRequestKey] = useState(0)
+  const [companyModels, setCompanyModels] = useState<CompanyModel[]>(() => {
+    if (typeof window === 'undefined') return []
+
+    try {
+      const storedModels = window.localStorage.getItem(companyModelsStorageKey)
+      return storedModels ? JSON.parse(storedModels) as CompanyModel[] : []
+    } catch {
+      return []
+    }
+  })
+  const [selectedCompanyModel, setSelectedCompanyModel] = useState<CompanyModel | null>(null)
 
   const loadTasks = useCallback(async () => {
     const response = await fetch('/api/tasks', { cache: 'no-store' })
@@ -44,6 +56,10 @@ export function Workbench() {
   }, [loadTasks])
 
   useEffect(() => {
+    window.localStorage.setItem(companyModelsStorageKey, JSON.stringify(companyModels))
+  }, [companyModels])
+
+  useEffect(() => {
     if (!activeTaskId) return
 
     const intervalId = window.setInterval(() => {
@@ -63,10 +79,11 @@ export function Workbench() {
       <LeftPanel
         feature={currentFeature}
         selectedPoseCase={selectedPoseCase}
-        selectedFashionModel={selectedFashionModel}
+        companyModels={companyModels}
+        selectedCompanyModel={selectedCompanyModel}
+        onSelectCompanyModel={setSelectedCompanyModel}
+        onOpenCompanyModelLibrary={() => setCompanyModelLibraryRequestKey((currentKey) => currentKey + 1)}
         onOpenPoseLibrary={() => setPoseLibraryRequestKey((currentKey) => currentKey + 1)}
-        onOpenFashionModelLibrary={() => setFashionModelLibraryRequestKey((currentKey) => currentKey + 1)}
-        onFashionModelRemove={() => setSelectedFashionModel(null)}
         onTaskCreated={(taskId) => {
           setActiveTaskId(taskId)
           void loadTask(taskId)
@@ -78,9 +95,16 @@ export function Workbench() {
         tasks={tasks}
         selectedPoseCaseId={selectedPoseCase?.id ?? null}
         poseLibraryRequestKey={poseLibraryRequestKey}
-        selectedFashionModelId={selectedFashionModel?.id ?? null}
-        fashionModelLibraryRequestKey={fashionModelLibraryRequestKey}
-        onSelectFashionModel={setSelectedFashionModel}
+        companyModels={companyModels}
+        selectedCompanyModelId={selectedCompanyModel?.assetId ?? null}
+        companyModelLibraryRequestKey={companyModelLibraryRequestKey}
+        onAddCompanyModel={(model) => {
+          setCompanyModels((currentModels) => {
+            if (currentModels.some((item) => item.assetId === model.assetId)) return currentModels
+            return [model, ...currentModels]
+          })
+        }}
+        onSelectCompanyModel={setSelectedCompanyModel}
         onSelectPoseCase={setSelectedPoseCase}
         onSelectTask={setActiveTaskId}
         onRefreshTasks={loadTasks}
