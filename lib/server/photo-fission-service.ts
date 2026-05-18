@@ -162,19 +162,23 @@ export interface PhotoFissionShotPlanInput {
  * 构造固定 9 张 shotPlan。
  *
  * v3（2026-05-18）：每条 shot.prompt 按以下 12 段拼装，强约束 NanoBanana Pro
- * 多镜头一致性的全部 lock 段，翻译成自然语言供 Gemini 3.x 使用：
- *   1. 任务声明（受控裂变）
+ * 多镜头一致性的全部 lock 段，翻译成自然语言供 Gemini 3.x 使用。
+ *
+ * v4（2026-05-19 prompt-upgrade）：按友商 5525 条 gemini3pro 案例语料重写
+ * 所有 section 文案，从「硬命令式」转向「参考图1锚定式」（见 PRD D1-D5）。
+ * section 内部话术变化，外部装配顺序与函数签名保持稳定：
+ *   1. 任务声明（受控裂变 + 构图三件套 D2）
  *   2. 参考图说明（动态拼接 1/2/3 张）
- *   3. 身份锁 IDENTITY_LOCK
- *   4. 服装锁 WARDROBE_LOCK
- *   5. 场景锁 SCENE_LOCK
- *   6. 光线锁 LIGHTING_LOCK
- *   7. 视觉风格锁 STYLE_LOCK
+ *   3. 人物呈现 IDENTITY（隐式锚定 D1）
+ *   4. 服装呈现 WARDROBE（"这套服装"占位 D1）
+ *   5. 场景呈现 SCENE
+ *   6. 光线呈现 LIGHTING
+ *   7. 画面质感 STYLE（电影前缀按场景按需注入 D3）
  *   8. 当前镜头 SHOT（按 label 差异化）
- *   9. 品类专属保持
- *  10. 解剖与手部 ANATOMY
+ *   9. 品类呈现重点
+ *  10. 人体解剖 ANATOMY
  *  11. 输出参数
- *  12. 禁止项 NEGATIVE
+ *  12. 关键约束（精简 negative D4）
  */
 export function buildPhotoFissionShotPlan(
   input: PhotoFissionShotPlanInput,
@@ -212,8 +216,9 @@ interface BuildShotPromptInput {
 }
 
 function buildShotPrompt(input: BuildShotPromptInput): string {
+  const orientation = getCompositionOrientation(input.imageRatio)
   const sections: string[] = [
-    buildTaskSection(input.label),
+    buildTaskSection(input.label, orientation),
     '',
     buildReferenceImagesSection(input.hasFrontDetail, input.hasBackDetail),
     '',
@@ -221,11 +226,11 @@ function buildShotPrompt(input: BuildShotPromptInput): string {
     '',
     buildWardrobeLockSection(),
     '',
-    buildSceneLockSection(),
+    buildSceneLockSection(orientation),
     '',
     buildLightingLockSection(),
     '',
-    buildStyleLockSection(),
+    buildStyleLockSection(input.shotDescription),
     '',
     buildShotSection(input.label, input.shotDescription),
     '',
@@ -233,7 +238,7 @@ function buildShotPrompt(input: BuildShotPromptInput): string {
     '',
     buildAnatomySection(),
     '',
-    buildOutputParamsSection(input.category, input.imageRatio, input.resolution),
+    buildOutputParamsSection(input.category, input.imageRatio, input.resolution, orientation),
     '',
     buildNegativeSection(),
   ]
@@ -241,11 +246,48 @@ function buildShotPrompt(input: BuildShotPromptInput): string {
   return sections.join('\n')
 }
 
-function buildTaskSection(label: string): string {
+/**
+ * 把图片比例字符串映射为中文自然语言构图词。
+ * 友商手册第四节：模型对「竖幅构图 / 横幅构图 / 方图」比对原始数字比例敏感得多。
+ */
+function getCompositionOrientation(imageRatio: PhotoFissionImageRatio): string {
+  switch (imageRatio) {
+    case '3:4':
+    case '2:3':
+    case '9:16':
+    case '4:5':
+      return '竖幅构图'
+    case '4:3':
+    case '3:2':
+    case '16:9':
+    case '5:4':
+    case '21:9':
+      return '横幅构图'
+    case '1:1':
+    default:
+      return '方图构图'
+  }
+}
+
+/**
+ * 判断当前 shot 是否适合在 Style section 注入电影前缀。
+ * D3：电影前缀（Arricam / IMAX 等）在友商案例里只在 1.5%-2.3% 命中，
+ * 且多集中在户外 / 海边 / 古典建筑等需要拉满质感的外景。
+ * 当前 9 个 shotDescription 都是棚拍/室内语境的姿势/景别描述，默认不注入电影前缀，
+ * 避免对棚拍主图引入不必要的镜头痕迹；shotDescription 若改写为带外景关键词则会自动启用。
+ */
+function shouldUseCinematicPrefix(shotDescription: string): boolean {
+  return /户外|街拍|海边|海岸|海滩|帆船|古典建筑|欧洲街角|罗马|沿河/.test(
+    shotDescription,
+  )
+}
+
+function buildTaskSection(label: string, orientation: string): string {
   return [
-    `本次任务：基于参考图生成同一服装、同一模特、同一场景下的【${label}】单张镜头。`,
-    '要求受控裂变——只变化镜头角度/景别/姿势/构图，**不变化人物身份、服装、场景、光线、风格**。',
-    '**单张完整图片输出，不要拼成多宫格 grid 布局**。',
+    `本次任务：生成同一个人、同一套服装、同一场景的【${label}】单张镜头。`,
+    `画面是一张写实风格的电商服装大片摄影作品，采用${orientation}，主体人物（参考第一张主图的同一个人，身材比例、肤色与发型保持一致）位于画面中央，以"三分法"构图原则布局。`,
+    '受控裂变：只调整镜头角度、景别、姿势与构图；保持人物身份、这套服装、原场景与光线统一。',
+    '输出单张完整图片，不要多宫格拼接。',
   ].join('\n')
 }
 
@@ -255,80 +297,78 @@ function buildReferenceImagesSection(
 ): string {
   const lines: string[] = [
     '【参考图说明】',
-    '- 图1：主图（用户已满意的服装大片，作为身份、服装、场景、光线的主参考）',
+    '- 图1：主图基准（这套服装与这位模特的视觉锚点，承载身份、服装、场景、光线的全部细节）',
   ]
   let nextIndex = 2
   if (hasFrontDetail) {
-    lines.push(`- 图${nextIndex}：产品正面细节补充（如已上传）`)
+    lines.push(
+      `- 图${nextIndex}：这套服装的正面细节参考（领口、扣件、logo、图案以此为准）`,
+    )
     nextIndex += 1
   }
   if (hasBackDetail) {
-    lines.push(`- 图${nextIndex}：产品背面细节补充（如已上传）`)
+    lines.push(
+      `- 图${nextIndex}：这套服装的背面细节参考（背部剪裁、印花、肩线以此为准）`,
+    )
   }
   return lines.join('\n')
 }
 
 function buildIdentityLockSection(): string {
   return [
-    '【身份锁 IDENTITY_LOCK】',
-    '严格保持主图中模特的：脸型、五官比例、骨架结构、眼睛大小与间距、唇形、下颌线、眉形、肤色、发型、发色、年龄感。',
-    '**绝对不要换脸**。**禁止美颜化处理**。**禁止对称化五官调整**。**禁止改变模特身份特征**。',
-    '模特应当看起来与主图中是同一个真实的人，face identity 与主图一致。',
+    '【人物呈现 IDENTITY】',
+    '画面中的人物是图1里的同一个人，身材比例、发型、发色、肤色与年龄感与图1保持一致；面部特征延续图1，神情自然、状态放松。',
   ].join('\n')
 }
 
 function buildWardrobeLockSection(): string {
   return [
-    '【服装锁 WARDROBE_LOCK】',
-    '严格保留主图中的服装款式、颜色、版型、材质、图案、Logo、纽扣、口袋、领口、袖口、裤脚等所有细节。',
-    '不要改变服装颜色，不要新增或删除任何图案，不要把服装变成其他款式或材质。',
+    '【服装呈现 WARDROBE】',
+    '人物穿着这套服装（图1为主图基准），完整延续这套服装的颜色、版型、材质、图案、logo、纽扣、口袋、领口、袖口与下摆细节。',
+    '衣物纹理、面料质感、印花与配饰清晰可见，不增加、不减少、不替换任何服装元素。',
   ].join('\n')
 }
 
-function buildSceneLockSection(): string {
+function buildSceneLockSection(orientation: string): string {
   return [
-    '【场景锁 SCENE_LOCK】',
-    '严格保留主图中的背景、道具、墙面、地板、家具、灯具、植物等所有场景物件与陈设。',
-    '不要把场景换成其他环境。镜头可以拉近或拉远，但所处的房间/空间与主图一致。',
+    '【场景呈现 SCENE】',
+    `背景延续图1的房间/空间与陈设（墙面、地板、家具、灯具、植物、道具均与图1一致），整体画面保持${orientation}下的电商主图调性，主体清晰突出。`,
+    '镜头可以拉近或拉远以适配新景别，但所处空间与图1是同一处。',
   ].join('\n')
 }
 
 function buildLightingLockSection(): string {
   return [
-    '【光线锁 LIGHTING_LOCK】',
-    '严格保留主图的光源方向、光线强度、色温、阴影走向、高光分布。',
-    '画面亮度对比与主图一致。',
-    '不要把柔光变硬光，不要把白天变夜晚，不要改变光线色温。',
+    '【光线呈现 LIGHTING】',
+    '光线为柔和均匀的自然光，沿用图1的光源方向、色温、阴影走向与高光分布；无强烈硬阴影，光线统一、画面亮度通透。',
   ].join('\n')
 }
 
-function buildStyleLockSection(): string {
+function buildStyleLockSection(shotDescription: string): string {
+  const cinematicPrefix = shouldUseCinematicPrefix(shotDescription)
+    ? 'Arricam LT, Cooke Panchro, 50mm, f1.4。'
+    : ''
   return [
-    '【视觉风格锁 STYLE_LOCK】',
-    '严格保留主图的摄影质感、调色风格、锐度、整体氛围。',
-    '保持时尚大片或电商商拍质感。',
-    '**禁止变成卡通/插画/油画/水彩/手绘/动漫风格**。',
-    '**禁止过度滤镜、过度美颜、过度饱和**。',
+    '【画面质感 STYLE】',
+    `${cinematicPrefix}写实风格摄影，色彩饱和度适中，细节丰富，衣物纹理与面料质感清晰可见，具有电影感的逼真渲染效果，整体氛围接近时尚杂志的经典大片风格。`,
   ].join('\n')
 }
 
 function buildShotSection(label: string, shotDescription: string): string {
-  return ['【当前镜头 SHOT】', `${label}：${shotDescription}`].join('\n')
+  return [
+    '【当前镜头 SHOT】',
+    `${label}（采用对应景别的平视构图）：${shotDescription}。`,
+  ].join('\n')
 }
 
 function buildCategoryLockSection(category: PhotoFissionCategory): string {
-  return [
-    '【品类专属保持要求】',
-    categoryRequirementMap[category],
-  ].join('\n')
+  return ['【品类呈现重点】', categoryRequirementMap[category]].join('\n')
 }
 
 function buildAnatomySection(): string {
   return [
-    '【解剖与手部 ANATOMY】',
-    '手指数量正确（每只手 5 指），手腕、肘部、肩部、颈部、膝盖姿态自然真实。',
-    '**禁止多余手指、缺失手指、扭曲手腕、错位关节、断裂肢体、不对称肩线**。',
-    '人体比例正确，**禁止人体畸形**。',
+    '【人体解剖 ANATOMY】',
+    '手指数量正确（每只手 5 指），手腕、肘部、肩部、颈部、膝盖姿态自然真实，人体比例与图1一致。',
   ].join('\n')
 }
 
@@ -336,25 +376,21 @@ function buildOutputParamsSection(
   category: PhotoFissionCategory,
   imageRatio: PhotoFissionImageRatio,
   resolution: PhotoFissionResolution,
+  orientation: string,
 ): string {
   const categoryLabel = photoFissionCategoryLabelMap.get(category) ?? category
   return [
     '【输出参数】',
-    `画面比例：${imageRatio}；分辨率档位：${resolution}；品类：${categoryLabel}。`,
-    '**单张完整图片输出**。',
+    `画面比例：${imageRatio}（${orientation}）；分辨率档位：${resolution}；品类：${categoryLabel}。`,
+    '输出单张完整图片。',
   ].join('\n')
 }
 
 function buildNegativeSection(): string {
   return [
-    '【禁止项 NEGATIVE】',
-    '不要生成：text、watermark、logo、品牌标识、文字、印章；',
-    '不要生成：extra fingers、missing fingers、distorted anatomy、extra limbs、wrong face、face morphing；',
-    '不要生成：cartoon、anime、illustration、oil painting、watercolor、sketch、3D render、plastic skin；',
-    '不要生成：blurry、low resolution、过度美颜、明显 AI 感；',
-    '不要生成：multiple panels、grid layout、collage、split-screen、photo wall（**强调输出单张图片，不要多宫格拼接**）；',
-    '不要生成：extra people（额外的人物或脸）；',
-    '**不要换脸**、**不要换服装颜色**、**不要换场景**、**不要换光线风格**。',
+    '【关键约束】',
+    '不改变这套服装的颜色、版型、材质、图案与 logo；不改变人物的脸部特征与发型；保持场景与画面风格一致。',
+    '不要生成：文字、水印、品牌印章、多余人物、多宫格拼接，不要变成卡通/插画/动漫/3D 渲染风格。',
   ].join('\n')
 }
 

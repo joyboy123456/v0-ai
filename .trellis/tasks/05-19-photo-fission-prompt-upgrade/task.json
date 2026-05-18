@@ -1,0 +1,28 @@
+{
+  "id": "photo-fission-prompt-upgrade",
+  "name": "photo-fission-prompt-upgrade",
+  "title": "服装大片裂变 Prompt 工程升级 photo-fission-prompt-upgrade",
+  "description": "基于友商 yibaiaigc 5525 条 gemini3pro 真实案例萃取的 prompt 经验，重写 photo-fission-service.ts 内 7 个 lock section 的措辞，提升人物 / 服装 / 场景一致性与电商套图质感。不改 pipeline、不改 UI、不改 API。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "yinxm",
+  "assignee": "yinxm",
+  "createdAt": "2026-05-19",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "lib/server/photo-fission-service.ts"
+  ],
+  "notes": "Research: research/yibaiaigc-prompt-engineering.md (613 行，从 5525 条友商案例萃取)",
+  "meta": {}
+}
