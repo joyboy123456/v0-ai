@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronDown,
   Coins,
   Loader2,
   Sparkles,
@@ -42,6 +41,7 @@ import {
   PHOTO_FISSION_RATIOS_EXTRA,
   PHOTO_FISSION_RATIOS_MAIN,
   PHOTO_FISSION_RESOLUTIONS,
+  POSE_TEMPLATES,
   POSE_IMAGE_RATIOS,
   POSE_RESOLUTIONS,
   type BackgroundReplaceParams,
@@ -61,21 +61,24 @@ import {
   type PhotoFissionImageRatio,
   type PhotoFissionParams,
   type PhotoFissionResolution,
-  type PoseCase,
+  type PoseFissionCase,
   type PoseFissionParams,
   type PoseImageRatio,
   type PoseResolution,
   type AiFashionPhotoParams,
+  type PoseTemplate,
   type UploadedImage,
 } from "@/lib/types";
 
 interface LeftPanelProps {
   feature: FeatureType;
-  selectedPoseCase: PoseCase | null;
+  selectedPoseTemplates: PoseTemplate[];
   companyModels: CompanyModel[];
   fashionReferences: FashionReferenceImage[];
   fashionRemixRequest: FashionRemixRequest | null;
   photoFissionCaseRequest: PhotoFissionCaseRequest | null;
+  poseFissionCaseRequest: PoseFissionCaseRequest | null;
+  onChangeSelectedPoseTemplates: (templates: PoseTemplate[]) => void;
   onAddFashionReference: (reference: FashionReferenceImage) => void;
   onRemoveFashionReference: (assetId: string) => void;
   onOpenCompanyModelLibrary: () => void;
@@ -88,13 +91,20 @@ interface PhotoFissionCaseRequest {
   case: PhotoFissionCase;
 }
 
+interface PoseFissionCaseRequest {
+  requestId: number;
+  case: PoseFissionCase;
+}
+
 export function LeftPanel({
   feature,
-  selectedPoseCase,
+  selectedPoseTemplates,
   companyModels,
   fashionReferences,
   fashionRemixRequest,
   photoFissionCaseRequest,
+  poseFissionCaseRequest,
+  onChangeSelectedPoseTemplates,
   onAddFashionReference,
   onRemoveFashionReference,
   onOpenCompanyModelLibrary,
@@ -138,6 +148,9 @@ export function LeftPanel({
     useState<UploadedImage | null>(null);
   const [poseBackDetailImage, setPoseBackDetailImage] =
     useState<UploadedImage | null>(null);
+  const [poseFissionModel, setPoseFissionModel] = useState<FashionModelId>(
+    DEFAULT_FASHION_MODEL,
+  );
   const [generateCount, setGenerateCount] = useState<GenerateCount>(4);
   const [imageRatio, setImageRatio] = useState<ImageRatio>("3:4");
   const [poseImageRatio, setPoseImageRatio] = useState<PoseImageRatio>("3:4");
@@ -270,6 +283,27 @@ export function LeftPanel({
     };
   }, [photoFissionCaseRequest]);
 
+  // PR4：pose-fission 案例库「做同款」回填：
+  // 1) 把 case.poseTemplateIds 解为 PoseTemplate[]（找不到的 id 静默忽略，参考 types.ts D3 注释）
+  //    并通过 onChangeSelectedPoseTemplates 回写到 workbench（避免重新打开 PoseLibraryDialog）
+  // 2) 同步 model / 比例 / 分辨率 三个本地字段
+  // 3) 不自动上传 mainImageUrl 作为主图：与 photo-fission 不同，pose-fission 的 case
+  //    主图是"成品参考"而非"输入服装图"，用户必须上传自己的服装主图
+  useEffect(() => {
+    if (!poseFissionCaseRequest) return;
+
+    const { case: poseCase } = poseFissionCaseRequest;
+    const templates: PoseTemplate[] = poseCase.poseTemplateIds
+      .map((id) => POSE_TEMPLATES.find((tpl) => tpl.id === id))
+      .filter((tpl): tpl is PoseTemplate => Boolean(tpl));
+
+    onChangeSelectedPoseTemplates(templates);
+    setPoseFissionModel(poseCase.model);
+    setPoseImageRatio(poseCase.imageRatio);
+    setPoseResolution(poseCase.resolution);
+    setError("");
+  }, [poseFissionCaseRequest, onChangeSelectedPoseTemplates]);
+
   const helperText = useMemo(() => {
     if (feature === "ai-fashion-photo") return "上传服装、姿势或场景参考图";
     if (feature === "element-replace") return "上传需要修改的服装大片原图";
@@ -303,8 +337,16 @@ export function LeftPanel({
       return;
     }
 
-    if (feature === "pose-fission" && !selectedPoseCase) {
+    if (feature === "pose-fission" && selectedPoseTemplates.length === 0) {
       setError("请先去姿势库选择合适的姿势");
+      return;
+    }
+
+    if (
+      feature === "pose-fission" &&
+      selectedPoseTemplates.length > 9
+    ) {
+      setError("姿势模板最多选 9 个");
       return;
     }
 
@@ -407,17 +449,19 @@ export function LeftPanel({
     }
 
     if (feature === "pose-fission") {
+      // PR3：用户已在 PoseLibraryDialog 完成多选；上游 handleCreateTask 已校验非空与上限。
+      const poseTemplateSnapshots: PoseTemplate[] = selectedPoseTemplates;
+      const poseTemplateIds = poseTemplateSnapshots.map((tpl) => tpl.id);
       return {
-        version: "advanced",
-        poseCaseId: selectedPoseCase?.id ?? "",
-        poseName: selectedPoseCase?.name ?? "",
-        posePrompt: selectedPoseCase?.prompt ?? "",
+        model: poseFissionModel,
+        poseTemplateIds,
+        poseTemplateSnapshots,
         hasFrontDetail: Boolean(poseFrontDetailImage),
         hasBackDetail: Boolean(poseBackDetailImage),
         imageRatio: poseImageRatio,
         resolution: poseResolution,
-        resultCount: 6,
-        creditsCost: 35,
+        resultCount: poseTemplateIds.length,
+        creditsCost: 0,
       };
     }
 
@@ -456,10 +500,12 @@ export function LeftPanel({
             mainImage={poseMainImage}
             frontDetailImage={poseFrontDetailImage}
             backDetailImage={poseBackDetailImage}
-            selectedPoseCase={selectedPoseCase}
+            selectedPoseTemplates={selectedPoseTemplates}
+            model={poseFissionModel}
             imageRatio={poseImageRatio}
             resolution={poseResolution}
             helperText={helperText}
+            onModelChange={setPoseFissionModel}
             onMainUploaded={setPoseMainImage}
             onFrontDetailUploaded={setPoseFrontDetailImage}
             onBackDetailUploaded={setPoseBackDetailImage}
@@ -660,10 +706,12 @@ function PoseFissionForm({
   mainImage,
   frontDetailImage,
   backDetailImage,
-  selectedPoseCase,
+  selectedPoseTemplates,
+  model,
   imageRatio,
   resolution,
   helperText,
+  onModelChange,
   onMainUploaded,
   onFrontDetailUploaded,
   onBackDetailUploaded,
@@ -677,10 +725,12 @@ function PoseFissionForm({
   mainImage: UploadedImage | null;
   frontDetailImage: UploadedImage | null;
   backDetailImage: UploadedImage | null;
-  selectedPoseCase: PoseCase | null;
+  selectedPoseTemplates: PoseTemplate[];
+  model: FashionModelId;
   imageRatio: PoseImageRatio;
   resolution: PoseResolution;
   helperText: string;
+  onModelChange: (value: FashionModelId) => void;
   onMainUploaded: (image: UploadedImage) => void;
   onFrontDetailUploaded: (image: UploadedImage) => void;
   onBackDetailUploaded: (image: UploadedImage) => void;
@@ -691,16 +741,28 @@ function PoseFissionForm({
   onImageRatioChange: (value: PoseImageRatio) => void;
   onResolutionChange: (value: PoseResolution) => void;
 }) {
+  const hasSelectedPoses = selectedPoseTemplates.length > 0;
+
   return (
     <div className="space-y-4">
+      {/* 后续可考虑抽出通用 ModelSelector 共享给 ai-fashion-photo / photo-fission / pose-fission（待第 4 个 feature 出现再抽象，YAGNI）。 */}
       <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-foreground">版本</span>
-          <button className="flex items-center gap-2 rounded-md bg-background px-3 py-2 text-xs font-medium text-foreground">
-            高级版
-            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-          </button>
-        </div>
+        <span className="text-sm text-foreground">模型版本</span>
+        <Select
+          value={model}
+          onValueChange={(value) => onModelChange(value as FashionModelId)}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="选择模型" />
+          </SelectTrigger>
+          <SelectContent>
+            {FASHION_MODELS.map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label} · {option.alias}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <UploadBox
@@ -731,34 +793,55 @@ function PoseFissionForm({
       />
 
       <div className="space-y-2">
-        <RequiredLabel label="选择姿势" />
-        <button
-          type="button"
-          onClick={onOpenPoseLibrary}
-          className={cn(
-            "flex min-h-[58px] w-full items-center justify-center gap-3 rounded-md border bg-secondary px-3 py-3",
-            "text-center text-xs transition-colors hover:border-primary/60 hover:bg-primary/5",
-            selectedPoseCase
-              ? "border-primary/60 text-foreground"
-              : "border-border text-muted-foreground",
+        <div className="flex items-center justify-between">
+          <RequiredLabel label="选择姿势" />
+          {hasSelectedPoses && (
+            <span className="text-xs text-muted-foreground">
+              {selectedPoseTemplates.length} 张已选 / 最多 9 张
+            </span>
           )}
-        >
-          {selectedPoseCase ? (
-            <>
-              <img
-                src={selectedPoseCase.imageUrl}
-                alt={selectedPoseCase.name}
-                className="h-10 w-8 rounded object-cover"
-              />
-              <span className="font-medium">{selectedPoseCase.name}</span>
-            </>
-          ) : (
-            <>
-              <span className="text-2xl leading-none">+</span>
-              <span>去姿势库选择合适的姿势</span>
-            </>
-          )}
-        </button>
+        </div>
+        {hasSelectedPoses ? (
+          <div className="space-y-2 rounded-md border border-primary/60 bg-secondary p-3">
+            <div className="flex flex-wrap gap-2">
+              {selectedPoseTemplates.map((template, index) => (
+                <div
+                  key={template.id}
+                  className="relative h-12 w-12 overflow-hidden rounded border border-border bg-background"
+                  title={`${index + 1}. ${template.name}`}
+                >
+                  <img
+                    src={template.imageUrl}
+                    alt={template.name}
+                    className="h-full w-full object-cover"
+                  />
+                  <span className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[9px] font-medium text-primary-foreground">
+                    {index + 1}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={onOpenPoseLibrary}
+              className="w-full rounded-md border border-dashed border-border bg-card px-3 py-2 text-xs text-muted-foreground transition-colors hover:border-primary/60 hover:text-foreground"
+            >
+              重新选择
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={onOpenPoseLibrary}
+            className={cn(
+              "flex min-h-[58px] w-full items-center justify-center gap-3 rounded-md border bg-secondary px-3 py-3",
+              "border-border text-center text-xs text-muted-foreground transition-colors hover:border-primary/60 hover:bg-primary/5",
+            )}
+          >
+            <span className="text-2xl leading-none">+</span>
+            <span>去姿势库选择合适的姿势</span>
+          </button>
+        )}
       </div>
 
       <PoseRatioSelector value={imageRatio} onChange={onImageRatioChange} />
@@ -1309,7 +1392,6 @@ function PoseRatioSelector({
                   value === option.id
                     ? "border-primary"
                     : "border-muted-foreground",
-                  option.id === "more" && "relative",
                 )}
                 style={ratioStyle}
               />

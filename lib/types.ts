@@ -10,10 +10,27 @@ export type SceneStyle = 'studio' | 'outdoor' | 'street' | 'lifestyle'
 export type GenerateCount = 4 | 8 | 12 | 16
 export type ImageRatio = '1:1' | '3:4' | '4:3' | '2:3'
 export type FashionImageRatio = '1:1' | '3:2' | '2:3' | '3:4' | '4:3' | 'more'
-export type PoseImageRatio = '1:1' | '3:2' | '2:3' | '3:4' | '4:3' | 'more'
+/**
+ * 姿势裂变（pose-fission）支持的全部 10 个真实比例 + 1 个 UI 概念 'more'。
+ * 与 PhotoFissionImageRatio 完全对齐（PRD D6），「更多」按钮只是 UI 概念，
+ * 不会写入 params。
+ */
+export type PoseImageRatio =
+  | '1:1'
+  | '3:2'
+  | '2:3'
+  | '3:4'
+  | '4:3'
+  | '4:5'
+  | '5:4'
+  | '9:16'
+  | '16:9'
+  | '21:9'
+  | 'more'
+export type PoseAgeGroup = 'adult' | 'kid'
+export type PoseBodyPart = 'full' | 'upper' | 'lower'
 export type PoseResolution = '1k' | '2k' | '4k'
 export type FashionResolution = PoseResolution
-export type PoseVersion = 'advanced'
 export type ProductCategory = 'tops' | 'bottoms' | 'dress' | 'suit' | 'outerwear'
 export type PhotoFissionCategory =
   | 'tops'
@@ -135,16 +152,24 @@ export interface BackgroundReplaceParams {
 }
 
 export interface PoseFissionParams {
-  version: PoseVersion
-  poseCaseId: string
-  poseName: string
-  posePrompt: string
+  model: FashionModelId
+  /** 用户多选的姿势模板 id 列表，长度 ∈ [1, 9] */
+  poseTemplateIds: string[]
+  /**
+   * 冗余存储的姿势模板快照。
+   * 目的：后续 POSE_TEMPLATES 常量变更（改名 / 改 prompt）不影响历史任务回放，
+   * 也避免 service 层每次重新查表。
+   * 顺序与 poseTemplateIds 一一对应。
+   */
+  poseTemplateSnapshots: PoseTemplate[]
   hasFrontDetail: boolean
   hasBackDetail: boolean
   imageRatio: PoseImageRatio
   resolution: PoseResolution
-  resultCount: 6
-  creditsCost: 35
+  /** = poseTemplateIds.length，由 normalize 阶段填充 */
+  resultCount: number
+  /** PRD D5：MVP 不计费 */
+  creditsCost: 0
 }
 
 export type TaskParams =
@@ -180,12 +205,39 @@ export interface FashionReferenceImage {
   modelId?: string
 }
 
-export interface PoseCase {
+export interface PoseTemplate {
   id: string
-  featureType: FeatureType
+  /** 中文短描述，如 '站姿1' / '坐姿1' / '儿童跑跳' */
   name: string
-  prompt: string
+  /** 姿势示意图 URL（public 下相对路径） */
   imageUrl: string
+  /** 用于拼到生图 prompt 的姿势描述片段 */
+  prompt: string
+  ageGroup: PoseAgeGroup
+  bodyPart: PoseBodyPart
+}
+
+/**
+ * 姿势裂变成片案例：一组「主图 → 多张套图」的预设示例，
+ * 供右侧案例库 Tab 展示，用户点「做同款」可一键复刻参数到左侧表单。
+ *
+ * 与 PhotoFissionCase 形状一致（参考 PRD D3 设计），区别仅在于：
+ * - photoFissionCase 用 shotLabels 描述 9 个 shot
+ * - poseFissionCase 用 poseTemplateIds 引用 POSE_TEMPLATES，更贴合"一键回填"用法
+ */
+export interface PoseFissionCase {
+  id: string
+  featureType: 'pose-fission'
+  name: string
+  description: string
+  mainImageUrl: string
+  /** 已生成的套图路径（顺序与 poseTemplateIds 一一对应；文件可能暂未生成） */
+  resultImageUrls: string[]
+  /** 案例使用的姿势模板 id 列表。前端回填时若某 id 不存在 POSE_TEMPLATES，应 graceful fallback */
+  poseTemplateIds: string[]
+  model: FashionModelId
+  imageRatio: PoseImageRatio
+  resolution: PoseResolution
 }
 
 /**
@@ -340,21 +392,142 @@ export const ELEMENT_REPLACE_TYPES = [
   { id: 'person', label: '人像' },
 ] satisfies { id: ElementReplaceType; label: string }[]
 
-export const POSE_TEMPLATES = [
-  '站姿',
-  '坐姿',
-  '走姿',
-  '侧身',
-  '回头',
+/**
+ * 姿势裂变占位姿势模板（MVP 用，图片暂用项目通用 placeholder）。
+ * 8 个：6 个成人（覆盖 full / upper / lower）+ 2 个儿童（full / upper）。
+ * 后续由产品同事替换为真实姿势图，只改这里的数据，不动 UI 代码。
+ *
+ * 关键字段说明：
+ * - ageGroup：'adult' | 'kid' 控制 Modal 的「全部/成人/儿童」筛选
+ * - bodyPart：'full' | 'upper' | 'lower' 控制 Modal 的「全部/全身/上半身/下半身」筛选
+ * - prompt：尽量具体，让 Gemini 明确知道目标姿势是什么；
+ *   描述时避免提到具体性别 / 服装，姿势 prompt 只负责姿势本身
+ */
+export const POSE_TEMPLATES: PoseTemplate[] = [
+  {
+    id: 'pose-tpl-stand-front',
+    name: '站姿1',
+    imageUrl: '/placeholder.jpg',
+    prompt: '人物正面站立，双脚自然分开与肩同宽，双手轻放体侧，肩颈放松，整体姿态自然挺拔，适合正面主图展示。',
+    ageGroup: 'adult',
+    bodyPart: 'full',
+  },
+  {
+    id: 'pose-tpl-stand-side',
+    name: '侧身1',
+    imageUrl: '/placeholder.jpg',
+    prompt: '人物侧身站立约 90 度，头部略微回望镜头，重心落在后脚，前脚轻点，整体姿态修长，展示侧面版型与轮廓。',
+    ageGroup: 'adult',
+    bodyPart: 'full',
+  },
+  {
+    id: 'pose-tpl-walk-step',
+    name: '行走1',
+    imageUrl: '/placeholder.jpg',
+    prompt: '人物正面行走中，一脚迈出，另一脚承重，双臂自然摆动，步态轻盈有动态感，展示服装的飘逸与版型。',
+    ageGroup: 'adult',
+    bodyPart: 'full',
+  },
+  {
+    id: 'pose-tpl-sit-chair',
+    name: '坐姿1',
+    imageUrl: '/placeholder.jpg',
+    prompt: '人物坐在简约凳子上，双腿自然交叉或并拢，双手放于膝上或大腿上，背部挺直，姿态优雅放松。',
+    ageGroup: 'adult',
+    bodyPart: 'full',
+  },
+  {
+    id: 'pose-tpl-upper-portrait',
+    name: '上半身肖像',
+    imageUrl: '/placeholder.jpg',
+    prompt: '人物正面上半身肖像，肩颈放松，双手抬至胸前轻触衣领或下颌附近，重点展示领口、面部表情与上半身搭配。',
+    ageGroup: 'adult',
+    bodyPart: 'upper',
+  },
+  {
+    id: 'pose-tpl-lower-crop',
+    name: '下半身特写',
+    imageUrl: '/placeholder.jpg',
+    prompt: '镜头聚焦人物腰部以下，双腿微叉或一脚轻抬，重点展示下装版型、裤型/裙摆轮廓与鞋履搭配。',
+    ageGroup: 'adult',
+    bodyPart: 'lower',
+  },
+  {
+    id: 'pose-tpl-kid-run',
+    name: '儿童跑跳',
+    imageUrl: '/placeholder.jpg',
+    prompt: '儿童正面跑跳中，一脚抬起，双臂张开，表情明亮活泼，展示童装的活泼与动态。',
+    ageGroup: 'kid',
+    bodyPart: 'full',
+  },
+  {
+    id: 'pose-tpl-kid-wave',
+    name: '儿童招手',
+    imageUrl: '/placeholder.jpg',
+    prompt: '儿童正面上半身，单手抬起向镜头招手，面带微笑，肩颈放松，重点展示童装上身效果。',
+    ageGroup: 'kid',
+    bodyPart: 'upper',
+  },
 ]
 
+/**
+ * 「基础搭配 3 张」一键预设的姿势模板 id 集合（PRD D8）。
+ * 选择 3 个最典型的成人全身姿势：正面站姿 / 侧身 / 行走。
+ */
+export const POSE_TEMPLATES_DEFAULT_TRIO: string[] = [
+  'pose-tpl-stand-front',
+  'pose-tpl-stand-side',
+  'pose-tpl-walk-step',
+]
+
+export const POSE_TEMPLATE_AGE_GROUPS = [
+  { id: 'adult', label: '成人' },
+  { id: 'kid', label: '儿童' },
+] satisfies { id: PoseAgeGroup; label: string }[]
+
+export const POSE_TEMPLATE_BODY_PARTS = [
+  { id: 'full', label: '全身' },
+  { id: 'upper', label: '上半身' },
+  { id: 'lower', label: '下半身' },
+] satisfies { id: PoseBodyPart; label: string }[]
+
+/**
+ * 姿势裂变（pose-fission）支持的全部 10 个真实图片比例（PRD D6 与 photo-fission 对齐）。
+ * 「更多」按钮只是 UI 概念，不会写入 params。
+ */
 export const POSE_IMAGE_RATIOS = [
   { id: '1:1', label: '1:1' },
   { id: '3:2', label: '3:2' },
   { id: '2:3', label: '2:3' },
   { id: '3:4', label: '3:4' },
   { id: '4:3', label: '4:3' },
-  { id: 'more', label: '更多' },
+  { id: '4:5', label: '4:5' },
+  { id: '5:4', label: '5:4' },
+  { id: '9:16', label: '9:16' },
+  { id: '16:9', label: '16:9' },
+  { id: '21:9', label: '21:9' },
+] satisfies { id: PoseImageRatio; label: string }[]
+
+/**
+ * UI 分组：主组 5 项常用比例 +「更多」按钮（按钮 id 'more' 仅用于 UI，不会写入 params）。
+ */
+export const POSE_IMAGE_RATIOS_MAIN = [
+  { id: '1:1', label: '1:1' },
+  { id: '3:2', label: '3:2' },
+  { id: '2:3', label: '2:3' },
+  { id: '3:4', label: '3:4' },
+  { id: '4:3', label: '4:3' },
+] satisfies { id: PoseImageRatio; label: string }[]
+
+/**
+ * UI 分组：「更多」popover 内 5 项扩展比例。
+ */
+export const POSE_IMAGE_RATIOS_EXTRA = [
+  { id: '4:5', label: '4:5' },
+  { id: '5:4', label: '5:4' },
+  { id: '9:16', label: '9:16' },
+  { id: '16:9', label: '16:9' },
+  { id: '21:9', label: '21:9' },
 ] satisfies { id: PoseImageRatio; label: string }[]
 
 export const POSE_RESOLUTIONS = [
@@ -418,48 +591,42 @@ export const FASHION_MODELS: FashionModelOption[] = [
 
 export const DEFAULT_FASHION_MODEL: FashionModelId = 'gemini-3.1-flash-image-preview'
 
-export const POSE_CASES: PoseCase[] = [
+/**
+ * 姿势裂变（pose-fission）案例库。
+ * MVP 阶段含 1 个 case：现有 6 张 pose-*.jpg 归为一组「黑色蕾丝裙 6 姿势套图」。
+ *
+ * 注意：
+ * - poseTemplateIds 引用 POSE_TEMPLATES 的 id。前端回填时若某 id 在
+ *   当前 POSE_TEMPLATES 中不存在，需 graceful fallback（仅忽略该 id 即可）
+ * - resultImageUrls 中的文件可能暂未生成，UI 需对每张图做 graceful fallback
+ */
+export const POSE_FISSION_CASES: PoseFissionCase[] = [
   {
-    id: 'back-turn',
+    id: 'pose-black-dress-six-poses',
     featureType: 'pose-fission',
-    name: '回头背影',
-    prompt: '模特背身站立并自然回头，展示背部廓形、包袋和裙摆层次。',
-    imageUrl: '/cases/pose-back-turn.jpg',
-  },
-  {
-    id: 'low-crouch',
-    featureType: 'pose-fission',
-    name: '半蹲近景',
-    prompt: '模特半蹲近景，双手靠近脸部，突出上衣、手套、领口和面部状态。',
-    imageUrl: '/cases/pose-low-crouch.jpg',
-  },
-  {
-    id: 'front-wave',
-    featureType: 'pose-fission',
-    name: '正面招手',
-    prompt: '模特正面站立，单手轻抬招手，整体亲和自然，适合主图展示。',
-    imageUrl: '/cases/pose-front-wave.jpg',
-  },
-  {
-    id: 'side-walk',
-    featureType: 'pose-fission',
-    name: '侧身行走',
-    prompt: '模特侧身行走，步态轻盈，展示侧面版型、裙摆动态和鞋履搭配。',
-    imageUrl: '/cases/pose-side-walk.jpg',
-  },
-  {
-    id: 'cross-step',
-    featureType: 'pose-fission',
-    name: '交叉步',
-    prompt: '模特正面交叉步走姿，双臂自然展开，展示服装整体轮廓与动态感。',
-    imageUrl: '/cases/pose-cross-step.jpg',
-  },
-  {
-    id: 'bag-forward',
-    featureType: 'pose-fission',
-    name: '手持包前进',
-    prompt: '模特侧前方行走并手持包袋，姿态利落，适合电商投流和搭配图。',
-    imageUrl: '/cases/pose-bag-forward.jpg',
+    name: '黑色蕾丝裙 6 姿势套图',
+    description:
+      '同一位模特身穿黑色蕾丝连衣裙，覆盖正面招手、侧身行走、回头背影等 6 个常用电商投流姿势。',
+    mainImageUrl: '/cases/pose-front-wave.jpg',
+    resultImageUrls: [
+      '/cases/pose-front-wave.jpg',
+      '/cases/pose-side-walk.jpg',
+      '/cases/pose-back-turn.jpg',
+      '/cases/pose-low-crouch.jpg',
+      '/cases/pose-cross-step.jpg',
+      '/cases/pose-bag-forward.jpg',
+    ],
+    poseTemplateIds: [
+      'pose-tpl-stand-front',
+      'pose-tpl-stand-side',
+      'pose-tpl-walk-step',
+      'pose-tpl-upper-portrait',
+      'pose-tpl-sit-chair',
+      'pose-tpl-lower-crop',
+    ],
+    model: 'gemini-3-pro-image-preview',
+    imageRatio: '3:4',
+    resolution: '4k',
   },
 ]
 

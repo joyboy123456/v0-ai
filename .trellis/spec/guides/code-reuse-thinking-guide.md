@@ -103,3 +103,19 @@ When you've made similar changes to multiple files:
 - [ ] No copy-pasted logic that should be shared
 - [ ] Constants defined in one place
 - [ ] Similar patterns follow same structure
+
+---
+
+## 项目复用第一公民清单（First-Class Reuse Citizens）
+
+下列模式在本项目已经被复用 2 次以上、有固定 spec 契约，**新增同类 feature 时必须照抄**，不要写第二份：
+
+| 模式 | spec | 当前复用方 |
+|---|---|---|
+| Streaming fission pipeline（N 镜头 + 失败容忍 + 流式持久化 + 子集重跑） | [backend/streaming-fission-pipeline.md](../backend/streaming-fission-pipeline.md) | photo-fission / pose-fission |
+| External image API 调用（重试 / 限流 / 错误分类 / traceId） | [backend/external-image-api-reliability.md](../backend/external-image-api-reliability.md) | ai-fashion-photo / photo-fission / pose-fission |
+| Case Request 派发（一键做同款 → 切 feature + 回填 LeftPanel 表单） | [frontend/state-management.md](../frontend/state-management.md#case-request-dispatch-pattern-fission-features) | photo-fission / pose-fission |
+| SSR 安全的 localStorage 状态 | [frontend/state-management.md](../frontend/state-management.md#critical-ssr-hydration-pattern) | companyModels / favorites |
+| Upload 大小校验 | [frontend/component-guidelines.md](../frontend/component-guidelines.md#upload-size-validation) | 所有上传入口 |
+
+**触发条件**：新增 feature 之前先 grep 这张表的 spec。若你的需求形态命中任何一行，**不允许**重写一份 pipeline / 派发逻辑 / 校验函数；必须复用既有实现或在 spec 注释里写明「为什么本次必须差异化」。

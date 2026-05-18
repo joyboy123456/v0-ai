@@ -2,7 +2,10 @@ import { runThirdPartyWorkflow } from '@/lib/server/third-party-image-adapter'
 import {
   normalizeAiFashionPhotoParams,
 } from '@/lib/server/ai-fashion-photo-service'
-import { normalizePoseFissionParams } from '@/lib/server/pose-fission-service'
+import {
+  normalizePoseFissionParams,
+  runPoseFissionPipeline,
+} from '@/lib/server/pose-fission-service'
 import {
   normalizePhotoFissionParams,
   runPhotoFissionPipeline,
@@ -13,10 +16,11 @@ import {
   type FeatureType,
   type GenerationTask,
   type PhotoFissionParams,
+  type PoseFissionParams,
   type ResultAsset,
   type TaskParams,
 } from '@/lib/types'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 const globalStore = globalThis as typeof globalThis & {
@@ -220,31 +224,48 @@ async function runTask(taskId: string) {
     ).filter((image): image is string => Boolean(image))
 
     const isPhotoFission = task.featureType === 'photo-fission'
-
-    // photo-fission 走流式持久化：每个 shot 成功立即写盘 + 更新 store，
+    const isPoseFission = task.featureType === 'pose-fission'
+    // photo-fission / pose-fission 都走流式持久化：每个 shot/pose 成功立即写盘 + 更新 store，
     // 即使后续 shot 卡死整个 pipeline，已成功的图也不会丢。
     // 其他 feature 保持原 saveResults(results) 批量持久化路径不变。
+    const useStreamingPersist = isPhotoFission || isPoseFission
+
     const persistedResults: ResultAsset[] = []
-    const onShotResult = isPhotoFission
+    const onShotResult = useStreamingPersist
       ? async (result: ResultAsset) => {
           await persistOneResult(taskId, result)
           persistedResults.push(result)
         }
       : undefined
 
-    const results = await runThirdPartyWorkflow({
-      taskId,
-      featureType: task.featureType,
-      workflowId: task.workflowId,
-      inputImages,
-      params: task.params,
-      onShotResult,
-    })
+    let results: ResultAsset[]
+    if (isPoseFission) {
+      // pose-fission 直接调 runPoseFissionPipeline，跳过 runThirdPartyWorkflow，
+      // 避免双重 Google 调用与 demo 路径分叉（demo 模式仍在 runThirdPartyWorkflow 内处理 photo-fission，
+      // pose-fission demo 退化为占位 case 输出由后续 PR 处理；此 PR 关注真实生产路径）。
+      results = await runPoseFissionPipeline({
+        taskId,
+        inputImages,
+        params: task.params as PoseFissionParams,
+        apiKey: process.env.GOOGLE_API_KEY ?? '',
+        timeoutMs: Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000),
+        onShotResult,
+      })
+    } else {
+      results = await runThirdPartyWorkflow({
+        taskId,
+        featureType: task.featureType,
+        workflowId: task.workflowId,
+        inputImages,
+        params: task.params,
+        onShotResult,
+      })
+    }
 
-    // photo-fission：results 已在 onShotResult 内全部持久化，禁止再走 saveResults 重复写盘。
+    // photo-fission / pose-fission：results 已在 onShotResult 内全部持久化，禁止再走 saveResults 重复写盘。
     // 其他 feature：批量持久化生成 resultAssetIds。
-    const finalResults = isPhotoFission ? persistedResults : results
-    const resultAssetIds = isPhotoFission
+    const finalResults = useStreamingPersist ? persistedResults : results
+    const resultAssetIds = useStreamingPersist
       ? persistedResults.map((item) => item.assetId)
       : await saveResults(results)
 
@@ -331,8 +352,8 @@ function updateTask(taskId: string, patch: Partial<GenerationTask>) {
 }
 
 /**
- * 部分 feature（如 photo-fission）允许 per-shot 失败容忍。
- * 这里根据 shotPlan 计划数量与实际成功结果数量决定 status / message。
+ * 部分 feature（如 photo-fission / pose-fission）允许 per-shot 失败容忍。
+ * 这里根据 shotPlan / poseTemplateIds 计划数量与实际成功结果数量决定 status / message。
  */
 function resolveTaskCompletion(task: GenerationTask, results: ResultAsset[]) {
   if (task.featureType === 'photo-fission') {
@@ -342,6 +363,18 @@ function resolveTaskCompletion(task: GenerationTask, results: ResultAsset[]) {
       return {
         status: 'partial' as const,
         message: `已生成 ${results.length}/${planned} 张，部分镜头失败`,
+      }
+    }
+  }
+
+  if (task.featureType === 'pose-fission') {
+    const params = task.params as PoseFissionParams
+    const planned =
+      params.resultCount ?? params.poseTemplateIds?.length ?? results.length
+    if (planned > 0 && results.length < planned) {
+      return {
+        status: 'partial' as const,
+        message: `已生成 ${results.length}/${planned} 张，部分姿势失败`,
       }
     }
   }
@@ -701,4 +734,214 @@ export async function retryPhotoFissionShots(
 
   const refreshed = store.tasks.get(taskId)
   return hydrateTaskInputAssets(refreshed ?? finalTask)
+}
+
+/**
+ * 重跑 pose-fission 失败姿势（PRD D10）。
+ *
+ * 与 retryPhotoFissionShots 同构：校验 task 存在、属于 pose-fission、
+ * status ∈ {partial, failed}、templateIds 都在原 poseTemplateIds 中
+ * 且当前 results 没有对应 templateId（已成功的不允许重跑）。
+ * 然后基于原 inputAssetIds 与原 poseTemplateSnapshots 调
+ * runPoseFissionPipeline（targetTemplateIds 过滤），通过 onShotResult 流式持久化合并回原 task。
+ *
+ * 完成后用合并后的 results 重新 resolveTaskCompletion 更新 status 与 message。
+ * 不另起新 task；credits 不再扣（pose-fission D5：MVP 不计费）。
+ *
+ * 抽象时机说明（PRD §Out of Scope）：
+ * 当前 retryPhotoFissionShots 与本函数结构高度相似，
+ * 之所以暂不抽象出通用 retryFissionShots(featureType, ...) 是为了：
+ * 1. 两个 feature 的「计划单位」字段不同（shotPlan vs poseTemplateSnapshots）
+ * 2. pipeline 调用接口不同（targetShotIds vs targetTemplateIds）
+ * 3. 错误文案差异（镜头 vs 姿势）
+ * 待第三个类似 feature 出现时再抽象，避免过早设计 lowest-common-denominator 契约。
+ */
+export async function retryPoseFissionShots(
+  taskId: string,
+  templateIds: string[],
+): Promise<GenerationTask> {
+  await ensureStoreReady()
+
+  const task = store.tasks.get(taskId)
+  if (!task) {
+    throw new Error('任务不存在')
+  }
+  if (task.featureType !== 'pose-fission') {
+    throw new Error('仅姿势裂变支持重跑失败姿势')
+  }
+  if (task.status !== 'partial' && task.status !== 'failed') {
+    throw new Error('当前任务状态不允许重跑（仅 partial / failed 可重跑）')
+  }
+
+  const params = task.params as PoseFissionParams
+  if (
+    !Array.isArray(params.poseTemplateSnapshots) ||
+    !params.poseTemplateSnapshots.length
+  ) {
+    throw new Error('任务缺少姿势模板快照，无法重跑')
+  }
+
+  const plannedTemplateIds = new Set(
+    params.poseTemplateSnapshots.map((template) => template.id),
+  )
+  const alreadySucceededTemplateIds = new Set(
+    task.results
+      .map((result) => result.shotId)
+      .filter((id): id is string => Boolean(id)),
+  )
+
+  const uniqueTemplateIds = Array.from(new Set(templateIds))
+  if (!uniqueTemplateIds.length) {
+    throw new Error('请至少选择一个失败姿势')
+  }
+
+  for (const templateId of uniqueTemplateIds) {
+    if (!plannedTemplateIds.has(templateId)) {
+      throw new Error(`姿势 ${templateId} 不在原任务计划中`)
+    }
+    if (alreadySucceededTemplateIds.has(templateId)) {
+      throw new Error(`姿势 ${templateId} 已成功，无需重跑`)
+    }
+  }
+
+  // 标记为 running，避免前端轮询误判
+  updateTask(taskId, {
+    status: 'running',
+    progress: 72,
+    message: `正在重跑 ${uniqueTemplateIds.length} 个失败姿势`,
+  })
+
+  try {
+    const inputImages = (
+      await Promise.all(
+        task.inputAssetIds.map(async (assetId) => {
+          const asset = store.assets.get(assetId)
+          if (!asset) return null
+          if (asset.dataUrl) return asset.dataUrl
+          return resolveAssetToDataUrl(asset)
+        }),
+      )
+    ).filter((image): image is string => Boolean(image))
+
+    if (!inputImages.length) {
+      throw new Error('原任务参考图已丢失，无法重跑')
+    }
+
+    await runPoseFissionPipeline({
+      taskId,
+      inputImages,
+      params,
+      apiKey: process.env.GOOGLE_API_KEY ?? '',
+      timeoutMs: Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000),
+      targetTemplateIds: uniqueTemplateIds,
+      onShotResult: async (result) => {
+        await persistOneResult(taskId, result)
+      },
+    })
+  } catch (error) {
+    // pipeline 全部失败：保留已有 results，标记为 failed/partial（按当前 results 判定）
+    const message = error instanceof Error ? error.message : '未知错误'
+    const currentTask = store.tasks.get(taskId)
+    if (currentTask) {
+      const { status, message: resolveMessage } = resolveTaskCompletion(
+        currentTask,
+        currentTask.results,
+      )
+      updateTask(taskId, {
+        status: currentTask.results.length === 0 ? 'failed' : status,
+        progress: 100,
+        message:
+          currentTask.results.length === 0
+            ? '重跑失败姿势全部失败'
+            : resolveMessage,
+        errorMessage: message,
+        finishedAt: new Date().toISOString(),
+      })
+    }
+    throw error
+  }
+
+  const finalTask = store.tasks.get(taskId)
+  if (!finalTask) {
+    throw new Error('任务在重跑后丢失')
+  }
+
+  const { status, message } = resolveTaskCompletion(finalTask, finalTask.results)
+  updateTask(taskId, {
+    status,
+    progress: 100,
+    message,
+    errorMessage: status === 'success' ? undefined : finalTask.errorMessage,
+    finishedAt: new Date().toISOString(),
+  })
+
+  const refreshed = store.tasks.get(taskId)
+  return hydrateTaskInputAssets(refreshed ?? finalTask)
+}
+
+/**
+ * 删除单张已生成的 result（用户在「案例库」/瀑布流 hover 操作里点了垃圾桶）。
+ *
+ * - 从对应 task 的 results / resultAssetIds 移除该 assetId
+ * - 从 store.assets 移除对应 AssetRecord
+ * - 异步尝试删除 public/generated/results/ 下的物理文件（失败仅记录，不阻塞）
+ * - 如果 task 删完后没有任何剩余 result，则同步删除整个 task（避免历史记录里堆积空 task）
+ *
+ * 返回 true 表示找到了对应 result 并完成删除，false 表示 task / assetId 不匹配。
+ */
+export async function deleteResultFromTask(
+  taskId: string,
+  assetId: string,
+): Promise<boolean> {
+  await ensureStoreReady()
+
+  const task = store.tasks.get(taskId)
+  if (!task) return false
+
+  const resultIndex = task.results.findIndex((item) => item.assetId === assetId)
+  const inIdsList = task.resultAssetIds.includes(assetId)
+  if (resultIndex === -1 && !inIdsList) return false
+
+  const targetResult = resultIndex >= 0 ? task.results[resultIndex] : undefined
+
+  const updatedResults =
+    resultIndex >= 0
+      ? [
+          ...task.results.slice(0, resultIndex),
+          ...task.results.slice(resultIndex + 1),
+        ]
+      : task.results
+  const updatedResultAssetIds = task.resultAssetIds.filter(
+    (id) => id !== assetId,
+  )
+
+  if (updatedResults.length === 0 && updatedResultAssetIds.length === 0) {
+    // task 删空了 → 整 task 一起删，避免历史记录留空壳
+    store.tasks.delete(taskId)
+  } else {
+    store.tasks.set(taskId, {
+      ...task,
+      results: updatedResults,
+      resultAssetIds: updatedResultAssetIds,
+    })
+  }
+
+  store.assets.delete(assetId)
+  await persistStore()
+
+  // 物理文件删除是 best-effort：磁盘上图缺失也不影响列表正确性
+  if (targetResult?.url && targetResult.url.startsWith('/generated/')) {
+    const absolutePath = path.join(
+      workspaceRoot,
+      'public',
+      targetResult.url.replace(/^\//, ''),
+    )
+    try {
+      await unlink(absolutePath)
+    } catch {
+      // 文件不存在/权限问题/并发删除：忽略
+    }
+  }
+
+  return true
 }

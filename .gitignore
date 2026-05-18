@@ -18,3 +18,9 @@ node_modules
 # Runtime generated assets and local task metadata
 data/
 public/generated/
+# Probe / capability research artifacts
+.probe/
+.probe-*.json
+
+# 研究参考资料（121M 浅克隆，仅供 implement 参考，不入版本控制）
+.trellis/tasks/*/research/yibaiaigc/

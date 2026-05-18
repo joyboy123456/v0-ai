@@ -19,6 +19,7 @@
 | 文档 | 主题 | 状态 |
 |---|---|---|
 | [External Image API Reliability](./external-image-api-reliability.md) | 外部图像生成 API（Google Gemini Image，未来七牛云等）的稳定性契约：错误分类、重试退避、限流、熔断、日志、env 命名 | active |
+| [Streaming Fission Pipeline](./streaming-fission-pipeline.md) | 「单任务 N 个子镜头 + 单失败容忍 + 流式持久化 + 子集重跑」fission pipeline 编排契约（photo-fission / pose-fission 共享） | active |
 
 ---
 

@@ -3,7 +3,6 @@ import {
   type BackgroundReplaceParams,
   type FeatureType,
   type PhotoFissionParams,
-  type PoseFissionParams,
   type ResultAsset,
   type TaskParams,
   type AiFashionPhotoParams,
@@ -12,11 +11,6 @@ import {
   buildAiFashionPhotoPrompt,
 } from './ai-fashion-photo-service'
 import { runGoogleImageEdit } from './google-genai-adapter'
-import {
-  buildPoseFissionPrompt,
-  createPoseFissionReferenceSheet,
-  getPoseFissionDemoUrls,
-} from './pose-fission-service'
 import { runPhotoFissionPipeline } from './photo-fission-service'
 
 type RunnableFeature = FeatureType
@@ -59,7 +53,7 @@ const googleImageModel = process.env.GOOGLE_IMAGE_MODEL ?? 'gemini-3.1-flash-ima
 // 任何短于 480s 的配置都极可能在 2K 以上画质 + 多图场景下超时。
 const googleImageTimeoutMs = Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000)
 
-const demoResults: Record<RunnableFeature, string[]> = {
+const demoResults: Partial<Record<RunnableFeature, string[]>> = {
   'ai-fashion-photo': [
     'https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=900&h=1200&fit=crop',
     'https://images.unsplash.com/photo-1539109136881-3be0616acf4b?w=900&h=1200&fit=crop',
@@ -86,7 +80,8 @@ const demoResults: Record<RunnableFeature, string[]> = {
     'https://images.unsplash.com/photo-1556905055-8f358a7a47b2?w=900&h=1200&fit=crop',
     'https://images.unsplash.com/photo-1520975954732-35dd22299614?w=900&h=1200&fit=crop',
   ],
-  'pose-fission': getPoseFissionDemoUrls(),
+  // pose-fission 走 task-store 内的 runPoseFissionPipeline 直连分支，
+  // 不再经过 runThirdPartyWorkflow（也不消费此 demoResults['pose-fission']）。
 }
 
 export async function runThirdPartyWorkflow(
@@ -111,8 +106,12 @@ export async function runThirdPartyWorkflow(
     }
   }
 
-  if (input.featureType === 'pose-fission' && input.inputImages.length < 1) {
-    throw new Error('姿势裂变需要上传主图')
+  // pose-fission 不再经过 runThirdPartyWorkflow：task-store 直接调
+  // runPoseFissionPipeline 走流式持久化。这里仅在意外调用时给出明确报错。
+  if (input.featureType === 'pose-fission') {
+    throw new Error(
+      'pose-fission 已迁移至 task-store 内的 runPoseFissionPipeline 直连路径，不应进入 runThirdPartyWorkflow',
+    )
   }
 
   if (demoMode) {
@@ -311,9 +310,8 @@ function buildPrompt(featureType: RunnableFeature, params: TaskParams) {
     return buildAiFashionPhotoPrompt(aiParams)
   }
 
-  if (featureType === 'pose-fission') {
-    return buildPoseFissionPrompt(params as PoseFissionParams)
-  }
+  // pose-fission 已迁移至 runPoseFissionPipeline，不再经过本函数；
+  // photo-fission 走 runPhotoFissionPipeline 自带 prompt 构建。
 
   const replaceParams = params as BackgroundReplaceParams
   const elementType = getLabel(ELEMENT_REPLACE_TYPES, replaceParams.elementType)
@@ -344,12 +342,7 @@ function getInputImagePayload(input: ThirdPartyWorkflowInput): string | string[]
     return createElementReplaceReferenceSheet(input.inputImages[0], input.inputImages[1])
   }
 
-  if (input.featureType === 'pose-fission' && input.inputImages.length > 1) {
-    return createPoseFissionReferenceSheet(
-      input.inputImages,
-      input.params as PoseFissionParams,
-    )
-  }
+  // pose-fission 不进入 runRaycastImageEdits，无需在此处理多图拼板。
 
   return input.inputImages[0]
 }
@@ -429,6 +422,11 @@ async function runDemoWorkflow(input: ThirdPartyWorkflowInput) {
 
   const count = getGenerateCount(input.params)
   const urls = demoResults[input.featureType]
+  if (!urls || !urls.length) {
+    // pose-fission 不再走 runThirdPartyWorkflow（task-store 内直接调 runPoseFissionPipeline），
+    // 其他 feature 若未来移到外部 demo 路径，也需要在 demoResults 中显式登记。
+    throw new Error(`Demo 模式下未配置 ${input.featureType} 的占位结果`)
+  }
 
   return Array.from({ length: count }, (_, index) => {
     const url = urls[index % urls.length]

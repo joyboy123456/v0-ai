@@ -24,7 +24,7 @@ import {
   FASHION_PROMPT_MODES,
   FEATURE_LABELS,
   PHOTO_FISSION_CASES,
-  POSE_CASES,
+  POSE_FISSION_CASES,
   type AssetRecord,
   type CompanyModel,
   type FashionModelId,
@@ -34,7 +34,8 @@ import {
   type GenerationTask,
   type PhotoFissionCase,
   type PhotoFissionParams,
-  type PoseCase,
+  type PoseFissionCase,
+  type PoseFissionParams,
   type ResultAsset,
   type TaskStatus,
 } from "@/lib/types";
@@ -50,8 +51,6 @@ interface RightPanelProps {
   feature: FeatureType;
   activeTask: GenerationTask | null;
   tasks: GenerationTask[];
-  selectedPoseCaseId: string | null;
-  poseLibraryRequestKey: number;
   companyModels: CompanyModel[];
   fashionReferences: FashionReferenceImage[];
   companyModelLibraryRequestKey: number;
@@ -60,18 +59,17 @@ interface RightPanelProps {
   onRenameCompanyModel: (assetId: string, name: string) => void;
   onAddFashionReference: (reference: FashionReferenceImage) => void;
   onUseTaskAsFashionReference: (task: GenerationTask) => void;
-  onSelectPoseCase: (poseCase: PoseCase) => void;
+  onSelectPoseFissionCase: (poseFissionCase: PoseFissionCase) => void;
   onSelectPhotoFissionCase: (photoFissionCase: PhotoFissionCase) => void;
   onSelectTask: (taskId: string) => void;
   onRefreshTasks: () => void;
+  onDeleteTaskResult: (taskId: string, assetId: string) => Promise<void>;
 }
 
 export function RightPanel({
   feature,
   activeTask,
   tasks,
-  selectedPoseCaseId,
-  poseLibraryRequestKey,
   companyModels,
   fashionReferences,
   companyModelLibraryRequestKey,
@@ -80,10 +78,11 @@ export function RightPanel({
   onRenameCompanyModel,
   onAddFashionReference,
   onUseTaskAsFashionReference,
-  onSelectPoseCase,
+  onSelectPoseFissionCase,
   onSelectPhotoFissionCase,
   onSelectTask,
   onRefreshTasks,
+  onDeleteTaskResult,
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<
     "current" | "history" | "cases" | "my-model-library"
@@ -95,7 +94,7 @@ export function RightPanel({
   const [favoritesHydrated, setFavoritesHydrated] = useState(false);
   const [onlyCurrentFeature, setOnlyCurrentFeature] = useState(true);
   const [onlyFavorites, setOnlyFavorites] = useState(false);
-  const [poseCases, setPoseCases] = useState<PoseCase[]>(POSE_CASES);
+  const [poseCases, setPoseCases] = useState<PoseFissionCase[]>(POSE_FISSION_CASES);
   const [photoFissionCases, setPhotoFissionCases] =
     useState<PhotoFissionCase[]>(PHOTO_FISSION_CASES);
   const [sameStyleTaskId, setSameStyleTaskId] = useState<string | null>(null);
@@ -171,12 +170,6 @@ export function RightPanel({
   }, [isPoseFission, isPhotoFission]);
 
   useEffect(() => {
-    if (isPoseFission && poseLibraryRequestKey > 0) {
-      setActiveTab("cases");
-    }
-  }, [isPoseFission, poseLibraryRequestKey]);
-
-  useEffect(() => {
     if (feature === "ai-fashion-photo" && companyModelLibraryRequestKey > 0) {
       setActiveTab("my-model-library");
     }
@@ -193,7 +186,7 @@ export function RightPanel({
       });
       if (!response.ok) return;
 
-      const data = (await response.json()) as { cases: PoseCase[] };
+      const data = (await response.json()) as { cases: PoseFissionCase[] };
       if (!ignore) setPoseCases(data.cases);
     }
 
@@ -238,13 +231,24 @@ export function RightPanel({
     if (data.downloadUrl) window.open(data.downloadUrl, "_blank");
   };
 
-  // R5：photo-fission 重跑失败镜头。完成后立即刷新一次任务列表，
-  // 已有的 setActiveTaskId/轮询逻辑会在父组件继续追踪 status 变化。
-  const handleRetryShots = async (taskId: string, shotIds: string[]) => {
-    const response = await fetch(`/api/tasks/${taskId}/retry-shots`, {
+  // R5：photo-fission 重跑失败镜头 / PR4：pose-fission 重跑失败姿势。
+  // 两个 feature 的 retry 路由前缀和 body 字段名不同（shotIds vs templateIds），
+  // 但 RightPanel 的按钮交互保持一致（沿用 photo-fission 视觉与 loading 模式）。
+  const handleRetryShots = async (
+    task: GenerationTask,
+    shotIds: string[],
+  ) => {
+    const isPoseFissionTask = task.featureType === "pose-fission";
+    const endpoint = isPoseFissionTask
+      ? `/api/pose-fission/tasks/${task.taskId}/retry`
+      : `/api/tasks/${task.taskId}/retry-shots`;
+    const body = isPoseFissionTask
+      ? { templateIds: shotIds }
+      : { shotIds };
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ shotIds }),
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       const data = (await response.json().catch(() => ({}))) as {
@@ -263,6 +267,84 @@ export function RightPanel({
         currentTaskId === task.taskId ? null : currentTaskId,
       );
     }, 1600);
+  };
+
+  // 在 AI 服装大片瀑布流里删某张「效果不好」的生成图。
+  // 走 confirm 二次确认；删除后由父组件统一更新 tasks 列表。
+  const handleDeleteResult = async (taskId: string, assetId: string) => {
+    const ok = window.confirm("确定删除这张图吗？删除后无法恢复。");
+    if (!ok) return;
+    try {
+      await onDeleteTaskResult(taskId, assetId);
+      // 如果当前预览框正好预览这张图，关闭预览
+      setPreviewResult((current) =>
+        current?.image.assetId === assetId ? null : current,
+      );
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "删除失败");
+    }
+  };
+
+  // 软隐藏 photo-fission 整个案例。本地 state 同步过滤，避免等下次 reload。
+  const handleDeletePhotoFissionCase = async (caseId: string) => {
+    const ok = window.confirm("确定删除整个案例吗？");
+    if (!ok) return;
+    const response = await fetch(`/api/photo-fission/cases/${caseId}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      window.alert(data.error ?? `删除失败：HTTP ${response.status}`);
+      return;
+    }
+    setPhotoFissionCases((current) =>
+      current.filter((item) => item.id !== caseId),
+    );
+  };
+
+  // 软隐藏 photo-fission 案例中的某张 shot。前端从 resultImageUrls / shotLabels
+  // 中按 URL 同步过滤；后端按 URL 反查原始下标做隐藏。
+  const handleDeletePhotoFissionShot = async (
+    caseId: string,
+    shotUrl: string,
+  ) => {
+    const ok = window.confirm("确定删除这张镜头图吗？");
+    if (!ok) return;
+    const response = await fetch(
+      `/api/photo-fission/cases/${caseId}/shots`,
+      {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ shotUrl }),
+      },
+    );
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      window.alert(data.error ?? `删除失败：HTTP ${response.status}`);
+      return;
+    }
+    setPhotoFissionCases((current) =>
+      current.map((item) => {
+        if (item.id !== caseId) return item;
+        const filteredUrls: string[] = [];
+        const filteredLabels: string[] = [];
+        for (let index = 0; index < item.resultImageUrls.length; index += 1) {
+          const url = item.resultImageUrls[index];
+          if (url === shotUrl) continue;
+          filteredUrls.push(url);
+          filteredLabels.push(item.shotLabels[index] ?? `镜头 ${index + 1}`);
+        }
+        return {
+          ...item,
+          resultImageUrls: filteredUrls,
+          shotLabels: filteredLabels,
+        };
+      }),
+    );
   };
 
   if (activeTab === "my-model-library") {
@@ -346,8 +428,7 @@ export function RightPanel({
             )}
           </div>
 
-          {((isPoseFission && activeTab === "cases") ||
-            (isAiFashionPhoto && activeTab === "current")) && (
+          {isAiFashionPhoto && activeTab === "current" && (
             <div className="flex items-center gap-4 pl-4 text-sm text-foreground">
               <label className="flex cursor-pointer items-center gap-2">
                 <input
@@ -383,30 +464,16 @@ export function RightPanel({
       </header>
 
       {isPoseFission && activeTab === "cases" ? (
-        <PoseCaseLibrary
-          feature={feature}
-          poseCases={poseCases}
-          favorites={favorites}
-          onlyCurrentFeature={onlyCurrentFeature}
-          onlyFavorites={onlyFavorites}
-          selectedPoseCaseId={selectedPoseCaseId}
-          onSelectPoseCase={onSelectPoseCase}
-          onToggleFavorite={(caseId) => {
-            setFavorites((current) => {
-              const next = new Set(current);
-              if (next.has(caseId)) {
-                next.delete(caseId);
-              } else {
-                next.add(caseId);
-              }
-              return next;
-            });
-          }}
+        <PoseFissionCaseLibrary
+          cases={poseCases}
+          onSelectCase={onSelectPoseFissionCase}
         />
       ) : isPhotoFission && activeTab === "cases" ? (
         <PhotoFissionCaseLibrary
           cases={photoFissionCases}
           onSelectCase={onSelectPhotoFissionCase}
+          onDeleteCase={handleDeletePhotoFissionCase}
+          onDeleteShot={handleDeletePhotoFissionShot}
         />
       ) : activeTab === "history" ? (
         <TaskHistory
@@ -439,6 +506,7 @@ export function RightPanel({
           onBatchDownload={handleBatchDownload}
           onPreviewImage={(image, task) => setPreviewResult({ image, task })}
           onUseSameStyle={handleUseSameStyle}
+          onDeleteResult={handleDeleteResult}
           onToggleFavorite={(assetId) => {
             setFavorites((current) => {
               const next = new Set(current);
@@ -582,6 +650,7 @@ function AiFashionMasonryGallery({
   onBatchDownload,
   onPreviewImage,
   onUseSameStyle,
+  onDeleteResult,
   onToggleFavorite,
 }: {
   items: ResultPreview[];
@@ -592,6 +661,7 @@ function AiFashionMasonryGallery({
   onBatchDownload: () => void;
   onPreviewImage: (image: ResultAsset, task: GenerationTask) => void;
   onUseSameStyle: (task: GenerationTask) => void;
+  onDeleteResult: (taskId: string, assetId: string) => void;
   onToggleFavorite: (assetId: string) => void;
 }) {
   const visibleItems = onlyFavorites
@@ -667,6 +737,18 @@ function AiFashionMasonryGallery({
                       aria-label="下载"
                     >
                       <Download className="h-4 w-4 text-white/80" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDeleteResult(task.taskId, image.assetId);
+                      }}
+                      className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60 hover:bg-red-500/80"
+                      aria-label="删除"
+                      title="删除这张图（无法恢复）"
+                    >
+                      <Trash2 className="h-4 w-4 text-white/80" />
                     </button>
                   </div>
 
@@ -1420,107 +1502,110 @@ function ModelCard({
   );
 }
 
-function PoseCaseLibrary({
-  feature,
-  poseCases,
-  favorites,
-  onlyCurrentFeature,
-  onlyFavorites,
-  selectedPoseCaseId,
-  onSelectPoseCase,
-  onToggleFavorite,
+/**
+ * 姿势裂变案例库 Tab：每个 case 一张大卡片，左侧主图 + 右侧 N 张套图网格，
+ * 底部「做同款」按钮。完全参照 PhotoFissionCaseLibrary 的视觉与交互模式。
+ * 结果图缺失时显示「示例图生成中」占位（CaseShotThumb 内自管 onError）。
+ */
+function PoseFissionCaseLibrary({
+  cases,
+  onSelectCase,
 }: {
-  feature: FeatureType;
-  poseCases: PoseCase[];
-  favorites: Set<string>;
-  onlyCurrentFeature: boolean;
-  onlyFavorites: boolean;
-  selectedPoseCaseId: string | null;
-  onSelectPoseCase: (poseCase: PoseCase) => void;
-  onToggleFavorite: (caseId: string) => void;
+  cases: PoseFissionCase[];
+  onSelectCase: (poseFissionCase: PoseFissionCase) => void;
 }) {
-  const cases = poseCases.filter((poseCase) => {
-    if (onlyCurrentFeature && poseCase.featureType !== feature) return false;
-    if (onlyFavorites && !favorites.has(poseCase.id)) return false;
-    return true;
-  });
+  if (!cases.length) {
+    return (
+      <div className="flex-1 overflow-y-auto p-5">
+        <div className="min-h-[420px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mx-4 my-8">
+          <div className="w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
+            <ImageIcon className="w-5 h-5 text-muted-foreground" />
+          </div>
+          <p className="text-[13px] font-medium text-foreground">暂无案例</p>
+          <p className="mt-2 max-w-[360px] text-[12px] text-muted-foreground leading-relaxed">
+            案例库正在筹备中，敬请期待。
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 overflow-y-auto p-5">
-      {cases.length > 0 ? (
-        <div className="columns-2 lg:columns-3 xl:columns-4 gap-2">
-          {cases.map((poseCase) => {
-            const isFavorite = favorites.has(poseCase.id);
-            const isSelected = selectedPoseCaseId === poseCase.id;
+      <div className="space-y-6">
+        {cases.map((poseCase) => {
+          // pose-fission case 每张图对应一个姿势模板（顺序与 poseTemplateIds 对齐），
+          // 没有 shotLabels 字段：用「姿势 N」自动编号即可，足以做视觉占位。
+          const shotCount = poseCase.resultImageUrls.length;
 
-            return (
-              <div
-                key={poseCase.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => onSelectPoseCase(poseCase)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    onSelectPoseCase(poseCase);
-                  }
-                }}
-                className={cn(
-                  "group relative cursor-pointer overflow-hidden rounded-xl border bg-card text-left transition-colors break-inside-avoid mb-2 inline-block w-full",
-                  isSelected
-                    ? "border-primary shadow-[0_0_0_1px_var(--primary)]"
-                    : "border-border hover:border-primary/60",
-                )}
-              >
-                <img
-                  src={poseCase.imageUrl}
-                  alt={poseCase.name}
-                  className="w-full h-auto block bg-secondary"
-                />
-                <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-background/85 px-2 py-1 text-[10px] text-foreground">
-                  <ImageIcon className="h-3 w-3" />
-                  姿势裂变
-                </span>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onToggleFavorite(poseCase.id);
-                  }}
-                  className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-full bg-background/85 opacity-0 transition-opacity group-hover:opacity-100"
-                  aria-label="收藏案例"
-                >
-                  <Star
-                    className={cn(
-                      "h-4 w-4",
-                      isFavorite
-                        ? "fill-yellow-400 text-yellow-400"
-                        : "text-muted-foreground",
-                    )}
-                  />
-                </button>
-                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent p-3 opacity-0 transition-opacity group-hover:opacity-100">
-                  <p className="text-sm font-medium text-white">
-                    {poseCase.name}
+          return (
+            <article
+              key={poseCase.id}
+              className="rounded-md border border-border bg-card p-4"
+            >
+              <div className="flex flex-col gap-4 lg:flex-row">
+                <div className="lg:w-[260px] shrink-0 space-y-3">
+                  <div className="relative aspect-[3/4] overflow-hidden rounded-md border border-border bg-background">
+                    <CaseImage
+                      src={poseCase.mainImageUrl}
+                      alt={poseCase.name}
+                    />
+                    <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded bg-background/85 px-2 py-1 text-[10px] text-foreground">
+                      <ImageIcon className="h-3 w-3" />
+                      姿势裂变
+                    </span>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground">
+                      {poseCase.name}
+                    </h3>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                      {poseCase.description}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+                    <span className="rounded border border-border bg-secondary px-2 py-0.5">
+                      比例 {poseCase.imageRatio}
+                    </span>
+                    <span className="rounded border border-border bg-secondary px-2 py-0.5">
+                      分辨率 {poseCase.resolution.toUpperCase()}
+                    </span>
+                    <span className="rounded border border-border bg-secondary px-2 py-0.5">
+                      {shotCount} 个姿势
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex-1 space-y-3">
+                  <p className="text-xs text-muted-foreground">
+                    生成效果（{shotCount} 张）
                   </p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {poseCase.resultImageUrls.map((url, index) => (
+                      <CaseShotThumb
+                        key={`${poseCase.id}-${index}-${url}`}
+                        src={url}
+                        label={`姿势 ${index + 1}`}
+                      />
+                    ))}
+                  </div>
                 </div>
               </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="min-h-[420px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mx-4 my-8">
-          <div className="w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
-            <Star className="w-5 h-5 text-muted-foreground" />
-          </div>
-          <p className="text-[13px] font-medium text-foreground">
-            暂无收藏案例
-          </p>
-          <p className="mt-2 max-w-[360px] text-[12px] text-muted-foreground leading-relaxed">
-            取消「仅看收藏」后选择喜欢的姿势案例。
-          </p>
-        </div>
-      )}
+
+              <div className="mt-4 flex items-center justify-end gap-2 border-t border-border pt-3">
+                <button
+                  type="button"
+                  onClick={() => onSelectCase(poseCase)}
+                  className="inline-flex items-center gap-2 rounded-full border border-primary bg-primary/10 px-4 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  做同款
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1533,9 +1618,13 @@ function PoseCaseLibrary({
 function PhotoFissionCaseLibrary({
   cases,
   onSelectCase,
+  onDeleteCase,
+  onDeleteShot,
 }: {
   cases: PhotoFissionCase[];
   onSelectCase: (photoFissionCase: PhotoFissionCase) => void;
+  onDeleteCase: (caseId: string) => void;
+  onDeleteShot: (caseId: string, shotUrl: string) => void;
 }) {
   if (!cases.length) {
     return (
@@ -1607,13 +1696,25 @@ function PhotoFissionCaseLibrary({
                         photoFissionCase.shotLabels[index] ??
                         `镜头 ${index + 1}`
                       }
+                      onDelete={() =>
+                        onDeleteShot(photoFissionCase.id, url)
+                      }
                     />
                   ))}
                 </div>
               </div>
             </div>
 
-            <div className="mt-4 flex justify-end border-t border-border pt-3">
+            <div className="mt-4 flex items-center justify-end gap-2 border-t border-border pt-3">
+              <button
+                type="button"
+                onClick={() => onDeleteCase(photoFissionCase.id)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-transparent px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:border-red-500/60 hover:text-red-400"
+                title="删除整个案例（软隐藏，不影响生成的图片）"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                删除案例
+              </button>
               <button
                 type="button"
                 onClick={() => onSelectCase(photoFissionCase)}
@@ -1633,12 +1734,22 @@ function PhotoFissionCaseLibrary({
 /**
  * 案例库 3×3 网格里的单张结果图，
  * 加载失败时切到「示例图生成中」灰色占位（不影响其它图加载）。
+ *
+ * 提供 onDelete 时，hover 右上角显示垃圾桶按钮，可单独删除该 shot。
  */
-function CaseShotThumb({ src, label }: { src: string; label: string }) {
+function CaseShotThumb({
+  src,
+  label,
+  onDelete,
+}: {
+  src: string;
+  label: string;
+  onDelete?: () => void;
+}) {
   const [hasError, setHasError] = useState(false);
 
   return (
-    <div className="relative aspect-[3/4] overflow-hidden rounded border border-border bg-secondary">
+    <div className="group/shot relative aspect-[3/4] overflow-hidden rounded border border-border bg-secondary">
       {hasError ? (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2 px-2 text-center text-[10px] text-muted-foreground">
           <ImageIcon className="h-4 w-4" />
@@ -1656,6 +1767,20 @@ function CaseShotThumb({ src, label }: { src: string; label: string }) {
       <span className="pointer-events-none absolute left-1.5 top-1.5 rounded bg-background/85 px-1.5 py-0.5 text-[10px] font-medium text-foreground">
         {label}
       </span>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+          className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white/80 opacity-0 transition-opacity hover:bg-red-500/80 hover:text-white group-hover/shot:opacity-100"
+          aria-label="删除这张图"
+          title="删除这张镜头图"
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
+      )}
     </div>
   );
 }
@@ -1692,42 +1817,57 @@ function TaskStatusCard({
 }: {
   task: GenerationTask;
   onBatchDownload: () => void;
-  onRetryShots?: (taskId: string, shotIds: string[]) => Promise<void>;
+  onRetryShots?: (task: GenerationTask, shotIds: string[]) => Promise<void>;
 }) {
   const isDone = task.status === "success" || task.status === "partial";
   const isPhotoFission = task.featureType === "photo-fission";
+  const isPoseFission = task.featureType === "pose-fission";
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
 
-  // photo-fission 失败镜头：shotPlan 中存在但 results 中没有对应 shotId 的项。
+  // photo-fission：shotPlan 中存在但 results 中没有对应 shotId 的项。
+  // pose-fission：poseTemplateIds 中存在但 results 中没有对应 shotId（=templateId）的项。
   // 仅在 partial 或 (failed && 已有部分结果) 时展示按钮。
   const failedShotIds = useMemo(() => {
-    if (!isPhotoFission) return [] as string[];
-    const params = task.params as Partial<PhotoFissionParams>;
-    if (!Array.isArray(params.shotPlan)) return [];
     const succeeded = new Set(
       task.results
         .map((r) => r.shotId)
         .filter((id): id is string => Boolean(id)),
     );
-    return params.shotPlan
-      .map((shot) => shot.shotId)
-      .filter((id) => !succeeded.has(id));
-  }, [isPhotoFission, task.params, task.results]);
+
+    if (isPhotoFission) {
+      const params = task.params as Partial<PhotoFissionParams>;
+      if (!Array.isArray(params.shotPlan)) return [];
+      return params.shotPlan
+        .map((shot) => shot.shotId)
+        .filter((id) => !succeeded.has(id));
+    }
+
+    if (isPoseFission) {
+      const params = task.params as Partial<PoseFissionParams>;
+      if (!Array.isArray(params.poseTemplateIds)) return [];
+      return params.poseTemplateIds.filter((id) => !succeeded.has(id));
+    }
+
+    return [] as string[];
+  }, [isPhotoFission, isPoseFission, task.params, task.results]);
 
   const canRetryShots =
-    isPhotoFission &&
+    (isPhotoFission || isPoseFission) &&
     onRetryShots &&
     failedShotIds.length > 0 &&
     (task.status === "partial" ||
       (task.status === "failed" && task.results.length > 0));
+
+  // photo-fission 用「镜头」措辞，pose-fission 用「姿势」措辞，沿用各 feature 既有产品文案。
+  const retryLabel = isPoseFission ? "失败姿势" : "失败镜头";
 
   const handleRetry = async () => {
     if (!onRetryShots || retrying) return;
     setRetryError(null);
     setRetrying(true);
     try {
-      await onRetryShots(task.taskId, failedShotIds);
+      await onRetryShots(task, failedShotIds);
     } catch (error) {
       setRetryError(error instanceof Error ? error.message : "重跑失败");
     } finally {
@@ -1758,14 +1898,18 @@ function TaskStatusCard({
               onClick={handleRetry}
               disabled={retrying}
               className="px-3 py-2 rounded-md border border-primary/60 bg-primary/10 text-primary text-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary hover:text-primary-foreground transition-colors"
-              title="只重跑当前未成功的镜头，已有图保留"
+              title={
+                isPoseFission
+                  ? "只重跑当前未成功的姿势，已有图保留"
+                  : "只重跑当前未成功的镜头，已有图保留"
+              }
             >
               <RefreshCw
                 className={cn("w-4 h-4", retrying && "animate-spin")}
               />
               {retrying
                 ? "重跑中..."
-                : `重新生成失败镜头 (${failedShotIds.length})`}
+                : `重新生成${retryLabel} (${failedShotIds.length})`}
             </button>
           )}
           <button
@@ -1787,7 +1931,9 @@ function TaskStatusCard({
       </div>
       <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
         <span>进度 {task.progress}%</span>
-        {!isPhotoFission && <span>额度 -{task.creditsUsed}</span>}
+        {!isPhotoFission && !isPoseFission && (
+          <span>额度 -{task.creditsUsed}</span>
+        )}
       </div>
     </div>
   );
