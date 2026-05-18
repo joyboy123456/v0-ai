@@ -23,6 +23,7 @@ These guides help you **ask the right questions before coding**.
 |-------|---------|-------------|
 | [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md) | Identify patterns and reduce duplication | When you notice repeated patterns |
 | [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md) | Think through data flow across layers | Features spanning multiple layers |
+| [External AI API Thinking Guide](./external-ai-api-thinking-guide.md) | Checklist before calling any external AI / image / LLM API | Adding/modifying calls to Google Gemini, Qiniu, OpenAI, etc. |
 
 ---
 
@@ -46,6 +47,15 @@ These guides help you **ask the right questions before coding**.
 - [ ] **You're creating a new utility/helper function** ← Search first!
 
 → Read [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md)
+
+### When to Think About External AI API Calls
+
+- [ ] Calling Google Gemini / OpenAI / Qiniu / any external AI provider
+- [ ] Adding retry / error handling / rate-limit logic
+- [ ] Got a bug report about "generation failed / hung / rate-limited"
+- [ ] Adding a new image-generation provider
+
+→ Read [External AI API Thinking Guide](./external-ai-api-thinking-guide.md)
 
 ---
 

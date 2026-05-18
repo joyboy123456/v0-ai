@@ -112,7 +112,6 @@ function CompanyModelDialog({
     setIsUploading(true)
 
     try {
-      const preview = URL.createObjectURL(file)
       const formData = new FormData()
       formData.append('file', file)
 
@@ -128,13 +127,16 @@ function CompanyModelDialog({
 
       const data = (await response.json()) as {
         assetId: string
+        url: string
         fileName: string
         width: number
         height: number
       }
+      // A-fix: 使用 server 返回的稳定 URL（/generated/assets/xxx.png），
+      // 刷新页面或换浏览器都能正常显示，不再使用 blob URL。
       const model: CompanyModel = {
         assetId: data.assetId,
-        preview,
+        preview: data.url,
         name: data.fileName,
         width: data.width,
         height: data.height,

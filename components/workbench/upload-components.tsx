@@ -1,19 +1,198 @@
-'use client'
+"use client";
 
-import { useRef, useState } from 'react'
-import { Loader2, Upload, X } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import type { UploadedImage } from '@/lib/types'
+import { useRef, useState } from "react";
+import { Loader2, Upload, X } from "lucide-react";
+import { cn, validateUploadSize } from "@/lib/utils";
+import type { UploadedImage } from "@/lib/types";
 
 interface UploadBoxProps {
-  label: string
-  helper: string
-  image: UploadedImage | null
-  onUploaded: (image: UploadedImage) => void
-  onRemove: () => void
-  required?: boolean
-  className?: string
-  variant?: 'standard' | 'compact'
+  label: string;
+  helper: string;
+  image: UploadedImage | null;
+  onUploaded: (image: UploadedImage) => void;
+  onRemove: () => void;
+  required?: boolean;
+  className?: string;
+  variant?: "standard" | "compact";
+  optimizeForGeneration?: boolean;
+}
+
+interface PreparedGenerationUpload {
+  file: File;
+  width: number;
+  height: number;
+  optimized: boolean;
+}
+
+interface LoadedImage {
+  image: HTMLImageElement;
+  width: number;
+  height: number;
+  release: () => void;
+}
+
+const GENERATION_UPLOAD_MAX_SIDE = 1600;
+const GENERATION_UPLOAD_JPEG_QUALITY = 0.8;
+const GENERATION_UPLOAD_MIME_TYPE = "image/jpeg";
+const OPTIMIZABLE_GENERATION_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+]);
+
+export async function prepareImageForGenerationUpload(
+  file: File,
+  optimizeForGeneration = false,
+): Promise<PreparedGenerationUpload> {
+  const loaded = await loadImageFromFile(file).catch(() => null);
+  if (!loaded) {
+    return {
+      file,
+      width: 0,
+      height: 0,
+      optimized: false,
+    };
+  }
+
+  const { image, width, height, release } = loaded;
+
+  try {
+    if (!optimizeForGeneration || !canOptimizeImage(file)) {
+      return {
+        file,
+        width,
+        height,
+        optimized: false,
+      };
+    }
+
+    const canvas = document.createElement("canvas");
+    if (
+      typeof canvas.getContext !== "function" ||
+      typeof canvas.toBlob !== "function"
+    ) {
+      return {
+        file,
+        width,
+        height,
+        optimized: false,
+      };
+    }
+
+    const scale = Math.min(1, GENERATION_UPLOAD_MAX_SIDE / Math.max(width, height));
+    const targetWidth = Math.max(1, Math.round(width * scale));
+    const targetHeight = Math.max(1, Math.round(height * scale));
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return {
+        file,
+        width,
+        height,
+        optimized: false,
+      };
+    }
+
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, targetWidth, targetHeight);
+    context.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+    const blob = await canvasToBlob(
+      canvas,
+      GENERATION_UPLOAD_MIME_TYPE,
+      GENERATION_UPLOAD_JPEG_QUALITY,
+    );
+    if (!blob || blob.size <= 0) {
+      return {
+        file,
+        width,
+        height,
+        optimized: false,
+      };
+    }
+
+    if (blob.size >= file.size && targetWidth === width && targetHeight === height) {
+      return {
+        file,
+        width,
+        height,
+        optimized: false,
+      };
+    }
+
+    const optimizedFile = new File(
+      [blob],
+      replaceFileExtension(file.name, ".jpg"),
+      {
+        type: GENERATION_UPLOAD_MIME_TYPE,
+        lastModified: file.lastModified,
+      },
+    );
+
+    return {
+      file: optimizedFile,
+      width: targetWidth,
+      height: targetHeight,
+      optimized: true,
+    };
+  } finally {
+    release();
+  }
+}
+
+function canOptimizeImage(file: File) {
+  const mimeType = file.type.toLowerCase();
+  return OPTIMIZABLE_GENERATION_MIME_TYPES.has(mimeType);
+}
+
+function loadImageFromFile(file: File): Promise<LoadedImage> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === "undefined" || typeof Image === "undefined") {
+      reject(new Error("当前环境不支持读取图片尺寸"));
+      return;
+    }
+
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    const release = () => URL.revokeObjectURL(url);
+
+    image.onload = () => {
+      const width = image.naturalWidth || image.width;
+      const height = image.naturalHeight || image.height;
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        release();
+        reject(new Error("无法读取图片尺寸"));
+        return;
+      }
+
+      resolve({ image, width, height, release });
+    };
+
+    image.onerror = () => {
+      release();
+      reject(new Error("无法读取图片尺寸"));
+    };
+
+    image.src = url;
+  });
+}
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality: number,
+): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+}
+
+function replaceFileExtension(fileName: string, extension: string) {
+  const safeName = fileName.trim() || "image";
+  return /\.[a-z0-9]+$/i.test(safeName)
+    ? safeName.replace(/\.[a-z0-9]+$/i, extension)
+    : `${safeName}${extension}`;
 }
 
 export function UploadBox({
@@ -24,42 +203,63 @@ export function UploadBox({
   onRemove,
   required = true,
   className,
-  variant = 'standard',
+  variant = "standard",
+  optimizeForGeneration = false,
 }: UploadBoxProps) {
-  const inputRef = useRef<HTMLInputElement>(null)
-  const [isUploading, setIsUploading] = useState(false)
-  const [error, setError] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [error, setError] = useState("");
 
   const handleChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    event.target.value = ''
+    const file = event.target.files?.[0];
+    event.target.value = "";
 
-    if (!file) return
+    if (!file) return;
 
-    setError('')
-    setIsUploading(true)
+    const sizeError = optimizeForGeneration ? null : validateUploadSize(file);
+    if (sizeError) {
+      setError(sizeError);
+      return;
+    }
+
+    setError("");
+    setIsUploading(true);
 
     try {
-      const preview = URL.createObjectURL(file)
-      const formData = new FormData()
-      formData.append('file', file)
+      const prepared = await prepareImageForGenerationUpload(
+        file,
+        optimizeForGeneration,
+      );
+      const preparedSizeError = validateUploadSize(prepared.file);
+      if (preparedSizeError) {
+        setError(preparedSizeError);
+        return;
+      }
 
-      const response = await fetch('/api/assets/upload', {
-        method: 'POST',
+      const preview = URL.createObjectURL(prepared.file);
+      const formData = new FormData();
+      formData.append("file", prepared.file);
+      if (prepared.width > 0 && prepared.height > 0) {
+        formData.append("width", String(prepared.width));
+        formData.append("height", String(prepared.height));
+      }
+
+      const response = await fetch("/api/assets/upload", {
+        method: "POST",
         body: formData,
-      })
+      });
 
       if (!response.ok) {
-        const data = (await response.json()) as { error?: string }
-        throw new Error(data.error || '上传失败')
+        const data = (await response.json()) as { error?: string };
+        throw new Error(data.error || "上传失败");
       }
 
       const data = (await response.json()) as {
-        assetId: string
-        fileName: string
-        width: number
-        height: number
-      }
+        assetId: string;
+        fileName: string;
+        width: number;
+        height: number;
+      };
 
       onUploaded({
         assetId: data.assetId,
@@ -67,69 +267,77 @@ export function UploadBox({
         name: data.fileName,
         width: data.width,
         height: data.height,
-      })
+      });
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : '上传失败')
+      setError(uploadError instanceof Error ? uploadError.message : "上传失败");
     } finally {
-      setIsUploading(false)
+      setIsUploading(false);
     }
-  }
+  };
 
   return (
-    <div className={cn('space-y-2', className)}>
-      <div className="flex items-center gap-1">
-        {required && <span className="text-primary">*</span>}
-        <span className="text-sm text-foreground">{label}</span>
+    <div className={cn("space-y-2.5", className)}>
+      <div className="flex items-center gap-1.5">
+        <span className="text-[14px] font-medium text-foreground tracking-wide">
+          {label}
+        </span>
+        {required && <span className="text-primary/70 text-xs mt-0.5">*</span>}
       </div>
 
-      {variant === 'compact' ? (
+      {variant === "compact" ? (
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
           className={cn(
-            'relative w-full min-h-[132px] rounded-md border border-border bg-secondary',
-            'flex items-center gap-3 overflow-hidden p-3 text-left transition-colors',
-            'hover:border-primary/60 hover:bg-primary/5',
-            image && 'border-primary/40',
+            "group relative w-full min-h-[120px] rounded-md border border-border bg-transparent",
+            "flex items-center gap-3 overflow-hidden p-3 text-left transition-colors",
+            "hover:bg-white/[0.02] hover:border-muted-foreground",
+            image && "border-primary/40 bg-primary/[0.02]",
           )}
         >
-          <div className="flex flex-1 flex-col items-center justify-center gap-2">
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-2">
             {isUploading ? (
               <Loader2 className="w-5 h-5 text-primary animate-spin" />
             ) : (
-              <span className="text-2xl leading-none text-foreground">+</span>
+              <div className="w-8 h-8 rounded-md bg-white/[0.04] border border-border flex items-center justify-center text-muted-foreground transition-colors group-hover:text-foreground group-hover:bg-white/[0.08]">
+                <Upload className="w-4 h-4" />
+              </div>
             )}
-            <span className="max-w-[138px] text-center text-[11px] font-medium leading-relaxed text-foreground">
-              {isUploading ? '上传中...' : helper}
+            <span className="max-w-[138px] text-center text-[12px] text-muted-foreground transition-colors group-hover:text-foreground">
+              {isUploading ? "上传中..." : helper}
             </span>
           </div>
 
-          <div className="relative h-[112px] w-[82px] shrink-0 overflow-hidden rounded-md border border-border bg-background">
+          <div className="relative h-[96px] w-[72px] shrink-0 overflow-hidden rounded-sm border border-border bg-background transition-colors group-hover:border-muted-foreground">
             {image ? (
               <>
-                <img src={image.preview} alt={image.name} className="h-full w-full object-cover" />
+                <img
+                  src={image.preview}
+                  alt={image.name}
+                  className="h-full w-full object-cover"
+                />
                 <span
                   role="button"
                   tabIndex={0}
                   onClick={(event) => {
-                    event.stopPropagation()
-                    onRemove()
+                    event.stopPropagation();
+                    onRemove();
                   }}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      event.stopPropagation()
-                      onRemove()
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onRemove();
                     }
                   }}
-                  className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background/90 hover:bg-destructive hover:text-destructive-foreground"
+                  className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-destructive"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <X className="h-3 w-3" />
                 </span>
               </>
             ) : (
-              <div className="flex h-full w-full items-end justify-center bg-card p-1">
-                <span className="rounded bg-background/80 px-1.5 py-0.5 text-[10px] text-foreground">
+              <div className="flex h-full w-full items-end justify-center bg-secondary p-1">
+                <span className="rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground border border-border">
                   示例
                 </span>
               </div>
@@ -141,54 +349,76 @@ export function UploadBox({
           type="button"
           onClick={() => inputRef.current?.click()}
           className={cn(
-            'relative w-full min-h-[168px] rounded-lg border border-dashed border-border bg-secondary',
-            'flex flex-col items-center justify-center gap-2 overflow-hidden transition-colors',
-            'hover:border-primary/60 hover:bg-primary/5',
-            image && 'border-solid',
+            "group relative w-full min-h-[140px] rounded-md border border-dashed border-border bg-transparent",
+            "flex flex-col items-center justify-center gap-3 overflow-hidden transition-colors",
+            "hover:border-muted-foreground hover:bg-white/[0.02]",
+            image && "border-solid border-primary/40 bg-primary/[0.02]",
           )}
         >
           {image ? (
             <>
-              <img src={image.preview} alt={image.name} className="absolute inset-0 w-full h-full object-contain p-2" />
-              <span className="absolute bottom-2 left-2 max-w-[80%] truncate rounded bg-background/80 px-2 py-1 text-xs text-foreground">
+              <img
+                src={image.preview}
+                alt={image.name}
+                className="absolute inset-0 w-full h-full object-contain p-2"
+              />
+              <span className="absolute bottom-2 left-2 max-w-[80%] truncate rounded bg-black/60 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
                 {image.name}
               </span>
               <span
                 role="button"
                 tabIndex={0}
                 onClick={(event) => {
-                  event.stopPropagation()
-                  onRemove()
+                  event.stopPropagation();
+                  onRemove();
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    event.stopPropagation()
-                    onRemove()
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onRemove();
                   }
                 }}
-                className="absolute top-2 right-2 w-7 h-7 rounded-full bg-background/90 border border-border flex items-center justify-center hover:bg-destructive hover:text-destructive-foreground"
+                className="absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-destructive"
               >
-                <X className="w-4 h-4" />
+                <X className="h-3.5 w-3.5" />
               </span>
             </>
           ) : (
             <>
               {isUploading ? (
-                <Loader2 className="w-6 h-6 text-primary animate-spin" />
+                <Loader2 className="h-6 w-6 text-primary animate-spin" />
               ) : (
-                <Upload className="w-6 h-6 text-muted-foreground" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white/[0.02] text-muted-foreground transition-colors group-hover:bg-white/[0.06] group-hover:text-foreground">
+                  <Upload className="h-5 w-5" />
+                </div>
               )}
-              <span className="text-sm text-foreground">{isUploading ? '上传中...' : '上传图片'}</span>
-              <span className="max-w-[220px] text-center text-xs text-muted-foreground leading-relaxed">{helper}</span>
+              <div className="flex flex-col items-center gap-1 px-4">
+                <span className="text-[13px] font-medium text-foreground">
+                  {isUploading ? "上传中..." : "点击或拖拽上传"}
+                </span>
+                <span className="max-w-[220px] text-center text-[11px] text-muted-foreground leading-relaxed">
+                  {helper}
+                </span>
+              </div>
             </>
           )}
         </button>
       )}
 
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && (
+        <p className="text-[11px] text-destructive flex items-center gap-1.5">
+          <X className="w-3 h-3" /> {error}
+        </p>
+      )}
 
-      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={handleChange} />
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleChange}
+      />
     </div>
-  )
+  );
 }

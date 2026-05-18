@@ -1,76 +1,95 @@
-'use client'
+"use client";
 
-import { Camera, Layers2, PersonStanding, Repeat2 } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { FEATURES, type FeatureType } from '@/lib/types'
+import { Camera, Layers2, PersonStanding, Repeat2 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { FEATURES, type FeatureType } from "@/lib/types";
 
 interface FeatureSidebarProps {
-  activeFeature: FeatureType
-  onFeatureChange: (feature: FeatureType) => void
+  activeFeature: FeatureType;
+  onFeatureChange: (feature: FeatureType) => void;
 }
 
 const featureIcons = {
-  'ai-fashion-photo': Camera,
-  'element-replace': Layers2,
-  'photo-fission': Repeat2,
-  'pose-fission': PersonStanding,
-} satisfies Record<FeatureType, typeof Camera>
+  "ai-fashion-photo": Camera,
+  "element-replace": Layers2,
+  "photo-fission": Repeat2,
+  "pose-fission": PersonStanding,
+} satisfies Record<FeatureType, typeof Camera>;
 
-export function FeatureSidebar({ activeFeature, onFeatureChange }: FeatureSidebarProps) {
+export function FeatureSidebar({
+  activeFeature,
+  onFeatureChange,
+}: FeatureSidebarProps) {
   return (
-    <aside className="w-[260px] h-screen bg-[#0a0d11] border-r border-border flex flex-col shrink-0">
-      <div className="px-4 py-5 border-b border-border">
-        <p className="text-xs text-primary">MVP 工作台</p>
-        <h1 className="mt-1 text-lg font-semibold text-foreground">AI服装电商图片生成</h1>
+    <aside className="w-[260px] h-screen bg-sidebar border-r border-border flex flex-col shrink-0">
+      <div className="px-6 py-6 border-b border-border/50">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="w-1.5 h-1.5 rounded-full bg-primary" />
+          <p className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
+            AI Workspace
+          </p>
+        </div>
+        <h1 className="text-base font-semibold text-foreground tracking-tight">
+          智能生成工作台
+        </h1>
       </div>
 
-      <nav className="flex-1 py-2">
-        <ul className="space-y-1">
+      <nav className="flex-1 px-3 py-4">
+        <ul className="space-y-1.5">
           {FEATURES.map((feature) => {
-            const Icon = featureIcons[feature.id]
-            const isActive = activeFeature === feature.id
-            const isComingSoon = feature.status === 'coming-soon'
+            const Icon = featureIcons[feature.id];
+            const isActive = activeFeature === feature.id;
+            const isComingSoon = feature.status === "coming-soon";
 
             return (
               <li key={feature.id}>
                 <button
                   onClick={() => onFeatureChange(feature.id)}
                   className={cn(
-                    'w-full px-4 py-3 flex items-start gap-3 transition-all text-left border-l-2',
+                    "w-full p-2.5 flex items-start gap-3 rounded-md transition-colors text-left group",
                     isActive
-                      ? 'bg-secondary/50 border-primary'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-secondary/30 border-transparent',
+                      ? "bg-white/[0.06] text-foreground"
+                      : "text-muted-foreground hover:bg-white/[0.03] hover:text-foreground",
                   )}
                 >
                   <div
                     className={cn(
-                      'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5',
-                      isActive ? 'bg-primary/20 text-primary' : 'bg-secondary text-muted-foreground',
+                      "w-7 h-7 rounded-md flex items-center justify-center shrink-0 transition-colors",
+                      isActive
+                        ? "bg-primary/10 text-primary"
+                        : "bg-transparent text-muted-foreground group-hover:text-foreground",
                     )}
                   >
                     <Icon className="w-4 h-4" />
                   </div>
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 pt-1">
                     <div className="flex items-center gap-2">
-                      <span className={cn('font-medium text-sm', isActive && 'text-foreground')}>
+                      <span
+                        className={cn(
+                          "text-[13px] font-medium transition-colors",
+                          isActive
+                            ? "text-foreground"
+                            : "text-muted-foreground group-hover:text-foreground",
+                        )}
+                      >
                         {feature.name}
                       </span>
                       {isComingSoon && (
-                        <span className="px-1.5 py-0.5 rounded bg-muted text-[10px] text-muted-foreground">
-                          即将上线
+                        <span className="px-1.5 py-0.5 rounded-md bg-secondary/80 text-[9px] font-medium text-muted-foreground uppercase tracking-wider">
+                          Beta
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed">
+                    <p className="text-[11px] text-muted-foreground/70 mt-0.5 line-clamp-2 leading-relaxed transition-colors group-hover:text-muted-foreground">
                       {feature.description}
                     </p>
                   </div>
                 </button>
               </li>
-            )
+            );
           })}
         </ul>
       </nav>
     </aside>
-  )
+  );
 }

@@ -4,9 +4,18 @@ import { useCallback, useEffect, useState } from 'react'
 import { FeatureSidebar } from './feature-sidebar'
 import { LeftPanel } from './left-panel'
 import { RightPanel } from './right-panel'
-import { type CompanyModel, type FeatureType, type GenerationTask, type PoseCase } from '@/lib/types'
+import {
+  type CompanyModel,
+  type FashionReferenceImage,
+  type FashionRemixRequest,
+  type FeatureType,
+  type GenerationTask,
+  type PhotoFissionCase,
+  type PoseCase,
+} from '@/lib/types'
 
 const companyModelsStorageKey = 'fashion_company_models'
+const maxFashionReferences = 10
 
 export function Workbench() {
   const [currentFeature, setCurrentFeature] = useState<FeatureType>('ai-fashion-photo')
@@ -15,17 +24,14 @@ export function Workbench() {
   const [selectedPoseCase, setSelectedPoseCase] = useState<PoseCase | null>(null)
   const [poseLibraryRequestKey, setPoseLibraryRequestKey] = useState(0)
   const [companyModelLibraryRequestKey, setCompanyModelLibraryRequestKey] = useState(0)
-  const [companyModels, setCompanyModels] = useState<CompanyModel[]>(() => {
-    if (typeof window === 'undefined') return []
-
-    try {
-      const storedModels = window.localStorage.getItem(companyModelsStorageKey)
-      return storedModels ? JSON.parse(storedModels) as CompanyModel[] : []
-    } catch {
-      return []
-    }
-  })
-  const [selectedCompanyModel, setSelectedCompanyModel] = useState<CompanyModel | null>(null)
+  const [companyModels, setCompanyModels] = useState<CompanyModel[]>([])
+  const [companyModelsHydrated, setCompanyModelsHydrated] = useState(false)
+  const [fashionReferences, setFashionReferences] = useState<FashionReferenceImage[]>([])
+  const [fashionRemixRequest, setFashionRemixRequest] = useState<FashionRemixRequest | null>(null)
+  const [photoFissionCaseRequest, setPhotoFissionCaseRequest] = useState<{
+    requestId: number
+    case: PhotoFissionCase
+  } | null>(null)
 
   const loadTasks = useCallback(async () => {
     const response = await fetch('/api/tasks', { cache: 'no-store' })
@@ -56,8 +62,32 @@ export function Workbench() {
   }, [loadTasks])
 
   useEffect(() => {
+    try {
+      const storedModels = window.localStorage.getItem(companyModelsStorageKey)
+      if (storedModels) {
+        const parsed = JSON.parse(storedModels) as CompanyModel[]
+        // A-fix: 过滤掉历史 blob URL 残留（之前用 URL.createObjectURL，刷新即失效），
+        // 只保留指向 server 的稳定 URL（/generated/...、http(s)://、data:）。
+        const validModels = Array.isArray(parsed)
+          ? parsed.filter((model) => {
+              if (!model || typeof model.preview !== 'string') return false
+              if (model.preview.startsWith('blob:')) return false
+              return true
+            })
+          : []
+        setCompanyModels(validModels)
+      }
+    } catch {
+      // ignore unreadable storage
+    } finally {
+      setCompanyModelsHydrated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!companyModelsHydrated) return
     window.localStorage.setItem(companyModelsStorageKey, JSON.stringify(companyModels))
-  }, [companyModels])
+  }, [companyModels, companyModelsHydrated])
 
   useEffect(() => {
     if (!activeTaskId) return
@@ -73,15 +103,65 @@ export function Workbench() {
 
   const activeTask = tasks.find((task) => task.taskId === activeTaskId) ?? null
 
+  const handleAddFashionReference = useCallback((reference: FashionReferenceImage) => {
+    setFashionReferences((currentReferences) => {
+      if (currentReferences.some((item) => item.assetId === reference.assetId)) {
+        return currentReferences
+      }
+      if (currentReferences.length >= maxFashionReferences) {
+        return currentReferences
+      }
+      return [...currentReferences, reference]
+    })
+  }, [])
+
+  const handleRemoveFashionReference = useCallback((assetId: string) => {
+    setFashionReferences((currentReferences) =>
+      currentReferences.filter((item) => item.assetId !== assetId),
+    )
+  }, [])
+
+  const handleUseTaskAsFashionReference = useCallback((task: GenerationTask) => {
+    if (task.featureType !== 'ai-fashion-photo') return
+
+    const nextReferences =
+      task.inputAssets?.slice(0, maxFashionReferences).map((asset) => ({
+        assetId: asset.assetId,
+        source: 'upload' as const,
+        preview: asset.fileUrl,
+        name: asset.fileName,
+        width: asset.width,
+        height: asset.height,
+      })) ?? []
+
+    setCurrentFeature('ai-fashion-photo')
+    setActiveTaskId(task.taskId)
+    setFashionReferences(nextReferences)
+    setFashionRemixRequest({
+      requestId: Date.now(),
+      task,
+    })
+  }, [])
+
+  // 切到 photo-fission 并把案例参数派发给 LeftPanel 自动回填；不会自动触发生成，
+  // 用户仍需点「立即生成」复刻。
+  const handleSelectPhotoFissionCase = useCallback((photoFissionCase: PhotoFissionCase) => {
+    setCurrentFeature('photo-fission')
+    setPhotoFissionCaseRequest({ requestId: Date.now(), case: photoFissionCase })
+  }, [])
+
   return (
-    <main className="flex min-h-screen bg-background">
+    <main className="flex h-screen overflow-hidden bg-background">
       <FeatureSidebar activeFeature={currentFeature} onFeatureChange={setCurrentFeature} />
       <LeftPanel
         feature={currentFeature}
         selectedPoseCase={selectedPoseCase}
         companyModels={companyModels}
-        selectedCompanyModel={selectedCompanyModel}
-        onSelectCompanyModel={setSelectedCompanyModel}
+        fashionReferences={fashionReferences}
+        fashionRemixRequest={fashionRemixRequest}
+        photoFissionCaseRequest={photoFissionCaseRequest}
+        onAddFashionReference={handleAddFashionReference}
+        onRemoveFashionReference={handleRemoveFashionReference}
         onOpenCompanyModelLibrary={() => setCompanyModelLibraryRequestKey((currentKey) => currentKey + 1)}
         onOpenPoseLibrary={() => setPoseLibraryRequestKey((currentKey) => currentKey + 1)}
         onTaskCreated={(taskId) => {
@@ -96,7 +176,7 @@ export function Workbench() {
         selectedPoseCaseId={selectedPoseCase?.id ?? null}
         poseLibraryRequestKey={poseLibraryRequestKey}
         companyModels={companyModels}
-        selectedCompanyModelId={selectedCompanyModel?.assetId ?? null}
+        fashionReferences={fashionReferences}
         companyModelLibraryRequestKey={companyModelLibraryRequestKey}
         onAddCompanyModel={(model) => {
           setCompanyModels((currentModels) => {
@@ -104,8 +184,22 @@ export function Workbench() {
             return [model, ...currentModels]
           })
         }}
-        onSelectCompanyModel={setSelectedCompanyModel}
+        onDeleteCompanyModel={(assetId) => {
+          setCompanyModels((currentModels) =>
+            currentModels.filter((item) => item.assetId !== assetId),
+          )
+        }}
+        onRenameCompanyModel={(assetId, name) => {
+          setCompanyModels((currentModels) =>
+            currentModels.map((item) =>
+              item.assetId === assetId ? { ...item, name } : item,
+            ),
+          )
+        }}
+        onAddFashionReference={handleAddFashionReference}
+        onUseTaskAsFashionReference={handleUseTaskAsFashionReference}
         onSelectPoseCase={setSelectedPoseCase}
+        onSelectPhotoFissionCase={handleSelectPhotoFissionCase}
         onSelectTask={setActiveTaskId}
         onRefreshTasks={loadTasks}
       />

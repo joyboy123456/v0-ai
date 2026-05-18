@@ -15,13 +15,31 @@ export type PoseResolution = '1k' | '2k' | '4k'
 export type FashionResolution = PoseResolution
 export type PoseVersion = 'advanced'
 export type ProductCategory = 'tops' | 'bottoms' | 'dress' | 'suit' | 'outerwear'
+export type PhotoFissionCategory =
+  | 'tops'
+  | 'pants'
+  | 'skirts'
+  | 'suit'
+  | 'outerwear'
+  | 'childrens'
+export type PhotoFissionImageRatio =
+  | '1:1'
+  | '3:2'
+  | '2:3'
+  | '3:4'
+  | '4:3'
+  | '4:5'
+  | '5:4'
+  | '9:16'
+  | '16:9'
+  | '21:9'
+export type PhotoFissionResolution = PoseResolution
 export type ElementReplaceType = 'clothing' | 'environment' | 'person'
-export type FashionModelSource = 'featured' | 'mine'
-export type FashionModelGender = 'female' | 'male'
-export type FashionModelAgeGroup = 'adult' | 'teen'
-export type FashionModelEthnicity = 'east-asian' | 'white' | 'black' | 'latino' | 'mixed'
-export type FashionModelHairColor = 'black' | 'blonde' | 'brown' | 'red'
 export type FashionReferenceSource = 'model' | 'upload'
+export type FashionPromptMode = 'enhanced' | 'raw'
+export type FashionModelId =
+  | 'gemini-3.1-flash-image-preview'
+  | 'gemini-3-pro-image-preview'
 
 export interface Feature {
   id: FeatureType
@@ -50,6 +68,9 @@ export interface ResultAsset {
   downloadUrl: string
   width: number
   height: number
+  label?: string
+  shotId?: string
+  finalPrompt?: string
 }
 
 export interface GenerationTask {
@@ -57,6 +78,7 @@ export interface GenerationTask {
   featureType: FeatureType
   workflowId: string
   inputAssetIds: string[]
+  inputAssets?: AssetRecord[]
   params: TaskParams
   status: TaskStatus
   progress: number
@@ -69,23 +91,40 @@ export interface GenerationTask {
   creditsUsed: number
 }
 
+export interface FashionRemixRequest {
+  requestId: number
+  task: GenerationTask
+}
+
 export interface AiFashionPhotoParams {
   prompt: string
+  userPrompt: string
+  finalPrompt: string
+  promptMode: FashionPromptMode
+  model: FashionModelId
   referenceImageCount: number
-  officialModelId?: string
-  officialModelName?: string
   imageRatio: FashionImageRatio
   resolution: FashionResolution
   resultCount: 1
   creditsCost: 35
 }
 
+export interface PhotoFissionShot {
+  shotId: string
+  label: string
+  prompt: string
+  order: number
+}
+
 export interface PhotoFissionParams {
-  productCategory: ProductCategory
+  model: FashionModelId
+  category: PhotoFissionCategory
   hasFrontDetail: boolean
   hasBackDetail: boolean
-  generateCount: GenerateCount
-  imageRatio: ImageRatio
+  imageRatio: PhotoFissionImageRatio
+  resolution: PhotoFissionResolution
+  shotPlan: PhotoFissionShot[]
+  resultCount: 9
 }
 
 export interface BackgroundReplaceParams {
@@ -131,18 +170,6 @@ export interface CompanyModel {
   createdAt: string
 }
 
-export interface FashionModel {
-  id: string
-  name: string
-  previewUrl: string
-  source: FashionModelSource
-  gender: FashionModelGender
-  ageGroup: FashionModelAgeGroup
-  ethnicity: FashionModelEthnicity
-  hairColor: FashionModelHairColor
-  favorite?: boolean
-}
-
 export interface FashionReferenceImage {
   assetId: string
   source: FashionReferenceSource
@@ -159,6 +186,29 @@ export interface PoseCase {
   name: string
   prompt: string
   imageUrl: string
+}
+
+/**
+ * 服装大片裂变案例：一组「主图 → 9 张套图」的预设示例，
+ * 供右侧案例库 Tab 展示，用户点「使用此案例」可一键复刻参数到左侧表单。
+ */
+export interface PhotoFissionCase {
+  id: string
+  featureType: 'photo-fission'
+  /** 中文短标题，如「童装白T 9宫格」 */
+  name: string
+  /** 1-2 句卖点描述 */
+  description: string
+  category: PhotoFissionCategory
+  /** 输入主图路径（public 下相对路径） */
+  mainImageUrl: string
+  /** 9 张已生成的套图路径（顺序与 shotLabels 一一对应；文件可能暂未生成） */
+  resultImageUrls: string[]
+  /** 9 张对应 label，必须与 PRD 第 4 节的 shot 顺序一致 */
+  shotLabels: string[]
+  imageRatio: PhotoFissionImageRatio
+  resolution: PhotoFissionResolution
+  modelId: FashionModelId
 }
 
 export const FEATURES: Feature[] = [
@@ -230,6 +280,60 @@ export const PRODUCT_CATEGORIES = [
   { id: 'outerwear', label: '外套' },
 ] satisfies { id: ProductCategory; label: string }[]
 
+export const PHOTO_FISSION_CATEGORIES = [
+  { id: 'tops', label: '上衣' },
+  { id: 'pants', label: '裤子' },
+  { id: 'skirts', label: '裙子' },
+  { id: 'suit', label: '套装' },
+  { id: 'outerwear', label: '外套' },
+  { id: 'childrens', label: '童装' },
+] satisfies { id: PhotoFissionCategory; label: string }[]
+
+/**
+ * 服装大片裂变（photo-fission）支持的全部 10 个真实图片比例。
+ * 「更多」按钮只是 UI 概念，不会写入 params。
+ */
+export const PHOTO_FISSION_IMAGE_RATIOS = [
+  { id: '1:1', label: '1:1' },
+  { id: '3:2', label: '3:2' },
+  { id: '2:3', label: '2:3' },
+  { id: '3:4', label: '3:4' },
+  { id: '4:3', label: '4:3' },
+  { id: '4:5', label: '4:5' },
+  { id: '5:4', label: '5:4' },
+  { id: '9:16', label: '9:16' },
+  { id: '16:9', label: '16:9' },
+  { id: '21:9', label: '21:9' },
+] satisfies { id: PhotoFissionImageRatio; label: string }[]
+
+/**
+ * UI 分组：主组 5 项常用比例 +「更多」按钮（按钮 id 'more' 仅用于 UI，不会写入 params）。
+ */
+export const PHOTO_FISSION_RATIOS_MAIN = [
+  { id: '1:1', label: '1:1' },
+  { id: '3:2', label: '3:2' },
+  { id: '2:3', label: '2:3' },
+  { id: '3:4', label: '3:4' },
+  { id: '4:3', label: '4:3' },
+] satisfies { id: PhotoFissionImageRatio; label: string }[]
+
+/**
+ * UI 分组：「更多」popover 内 5 项扩展比例。
+ */
+export const PHOTO_FISSION_RATIOS_EXTRA = [
+  { id: '4:5', label: '4:5' },
+  { id: '5:4', label: '5:4' },
+  { id: '9:16', label: '9:16' },
+  { id: '16:9', label: '16:9' },
+  { id: '21:9', label: '21:9' },
+] satisfies { id: PhotoFissionImageRatio; label: string }[]
+
+export const PHOTO_FISSION_RESOLUTIONS = [
+  { id: '1k', label: '1k' },
+  { id: '2k', label: '2k' },
+  { id: '4k', label: '4k' },
+] satisfies { id: PhotoFissionResolution; label: string }[]
+
 export const ELEMENT_REPLACE_TYPES = [
   { id: 'clothing', label: '服装' },
   { id: 'environment', label: '环境' },
@@ -264,129 +368,55 @@ export const FASHION_RESOLUTIONS = POSE_RESOLUTIONS satisfies {
   label: string
 }[]
 
-export const FASHION_MODELS: FashionModel[] = [
+export const FASHION_PROMPT_MODES = [
   {
-    id: 'official_model_female_019',
-    name: '女模特019',
-    previewUrl: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'female',
-    ageGroup: 'adult',
-    ethnicity: 'east-asian',
-    hairColor: 'black',
-    favorite: true,
+    id: 'enhanced',
+    label: '基础增强',
+    description: '系统仅补充服装保持、画质和禁止项，不会改写主体描述',
   },
   {
-    id: 'official_model_female_214',
-    name: '女模特214',
-    previewUrl: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'female',
-    ageGroup: 'adult',
-    ethnicity: 'white',
-    hairColor: 'blonde',
+    id: 'raw',
+    label: '原始提示词',
+    description: '完全按照用户输入发送给模型',
+  },
+] satisfies { id: FashionPromptMode; label: string; description: string }[]
+
+export interface FashionModelOption {
+  id: FashionModelId
+  label: string
+  alias: string
+  description: string
+  maxInputImages: number
+  maxResolutionLabel: '4K'
+}
+
+/**
+ * AI 服装大片可选模型清单（仅在 IMAGE_API_PROVIDER=google 时生效）。
+ *
+ * 仅保留 Gemini 3 系列，2.5 已下线。
+ * 选型依据见 .trellis/spec/frontend/quality-guidelines.md。
+ * raycast 路径会忽略前端 model 选择，使用 env IMAGE_API_MODEL。
+ */
+export const FASHION_MODELS: FashionModelOption[] = [
+  {
+    id: 'gemini-3.1-flash-image-preview',
+    label: '稳定版',
+    alias: 'Nano Banana 2',
+    description: '推荐默认。最多 14 张参考图，支持 4K 出图，单图约 2 分钟',
+    maxInputImages: 14,
+    maxResolutionLabel: '4K',
   },
   {
-    id: 'official_model_female_215',
-    name: '女模特215',
-    previewUrl: 'https://images.unsplash.com/photo-1529626455594-4ff0802cfb7e?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'female',
-    ageGroup: 'adult',
-    ethnicity: 'mixed',
-    hairColor: 'brown',
-  },
-  {
-    id: 'official_model_female_216',
-    name: '女模特216',
-    previewUrl: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'female',
-    ageGroup: 'adult',
-    ethnicity: 'white',
-    hairColor: 'black',
-  },
-  {
-    id: 'official_model_female_218',
-    name: '女模特218',
-    previewUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'female',
-    ageGroup: 'adult',
-    ethnicity: 'white',
-    hairColor: 'blonde',
-  },
-  {
-    id: 'official_model_female_219',
-    name: '女模特219',
-    previewUrl: 'https://images.unsplash.com/photo-1547425260-76bcadfb4f2c?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'female',
-    ageGroup: 'adult',
-    ethnicity: 'latino',
-    hairColor: 'brown',
-  },
-  {
-    id: 'official_model_male_001',
-    name: '男模特001',
-    previewUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'male',
-    ageGroup: 'adult',
-    ethnicity: 'white',
-    hairColor: 'brown',
-  },
-  {
-    id: 'official_model_male_002',
-    name: '男模特002',
-    previewUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'male',
-    ageGroup: 'adult',
-    ethnicity: 'white',
-    hairColor: 'brown',
-  },
-  {
-    id: 'official_model_male_003',
-    name: '男模特003',
-    previewUrl: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'male',
-    ageGroup: 'adult',
-    ethnicity: 'white',
-    hairColor: 'blonde',
-  },
-  {
-    id: 'official_model_male_004',
-    name: '男模特004',
-    previewUrl: 'https://images.unsplash.com/photo-1527980965255-d3b416303d12?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'male',
-    ageGroup: 'adult',
-    ethnicity: 'mixed',
-    hairColor: 'black',
-  },
-  {
-    id: 'official_model_male_005',
-    name: '男模特005',
-    previewUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'male',
-    ageGroup: 'adult',
-    ethnicity: 'black',
-    hairColor: 'black',
-  },
-  {
-    id: 'official_model_male_006',
-    name: '男模特006',
-    previewUrl: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=900&h=1200&fit=crop&crop=faces',
-    source: 'featured',
-    gender: 'male',
-    ageGroup: 'adult',
-    ethnicity: 'white',
-    hairColor: 'brown',
+    id: 'gemini-3-pro-image-preview',
+    label: '旗舰版',
+    alias: 'Nano Banana Pro',
+    description: '最高画质，thinking 模式，最多 14 张参考图，速度较慢',
+    maxInputImages: 14,
+    maxResolutionLabel: '4K',
   },
 ]
+
+export const DEFAULT_FASHION_MODEL: FashionModelId = 'gemini-3.1-flash-image-preview'
 
 export const POSE_CASES: PoseCase[] = [
   {
@@ -394,42 +424,83 @@ export const POSE_CASES: PoseCase[] = [
     featureType: 'pose-fission',
     name: '回头背影',
     prompt: '模特背身站立并自然回头，展示背部廓形、包袋和裙摆层次。',
-    imageUrl: 'https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=900&h=1200&fit=crop',
+    imageUrl: '/cases/pose-back-turn.jpg',
   },
   {
     id: 'low-crouch',
     featureType: 'pose-fission',
     name: '半蹲近景',
     prompt: '模特半蹲近景，双手靠近脸部，突出上衣、手套、领口和面部状态。',
-    imageUrl: 'https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?w=900&h=1200&fit=crop',
+    imageUrl: '/cases/pose-low-crouch.jpg',
   },
   {
     id: 'front-wave',
     featureType: 'pose-fission',
     name: '正面招手',
     prompt: '模特正面站立，单手轻抬招手，整体亲和自然，适合主图展示。',
-    imageUrl: 'https://images.unsplash.com/photo-1495385794356-15371f348c31?w=900&h=1200&fit=crop',
+    imageUrl: '/cases/pose-front-wave.jpg',
   },
   {
     id: 'side-walk',
     featureType: 'pose-fission',
     name: '侧身行走',
     prompt: '模特侧身行走，步态轻盈，展示侧面版型、裙摆动态和鞋履搭配。',
-    imageUrl: 'https://images.unsplash.com/photo-1485230895905-ec40ba36b9bc?w=900&h=1200&fit=crop',
+    imageUrl: '/cases/pose-side-walk.jpg',
   },
   {
     id: 'cross-step',
     featureType: 'pose-fission',
     name: '交叉步',
     prompt: '模特正面交叉步走姿，双臂自然展开，展示服装整体轮廓与动态感。',
-    imageUrl: 'https://images.unsplash.com/photo-1529139574466-a303027c1d8b?w=900&h=1200&fit=crop',
+    imageUrl: '/cases/pose-cross-step.jpg',
   },
   {
     id: 'bag-forward',
     featureType: 'pose-fission',
     name: '手持包前进',
     prompt: '模特侧前方行走并手持包袋，姿态利落，适合电商投流和搭配图。',
-    imageUrl: 'https://images.unsplash.com/photo-1539109136881-3be0616acf4b?w=900&h=1200&fit=crop',
+    imageUrl: '/cases/pose-bag-forward.jpg',
+  },
+]
+
+/**
+ * 服装大片裂变（photo-fission）案例库。
+ * 注意：resultImageUrls 中的文件可能暂未生成，UI 需对每张图做 graceful fallback。
+ */
+export const PHOTO_FISSION_CASES: PhotoFissionCase[] = [
+  {
+    id: 'kid-white-tee',
+    featureType: 'photo-fission',
+    name: '童装白T 9 宫格',
+    description:
+      '童装白色T恤+深色半裙的标准电商套图：正面、侧面、背面、近景、远景、特写、45度等 9 个镜头',
+    category: 'childrens',
+    mainImageUrl: '/cases/photo-fission-kid-white-tee.jpg',
+    resultImageUrls: [
+      '/cases/photo-fission-kid-white-tee-shot-1.jpg',
+      '/cases/photo-fission-kid-white-tee-shot-2.jpg',
+      '/cases/photo-fission-kid-white-tee-shot-3.jpg',
+      '/cases/photo-fission-kid-white-tee-shot-4.jpg',
+      '/cases/photo-fission-kid-white-tee-shot-5.jpg',
+      '/cases/photo-fission-kid-white-tee-shot-6.jpg',
+      '/cases/photo-fission-kid-white-tee-shot-7.jpg',
+      '/cases/photo-fission-kid-white-tee-shot-8.jpg',
+      '/cases/photo-fission-kid-white-tee-shot-9.jpg',
+    ],
+    shotLabels: [
+      '正面站姿',
+      '45度斜侧',
+      '侧面站姿',
+      '背面站姿',
+      '远景全景',
+      '半身近景',
+      '坐姿变化',
+      '行走动态',
+      '局部细节特写',
+    ],
+    imageRatio: '3:4',
+    resolution: '1k',
+    modelId: 'gemini-3.1-flash-image-preview',
   },
 ]
 

@@ -1,6 +1,5 @@
 import {
   ELEMENT_REPLACE_TYPES,
-  PRODUCT_CATEGORIES,
   type BackgroundReplaceParams,
   type FeatureType,
   type PhotoFissionParams,
@@ -11,13 +10,14 @@ import {
 } from '@/lib/types'
 import {
   buildAiFashionPhotoPrompt,
-  createAiFashionPhotoReferenceSheet,
 } from './ai-fashion-photo-service'
+import { runGoogleImageEdit } from './google-genai-adapter'
 import {
   buildPoseFissionPrompt,
   createPoseFissionReferenceSheet,
   getPoseFissionDemoUrls,
 } from './pose-fission-service'
+import { runPhotoFissionPipeline } from './photo-fission-service'
 
 type RunnableFeature = FeatureType
 
@@ -27,6 +27,8 @@ interface ThirdPartyWorkflowInput {
   workflowId: string
   inputImages: string[]
   params: TaskParams
+  /** 单 shot 成功后立刻回调（photo-fission 流式持久化使用，可选；其他 feature 不消费此字段） */
+  onShotResult?: (result: ResultAsset) => Promise<void>
 }
 
 interface RaycastImageItem {
@@ -47,6 +49,15 @@ const raycastApiKey = process.env.IMAGE_API_KEY
 const raycastImageModel = process.env.IMAGE_API_MODEL ?? 'gpt-image-2'
 const raycastTimeoutMs = Number(process.env.IMAGE_API_TIMEOUT_MS ?? 120000)
 const demoMode = process.env.IMAGE_API_DEMO === '1'
+
+// 默认主链路：Google Gemini 3 系列（项目稳定生产路径）。
+// 切回 Raycast 本地代理时设 IMAGE_API_PROVIDER=raycast。
+const provider = (process.env.IMAGE_API_PROVIDER ?? 'google').toLowerCase()
+const googleApiKey = process.env.GOOGLE_API_KEY ?? ''
+const googleImageModel = process.env.GOOGLE_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview'
+// 3 系列 + 2K/4K + 多图最坏情况下单图响应可达 5-8 分钟，默认 600s 留足缓冲。
+// 任何短于 480s 的配置都极可能在 2K 以上画质 + 多图场景下超时。
+const googleImageTimeoutMs = Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000)
 
 const demoResults: Record<RunnableFeature, string[]> = {
   'ai-fashion-photo': [
@@ -93,6 +104,13 @@ export async function runThirdPartyWorkflow(
     throw new Error('元素替换需要同时上传原图和替换元素')
   }
 
+  if (input.featureType === 'photo-fission') {
+    const count = input.inputImages.length
+    if (count < 1 || count > 3) {
+      throw new Error('服装大片裂变最多上传 1 张主图 + 正面/背面细节图共 3 张')
+    }
+  }
+
   if (input.featureType === 'pose-fission' && input.inputImages.length < 1) {
     throw new Error('姿势裂变需要上传主图')
   }
@@ -101,7 +119,65 @@ export async function runThirdPartyWorkflow(
     return runDemoWorkflow(input)
   }
 
+  if (input.featureType === 'photo-fission') {
+    return runPhotoFissionPipeline({
+      taskId: input.taskId,
+      inputImages: input.inputImages,
+      params: input.params as PhotoFissionParams,
+      apiKey: googleApiKey,
+      timeoutMs: googleImageTimeoutMs,
+      onShotResult: input.onShotResult,
+    })
+  }
+
+  if (provider === 'google') {
+    return runGoogleProviderEdits(input)
+  }
+
   return runRaycastImageEdits(input)
+}
+
+async function runGoogleProviderEdits(input: ThirdPartyWorkflowInput) {
+  const prompt = buildPrompt(input.featureType, input.params)
+  const count = getGenerateCount(input.params)
+  const { aspectRatio, imageSize } = extractGoogleImageOptions(input.params)
+  // AI 服装大片支持按任务覆盖模型；其他模块走 env 默认。
+  // 旧任务可能没有 model 字段，readFashionModel 已在 normalize 阶段降级到 DEFAULT_FASHION_MODEL，
+  // 这里再做一次降级是为了兼容其他 featureType 走 Google 时直接落到 env。
+  const taskModel =
+    input.featureType === 'ai-fashion-photo'
+      ? (input.params as AiFashionPhotoParams).model
+      : undefined
+  const modelToUse = taskModel ?? googleImageModel
+
+  return runGoogleImageEdit({
+    taskId: input.taskId,
+    apiKey: googleApiKey,
+    model: modelToUse,
+    timeoutMs: googleImageTimeoutMs,
+    prompt,
+    inputImages: input.inputImages,
+    count,
+    aspectRatio,
+    imageSize,
+    // ai-fashion-photo 等单批次走 google：traceId 默认等于 taskId；
+    // count > 1 时 adapter 内部会自动派生 ${taskId}_v${n}。
+    traceId: input.taskId,
+  })
+}
+
+function extractGoogleImageOptions(params: TaskParams) {
+  // Map our internal params to Google's response_format.image options.
+  // - aspect_ratio: pass through if it's a recognized ratio, drop "more" sentinel.
+  // - image_size: convert "1k"/"2k"/"4k" → "1K"/"2K"/"4K" (Google requires uppercase K).
+  const record = params as unknown as Record<string, unknown>
+  const ratio = typeof record.imageRatio === 'string' ? record.imageRatio : undefined
+  const aspectRatio = ratio && ratio !== 'more' ? ratio : undefined
+
+  const resolution = typeof record.resolution === 'string' ? record.resolution : undefined
+  const imageSize = resolution ? resolution.toUpperCase() : undefined
+
+  return { aspectRatio, imageSize }
 }
 
 async function runRaycastImageEdits(input: ThirdPartyWorkflowInput) {
@@ -111,21 +187,33 @@ async function runRaycastImageEdits(input: ThirdPartyWorkflowInput) {
   const count = getGenerateCount(input.params)
   const batches = splitCount(count, 4)
   const results: ResultAsset[] = []
+  const startedAt = Date.now()
+  console.log(
+    `[image-api] task=${input.taskId} feature=${input.featureType} batches=${JSON.stringify(batches)} promptLen=${prompt.length} baseUrl=${raycastBaseUrl}`,
+  )
 
   for (const batchSize of batches) {
+    const batchStart = Date.now()
+    const imagePayload = getInputImagePayload(input)
+    console.log(
+      `[image-api] task=${input.taskId} payload-shape=${describeImagePayload(imagePayload)}`,
+    )
+
     const response = await fetchWithTimeout(`${raycastBaseUrl}/images/edits`, {
       method: 'POST',
       headers: getRaycastHeaders(),
       body: JSON.stringify({
         model: raycastImageModel,
         prompt,
-        image: getInputImagePayload(input),
+        image: imagePayload,
         n: batchSize,
-        response_format: 'url',
       }),
     }, raycastTimeoutMs)
 
     const data = (await readJsonResponse(response)) as RaycastImageResponse
+    console.log(
+      `[image-api] task=${input.taskId} batch n=${batchSize} status=${response.status} took=${Date.now() - batchStart}ms items=${data.data?.length ?? 0}`,
+    )
 
     if (!response.ok) {
       throw new Error(data.error?.message ?? `Raycast 生图 API 调用失败：${response.status}`)
@@ -154,6 +242,9 @@ async function runRaycastImageEdits(input: ThirdPartyWorkflowInput) {
     throw new Error('Raycast 生图 API 返回为空')
   }
 
+  console.log(
+    `[image-api] task=${input.taskId} done totalResults=${results.length} totalTook=${Date.now() - startedAt}ms`,
+  )
   return results
 }
 
@@ -220,21 +311,6 @@ function buildPrompt(featureType: RunnableFeature, params: TaskParams) {
     return buildAiFashionPhotoPrompt(aiParams)
   }
 
-  if (featureType === 'photo-fission') {
-    const fissionParams = params as PhotoFissionParams
-    const category = getLabel(PRODUCT_CATEGORIES, fissionParams.productCategory)
-
-    return [
-      '基于上传服装产品图生成多张电商模特展示图。',
-      '第一张图是服装产品主图，后续图片若存在则是产品正面或背面细节参考。',
-      `服装品类：${category}。`,
-      fissionParams.hasFrontDetail ? '已提供产品正面细节图，请保持领口、面料、logo、图案等细节一致。' : '',
-      fissionParams.hasBackDetail ? '已提供产品背面细节图，请在需要背面或侧后角度时保持背部结构一致。' : '',
-      `画面比例：${fissionParams.imageRatio}。`,
-      '要求：自动生成多张不同模特、不同姿势、不同景别或构图的服装展示图；服装颜色、版型、材质、图案和关键细节尽量保持一致；适合电商主图、详情页和投流素材；避免服装变形、手部畸形、脸部崩坏、文字乱码和背景抢主体。',
-    ].join('\n')
-  }
-
   if (featureType === 'pose-fission') {
     return buildPoseFissionPrompt(params as PoseFissionParams)
   }
@@ -257,20 +333,15 @@ function getGenerateCount(params: TaskParams) {
   return 'generateCount' in params ? params.generateCount : 4
 }
 
-function getInputImagePayload(input: ThirdPartyWorkflowInput) {
+function getInputImagePayload(input: ThirdPartyWorkflowInput): string | string[] {
   if (input.featureType === 'ai-fashion-photo') {
-    return createAiFashionPhotoReferenceSheet(
-      input.inputImages,
-      input.params as AiFashionPhotoParams,
-    )
+    // Per multi-image edits guide v1.1.0, send images as an array directly.
+    // The model treats each entry as Image 1 / Image 2 / ... matching the prompt.
+    return input.inputImages
   }
 
   if (input.featureType === 'element-replace') {
     return createElementReplaceReferenceSheet(input.inputImages[0], input.inputImages[1])
-  }
-
-  if (input.featureType === 'photo-fission' && input.inputImages.length > 1) {
-    return createPhotoFissionReferenceSheet(input.inputImages)
   }
 
   if (input.featureType === 'pose-fission' && input.inputImages.length > 1) {
@@ -283,6 +354,27 @@ function getInputImagePayload(input: ThirdPartyWorkflowInput) {
   return input.inputImages[0]
 }
 
+function describeImagePayload(payload: string | string[]) {
+  const summarize = (s: string) => {
+    if (s.startsWith('data:')) {
+      const head = s.slice(0, 30)
+      return `dataURL(len=${s.length}, head="${head}")`
+    }
+    if (s.startsWith('http://') || s.startsWith('https://')) {
+      return `httpURL(len=${s.length}, head="${s.slice(0, 60)}")`
+    }
+    if (s.startsWith('/')) {
+      return `RELATIVE_PATH("${s}")  ⚠ proxy can't fetch this`
+    }
+    return `unknown(len=${s.length}, head="${s.slice(0, 30)}")`
+  }
+
+  if (Array.isArray(payload)) {
+    return `array(len=${payload.length}) [${payload.map(summarize).join(', ')}]`
+  }
+  return summarize(payload)
+}
+
 function createElementReplaceReferenceSheet(originalImage: string, replacementImage: string) {
   const svg = [
     '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">',
@@ -292,33 +384,6 @@ function createElementReplaceReferenceSheet(originalImage: string, replacementIm
     `<image href="${escapeXml(originalImage)}" x="60" y="90" width="680" height="760" preserveAspectRatio="xMidYMid meet"/>`,
     `<image href="${escapeXml(replacementImage)}" x="860" y="90" width="680" height="760" preserveAspectRatio="xMidYMid meet"/>`,
     '<line x1="800" y1="80" x2="800" y2="860" stroke="#dddddd" stroke-width="4"/>',
-    '</svg>',
-  ].join('')
-
-  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`
-}
-
-function createPhotoFissionReferenceSheet(images: string[]) {
-  const [mainImage, frontDetailImage, backDetailImage] = images
-  const detailCells = [
-    frontDetailImage
-      ? `<image href="${escapeXml(frontDetailImage)}" x="1080" y="120" width="440" height="300" preserveAspectRatio="xMidYMid meet"/>`
-      : '<rect x="1080" y="120" width="440" height="300" rx="16" fill="#f3f3f3"/>',
-    backDetailImage
-      ? `<image href="${escapeXml(backDetailImage)}" x="1080" y="520" width="440" height="300" preserveAspectRatio="xMidYMid meet"/>`
-      : '<rect x="1080" y="520" width="440" height="300" rx="16" fill="#f3f3f3"/>',
-  ]
-
-  const svg = [
-    '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">',
-    '<rect width="1600" height="900" fill="#ffffff"/>',
-    '<text x="520" y="56" text-anchor="middle" font-family="Arial, sans-serif" font-size="32" font-weight="700" fill="#111111">服装产品主图</text>',
-    '<text x="1300" y="56" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#111111">产品细节参考</text>',
-    `<image href="${escapeXml(mainImage)}" x="80" y="100" width="880" height="740" preserveAspectRatio="xMidYMid meet"/>`,
-    ...detailCells,
-    '<text x="1300" y="460" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" fill="#333333">正面细节</text>',
-    '<text x="1300" y="860" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" fill="#333333">背面细节</text>',
-    '<line x1="1010" y1="80" x2="1010" y2="860" stroke="#dddddd" stroke-width="4"/>',
     '</svg>',
   ].join('')
 
