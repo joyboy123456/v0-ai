@@ -11,12 +11,18 @@ export async function GET() {
   const cookieStore = await cookies()
   const sessionId = cookieStore.get(SESSION_COOKIE_NAME)?.value
   if (!sessionId) {
-    return NextResponse.json({ ok: false }, { status: 401 })
+    return NextResponse.json(
+      { ok: false, error: 'UNAUTHORIZED' },
+      { status: 401 },
+    )
   }
   try {
     const user = await getCurrentUser(sessionId)
     if (!user) {
-      return NextResponse.json({ ok: false }, { status: 401 })
+      return NextResponse.json(
+        { ok: false, error: 'UNAUTHORIZED' },
+        { status: 401 },
+      )
     }
     return NextResponse.json({ ok: true, user })
   } catch (error) {

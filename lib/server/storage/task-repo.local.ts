@@ -61,7 +61,9 @@ function taskToRow(task: GenerationTask): TaskRow {
   const updatedMs = parseTimestamp(task.finishedAt) ?? createdMs
   return {
     id: task.taskId,
-    userId: DEFAULT_USER_ID_FALLBACK, // PR4 接通 auth 后才真有用户身份
+    // PR4：GenerationTask 现已携带 userId 字段，优先取真实 userId；
+    // 历史任务（PR3 之前）未存 userId 时回退到默认值（local 兼容）。
+    userId: task.userId ?? DEFAULT_USER_ID_FALLBACK,
     type: task.featureType,
     status: task.status,
     payloadJson: safeJson({
@@ -73,6 +75,7 @@ function taskToRow(task: GenerationTask): TaskRow {
       message: task.message,
       errorMessage: task.errorMessage,
       creditsUsed: task.creditsUsed,
+      userId: task.userId,
     }),
     resultJson: safeJson({
       resultAssetIds: task.resultAssetIds,
@@ -94,6 +97,7 @@ function rowToTask(row: TaskRow): GenerationTask {
     message?: string
     errorMessage?: string
     creditsUsed?: number
+    userId?: string
   }>(row.payloadJson)
   const result = safeParse<{
     resultAssetIds?: string[]
@@ -103,6 +107,8 @@ function rowToTask(row: TaskRow): GenerationTask {
 
   return {
     taskId: row.id,
+    // PR4：先用 row.userId（D1 列 user_id 反映出来的），fallback 到 payloadJson 内的 userId
+    userId: row.userId || payload?.userId,
     featureType: (payload?.featureType ?? row.type) as FeatureType,
     workflowId: payload?.workflowId ?? '',
     inputAssetIds: payload?.inputAssetIds ?? [],
