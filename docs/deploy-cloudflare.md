@@ -223,4 +223,198 @@ pnpm start
 | PR2 | `/login` + `/api/auth/**` + `lib/server/auth.ts` + middleware | 待 PR2 补 |
 | PR3 | `storage-adapter.ts` + `task-store.ts` 双模式 | 待 PR3 补 |
 | PR4 | `app/api/**` 路由接入 `userId` 鉴权 + R2 用户隔离 prefix | 待 PR4 补 |
-| PR5 | 端到端验证（user01 / user02 隔离）+ PM2 守护 | 待 PR5 补 |
+| PR5 ✅ | 端到端验证（user01 / user02 隔离）+ PM2 守护 | 见 §11 ~ §14 |
+
+---
+
+## 11. 客户压测前的最后 4 步（推荐睡醒后顺序执行）
+
+> 由 PR5 收尾。前 4 个 PR 已经把代码改造完了，本节是「打开开关 → 验证 → 对外开放」的最后清单。
+> 全程预计 15 分钟。
+
+### Step 1: 生成 Cloudflare D1+KV API Token（5 分钟）
+
+应用端调 D1 / KV 走 REST API，需要一个与 wrangler OAuth 解耦的专用 token。
+**强烈推荐用 Custom token**（只给最小必要权限），不要用「Edit Cloudflare Workers」模板（权限过大）。
+
+1. 打开 https://dash.cloudflare.com/profile/api-tokens
+2. 点 **Create Token** → **Get started**（Custom token）
+3. 起名 `yibai-fission-d1-kv`
+4. **Permissions** 加两行：
+   - `Account` → `D1` → `Edit`
+   - `Account` → `Workers KV Storage` → `Edit`
+5. **Account Resources**：选择 `Include` → 你的账号
+6. **TTL**：建议留空（不过期）；如果你坚持设有效期，请在 .env.local 里加一条到期日提醒
+7. 点 **Continue to summary** → **Create Token** → 复制 `cfat_xxxx` 形式的 token
+
+⚠️ token 只显示一次，复制后立刻贴到 .env.local；遗失只能重新生成。
+
+### Step 2: 写入 `.env.local` 并切到 cloud 模式
+
+在 `.env.local` 修改/确认两行：
+
+```
+CLOUDFLARE_D1_KV_TOKEN=<刚才复制的 cfat_xxxx>
+STORAGE_MODE=cloud
+```
+
+⚠️ 同一文件中的 `CLOUDFLARE_API_TOKEN`（如果存在）应保持**注释**或留空。
+原因详见 §2 前置要求 —— wrangler 4.x 会优先读 `.env.local` 中的 token 覆盖 OAuth，导致 wrangler 命令失败。
+
+### Step 3: 启动服务
+
+```bash
+# 进入项目根目录（Mac mini 实际路径请用 pwd 确认）
+cd ~/xinman/dianshang/v0-ai
+
+# 安装依赖（如果 node_modules 已存在可省）
+pnpm install
+
+# 编译生产版本（约 1-2 分钟）
+pnpm build
+
+# 创建 PM2 日志目录
+mkdir -p logs
+
+# 通过 PM2 启动
+pm2 start ecosystem.config.cjs
+
+# 保存当前进程列表，重启时 PM2 会自动恢复
+pm2 save
+
+# 设置开机自启（macOS launchd），按提示复制输出中的 sudo 命令并执行
+pm2 startup
+```
+
+启动完成后可用 `pm2 status` 查看状态、`pm2 logs yibai-fission` 跟踪日志。
+
+> 如果 ecosystem.config.cjs 里的 `cwd` 与 Mac mini 实际路径不一致，
+> 编辑该文件把 `cwd` 改成真实路径再 `pm2 start`。
+
+### Step 4: 5 分钟端到端验证
+
+下面 6 条 curl 全部复制粘贴执行，任何一条结果不符合「期望」就停下来排查。
+
+```bash
+# 1) Health check —— 整个系统是否活着
+curl -s http://localhost:3000/api/health | jq
+# 期望: { ok: true, storageMode: 'cloud', services: { d1: 'ok', kv: 'ok', r2: 'ok' }, ... }
+# 如果 d1/kv/r2 任一显示 'error: ...'：
+#   - error: CONFIG_MISSING ... → .env.local 缺 env，对照 §5
+#   - error: HTTP 401/403 → CLOUDFLARE_D1_KV_TOKEN 权限不对，回 Step 1 重发
+#   - error: NETWORK_ERROR → Mac mini 网络/出口/防火墙问题
+
+# 2) 用 user01 登录并拿 cookie
+curl -s -c /tmp/cookies-u1.txt -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"user01","password":"123456"}' | jq
+# 期望: { ok: true, user: { id: '...', username: 'user01', displayName: '测试账号 01' } }
+# 如果返回 401 INVALID_CREDENTIALS：D1 中没有 user01，回 §4 跑 seed
+# 如果返回 500 CONFIG_ERROR：CLOUDFLARE_D1_KV_TOKEN 没配或权限不够
+
+# 3) 用刚拿到的 cookie 查当前用户
+curl -s -b /tmp/cookies-u1.txt http://localhost:3000/api/auth/me | jq
+# 期望: { ok: true, user: { id: '...', username: 'user01', ... } }
+
+# 4) 列出当前用户任务（fresh start 应该为空）
+curl -s -b /tmp/cookies-u1.txt http://localhost:3000/api/tasks | jq
+# 期望: [] 或 { tasks: [] }（fresh start 后没有任务历史）
+
+# 5) 验证未登录被拒（不带 cookie）
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/tasks
+# 期望: 401
+
+# 6) 切到 user02 并验证看不到 user01 的任何任务
+curl -s -c /tmp/cookies-u2.txt -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"user02","password":"123456"}' | jq
+curl -s -b /tmp/cookies-u2.txt http://localhost:3000/api/tasks | jq
+# 期望: 列表为空（user02 也是 fresh）
+# 之后浏览器打开 https://<trellics 域名>/login，分别用 user01 / user02 跑生图，
+# 互相看不到对方任务即视为数据隔离生效。
+```
+
+上述 6 条全部符合期望 → 可对外开放给客户。
+
+---
+
+## 12. 在 Cloudflare 控制台验证数据真的写到云端
+
+跑过一次完整的生图任务（前端操作）之后：
+
+1. 打开 https://dash.cloudflare.com → R2 → `sujie` bucket → Objects
+2. 应该看到形如下面的对象 key：
+   ```
+   users/<user01-uuid>/uploads/...png
+   users/<user01-uuid>/generated/...png
+   ```
+3. 进入 D1 → `yibai-fission-db` → Console，执行：
+   ```sql
+   SELECT
+     username,
+     (SELECT COUNT(*) FROM tasks WHERE tasks.user_id = users.id) AS task_count,
+     (SELECT COUNT(*) FROM assets WHERE assets.user_id = users.id) AS asset_count
+   FROM users
+   ORDER BY username;
+   ```
+4. 切到 user02 跑一个新任务 → 回 D1 Console 再查一次：
+   - user01 / user02 的 `task_count` 都应 `>= 1`
+   - 各自的 `asset_count` 互不重叠
+5. 在 D1 Console 再验证一次「user01 看不到 user02 的任务」：
+   ```sql
+   SELECT id, type, status FROM tasks WHERE user_id = '<user01-uuid>';
+   ```
+   返回的 id 全部应该是 user01 自己创建的，不会混入 user02 的任务。
+
+以上都成立 → 数据隔离 + R2/D1 双写成功，可正式对外开放。
+
+---
+
+## 13. 紧急回滚到 local 模式
+
+如果 cloud 模式发现 bug 想暂时回到本地模式（不影响 Mac mini 服务连续性）：
+
+1. 编辑 `.env.local`：
+   ```
+   STORAGE_MODE=cloud   →   STORAGE_MODE=local
+   ```
+2. 重启 PM2：
+   ```bash
+   pm2 restart yibai-fission
+   ```
+3. 此时：
+   - 任务记录写回 `data/fashion-mvp-store.json`
+   - 上传图 / 生成图写回 `public/generated/**`
+   - middleware 的 cloud session 校验自动放行（PR2 已知 trade-off，仅本地兜底）
+4. 已在 cloud 写过的任务/图片**不会丢**，仍存在 R2/D1；修复后切回 `STORAGE_MODE=cloud` 立刻可见。
+
+⚠️ 注意：在 cloud ↔ local 之间反复切换会让用户的「任务历史视图」不一致（cloud 的看不到 local 的，反之亦然）。
+切换最好限定在「迁移期一次」，不要日常反复切。
+
+---
+
+## 14. trellics 内网穿透接入
+
+杭州中转 + Mac mini 内网穿透由用户自己保管，不入仓库。
+
+常见拓扑：
+
+```
+5 个客户的浏览器
+    ↓ HTTPS (https://<your-trellics-domain>)
+trellics 杭州中转
+    ↓ HTTP/HTTPS 转发
+Mac mini  127.0.0.1:3000
+    ↓
+Next.js (pm2 start ecosystem.config.cjs)
+```
+
+trellics client 配置要点：
+
+- 本地监听目标：`127.0.0.1:3000`（与 `ecosystem.config.cjs` 中 `PORT=3000` 对齐）
+- 公网入口：trellics 控制台提供的固定域名（HTTPS 已签证书）
+- 保持 long-lived connection：生图任务长达 5-8 分钟，trellics 端别配过短的 idle timeout
+- 5 个客户拿到统一 URL 即可访问；不需要给每个客户单独配置
+
+具体 trellics client 启动命令 / token / 配置文件，本仓库不提供，由用户自己保管。
+

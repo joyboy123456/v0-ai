@@ -21,6 +21,7 @@ const PUBLIC_PATH_PREFIXES = [
   '/login',
   '/api/auth/login',
   '/api/auth/logout',
+  '/api/health', // PR5 健康检查端点，curl 一行验证整个系统活着
   '/_next',
   '/favicon.ico',
   '/icon',
