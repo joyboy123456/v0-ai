@@ -684,3 +684,18 @@ export const FEATURE_LABELS: Record<FeatureType, string> = {
   'photo-fission': '服装大片裂变',
   'pose-fission': '姿势裂变',
 }
+
+/**
+ * 多用户认证：用户记录（05-19-cloudflare-backend-foundation PR2）。
+ * - DB 字段使用 snake_case（`password_hash` / `display_name` / `created_at`），
+ *   仓储层 `user-repo.ts` 负责 mapping 成本接口的 camelCase。
+ * - `passwordHash` 仅在服务端流转，**禁止**通过 API 响应或 props 传给前端。
+ */
+export interface User {
+  id: string
+  username: string
+  passwordHash: string
+  displayName: string | null
+  createdAt: number
+}
+
