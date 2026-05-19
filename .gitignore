@@ -9,6 +9,9 @@ __v0_jsx-dev-runtime.ts
 # Environment variables
 .env*.local
 
+# 含 bcrypt 密码 hash 的 seed SQL（每次 hash 不同，不入仓库）
+migrations/*_seed_*.sql
+
 # Common ignores
 node_modules
 .next/

@@ -1,0 +1,10 @@
+{"file": ".trellis/tasks/05-19-cloudflare-backend-foundation/prd.md", "reason": "本任务 PRD：包含 6 个 ADR、5 个 PR 实施计划、D1 schema 草案、Cloudflare 库选型，所有 implementation 必须严格遵守此 PRD 的决策"}
+{"file": ".trellis/spec/backend/index.md", "reason": "后端开发指引入口，描述 backend spec 的适用范围与契约要求（签名/错误矩阵/Good-Base-Bad/env key），新增 R2/D1/KV 适配器必须遵守此契约"}
+{"file": ".trellis/spec/backend/external-image-api-reliability.md", "reason": "外部图像 API 错误分类/重试/限流/日志契约，本任务改造 lib/server/** 时不得破坏该契约（D1 引入后的错误码也要按此分类）"}
+{"file": ".trellis/spec/backend/streaming-fission-pipeline.md", "reason": "photo-fission / pose-fission 流式裂变编排契约（单失败容忍、流式持久化、子集重跑），task-store 改造到 D1 时不得破坏该契约"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "前端组件规范，新增 /login 页面与 useAuth hook 必须遵守此规范（组件命名/Props 约定/样式分层）"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "前端质量规范（lint/typecheck/性能基线），/login 页面与认证 hook 实现完成后须达标"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "前端类型安全规范，认证 API 的 request/response 类型与 lib/types.ts 新增 User 类型必须遵守"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "前端状态管理规范，登录态/userId 的客户端存储与传递必须遵守此契约"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "代码复用思考指南，storage-adapter 抽象与 task-store 改造必须先评估现有 lib/server/** 可复用的 utility 与适配器"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层数据流思考指南，本任务涉及 frontend → API → service → R2/D1/KV 完整跨层链路，必须按此指南做 wrong-vs-correct 自检"}

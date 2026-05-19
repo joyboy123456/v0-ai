@@ -1,0 +1,9 @@
+{"file": ".trellis/tasks/05-19-cloudflare-backend-foundation/prd.md", "reason": "Acceptance Criteria 与 Definition of Done 的检查权威：10 条 AC（wrangler whoami / D1 seed / R2 Lifecycle / 登录隔离 / Mac mini 重启数据不丢 等）必须逐条核对"}
+{"file": ".trellis/spec/backend/index.md", "reason": "检查后端契约合规性（签名/错误矩阵/env key 同步），R2/D1/KV 适配器新代码须按此 spec 验证"}
+{"file": ".trellis/spec/backend/external-image-api-reliability.md", "reason": "回归检查：D1/R2 引入后是否破坏外部图像 API 的错误分类、重试退避、限流契约（特别是 google-image-retry、google-image-throttle 链路）"}
+{"file": ".trellis/spec/backend/streaming-fission-pipeline.md", "reason": "回归检查：task-store 改造到 D1 后，photo-fission / pose-fission 的流式持久化、单失败容忍、子集重跑能力是否保留"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "前端质量门槛核对：/login 页面与 useAuth hook 通过 lint / typecheck / 无 console.error / 关键交互无明显闪烁"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "类型安全回归：认证 API 与新增 User/Session 类型在前后端边界一致（zod schema 或 ts 类型）"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "组件规范回归：登录页与新增组件的 Props 命名/默认值/可访问性合规"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "复用性自检：storage-adapter 与 task-store 改造是否复用了现有 lib/server/log / lib/server/google-image-retry 等公共能力，未重复造轮子"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层数据流自检：userId 从 cookie → middleware → API → service → R2/D1 路径每一层都正确传递与校验，无遗漏鉴权点"}
