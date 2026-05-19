@@ -1,4 +1,5 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { requireUser } from '@/lib/server/auth/require-user'
 import { retryPoseFissionShots } from '@/lib/server/task-store'
 
 interface RouteContext {
@@ -6,6 +7,8 @@ interface RouteContext {
     taskId: string
   }>
 }
+
+export const runtime = 'nodejs'
 
 /**
  * POST /api/pose-fission/tasks/:taskId/retry
@@ -16,8 +19,14 @@ interface RouteContext {
  *
  * 与 photo-fission 的 /api/tasks/:taskId/retry-shots 形态保持一致：
  * 区别仅在路由前缀（按 feature 分组）和 body 字段名（templateIds vs shotIds）。
+ *
+ * PR4：加 userId 鉴权 + ownership 校验。
  */
-export async function POST(request: Request, context: RouteContext) {
+export async function POST(request: NextRequest, context: RouteContext) {
+  const userResult = await requireUser(request)
+  if (userResult instanceof NextResponse) return userResult
+  const { userId } = userResult
+
   const { taskId } = await context.params
 
   let body: unknown
@@ -47,7 +56,7 @@ export async function POST(request: Request, context: RouteContext) {
   }
 
   try {
-    const task = await retryPoseFissionShots(taskId, templateIds)
+    const task = await retryPoseFissionShots(taskId, templateIds, userId)
     return NextResponse.json(task)
   } catch (error) {
     const message = error instanceof Error ? error.message : '未知错误'

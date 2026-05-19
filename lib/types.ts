@@ -77,6 +77,16 @@ export interface AssetRecord {
   width: number
   height: number
   createdAt: string
+  /**
+   * 关联的 taskId（仅 kind=generated 时有意义）。
+   * upload 类（用户上传的素材）为 null。
+   *
+   * PR4 引入：原 AssetRecord 没有 taskId，导致 listAssetsByTask 在 local
+   * 模式无法按 taskId 过滤。PR4 给 createAsset / persistOneResult / saveResults
+   * 内部把 taskId 写进 AssetRecord，listAssetsByTask 在 local 实现里改为
+   * 按 taskId 过滤。
+   */
+  taskId?: string | null
 }
 
 export interface ResultAsset {
@@ -92,6 +102,15 @@ export interface ResultAsset {
 
 export interface GenerationTask {
   taskId: string
+  /**
+   * 任务所属用户 id。
+   *
+   * PR4 引入：原 GenerationTask 没有 userId，导致 listTasks / getTask
+   * 没法按用户隔离。PR4 给 createTask 加 userId 形参，由 API 路由通过
+   * requireUser 注入；历史任务（PR3 之前创建）该字段可能为 undefined，
+   * 调用方应做 graceful fallback（local 模式视为 demo_user）。
+   */
+  userId?: string
   featureType: FeatureType
   workflowId: string
   inputAssetIds: string[]

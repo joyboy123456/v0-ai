@@ -90,7 +90,9 @@ function buildTaskRow(task: GenerationTask): TaskRow {
   const updatedMs = parseTimestampMs(task.finishedAt) ?? createdMs
   return {
     id: task.taskId,
-    userId: task.inputAssets?.[0]?.userId ?? defaultUserId,
+    // PR4：task.userId 在 createTask 时由调用方（API 路由）通过 requireUser 传入并落到 task 实体；
+    // 历史数据（PR3 之前）可能没填，回退到第一张输入资产或默认 demo_user。
+    userId: task.userId ?? task.inputAssets?.[0]?.userId ?? defaultUserId,
     type: task.featureType,
     status: task.status,
     payloadJson: JSON.stringify({
@@ -102,6 +104,7 @@ function buildTaskRow(task: GenerationTask): TaskRow {
       message: task.message,
       errorMessage: task.errorMessage,
       creditsUsed: task.creditsUsed,
+      userId: task.userId,
     }),
     resultJson: JSON.stringify({
       resultAssetIds: task.resultAssetIds,
@@ -127,7 +130,7 @@ function buildAssetRow(
   return {
     id: asset.assetId,
     userId: asset.userId || defaultUserId,
-    taskId: options?.taskId ?? null,
+    taskId: options?.taskId ?? asset.taskId ?? null,
     kind,
     r2Key: asset.fileUrl ?? '',
     publicUrl: asset.fileUrl ?? null,
@@ -223,18 +226,26 @@ export async function createAsset(input: {
   height?: number
   fileUrl?: string
   dataUrl?: string
+  /** PR4：归属用户 id。未传或为空时回退到 defaultUserId（local 兼容旧调用点）。 */
+  userId?: string
+  /** PR4：关联的 taskId（仅 generated 类资产）。upload 类一般不传。 */
+  taskId?: string | null
 }) {
   await ensureStoreReady()
   const assetId = createId('asset')
+  const effectiveUserId =
+    input.userId && input.userId.trim() ? input.userId : defaultUserId
   // PR3：通过 storage-adapter 写图；local 模式落盘路径与之前等价
   // （/generated/assets/{id}.ext），cloud 模式落 R2。
+  // PR4：把 effectiveUserId 透传给 adapter，cloud 模式下 R2 路径前缀
+  // `users/{userId}/assets/...` 实现数据隔离。
   const persistedFile = input.dataUrl
-    ? await storeAssetFromDataUrl(input.dataUrl, assetId, input.fileType, defaultUserId)
+    ? await storeAssetFromDataUrl(input.dataUrl, assetId, input.fileType, effectiveUserId)
     : null
 
   const asset: AssetRecord = {
     assetId,
-    userId: defaultUserId,
+    userId: effectiveUserId,
     projectId: defaultProjectId,
     fileName: input.fileName,
     fileUrl: persistedFile?.url ?? input.fileUrl ?? '/placeholder.jpg',
@@ -243,13 +254,16 @@ export async function createAsset(input: {
     width: input.width ?? 1024,
     height: input.height ?? 1365,
     createdAt: new Date().toISOString(),
+    taskId: input.taskId ?? null,
   }
 
   store.assets.set(asset.assetId, asset)
   // PR3：shadow write 到 repo。local 模式 repo 共享同一份 Map，等价 no-op；
   // cloud 模式会写入 D1 assets 表。失败不阻塞主流程，仅记录到 stderr。
   try {
-    await taskRepo().insertAsset(buildAssetRow(asset, { kind: 'upload' }))
+    await taskRepo().insertAsset(
+      buildAssetRow(asset, { kind: 'upload', taskId: input.taskId ?? null }),
+    )
   } catch (error) {
     console.error('[task-store] insertAsset 失败：', error)
   }
@@ -262,25 +276,55 @@ export async function getAsset(assetId: string) {
   return store.assets.get(assetId)
 }
 
-export async function listTasks() {
+/**
+ * 列出任务。PR4 起支持按 userId 过滤。
+ *
+ * - 不传 opts.userId（或传 undefined / 空字符串）：返回全表（兼容历史调用）
+ * - 传 opts.userId：仅返回 task.userId === opts.userId 的任务
+ *
+ * 与 listTasksByUser repo 接口保持同向：local 模式过滤 in-memory map，
+ * cloud 模式由 D1 WHERE 子句过滤。
+ */
+export async function listTasks(opts?: { userId?: string }) {
   await ensureStoreReady()
+  const userId = opts?.userId?.trim()
   return Array.from(store.tasks.values())
+    .filter((task) => {
+      if (!userId) return true
+      // 历史任务 task.userId 可能 undefined，过滤时视为 demo_user
+      return (task.userId ?? defaultUserId) === userId
+    })
     .map(hydrateTaskInputAssets)
     .sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )
 }
 
-export async function getTask(taskId: string) {
+/**
+ * 获取单个任务。PR4 起支持 ownership 校验。
+ *
+ * - 不传 opts.userId：返回 task（兼容历史调用 / 内部 service 间互调）
+ * - 传 opts.userId：仅在 task.userId === opts.userId 时返回；不匹配返回 undefined
+ *   （等价于 task 不存在，由 API 路由统一返回 404，不暴露存在性）
+ */
+export async function getTask(taskId: string, opts?: { userId?: string }) {
   await ensureStoreReady()
   const task = store.tasks.get(taskId)
-  return task ? hydrateTaskInputAssets(task) : undefined
+  if (!task) return undefined
+  const userId = opts?.userId?.trim()
+  if (userId) {
+    const ownerId = task.userId ?? defaultUserId
+    if (ownerId !== userId) return undefined
+  }
+  return hydrateTaskInputAssets(task)
 }
 
 export async function createTask(input: {
   featureType: FeatureType
   inputAssetIds: string[]
   params: TaskParams
+  /** PR4：任务归属用户 id。未传则回退到 defaultUserId（local 兼容旧调用点）。 */
+  userId?: string
 }) {
   await ensureStoreReady()
   if (!FEATURE_WORKFLOWS[input.featureType]) {
@@ -300,9 +344,12 @@ export async function createTask(input: {
     throw new Error(`素材不存在：${missingAsset}`)
   }
 
+  const effectiveUserId =
+    input.userId && input.userId.trim() ? input.userId : defaultUserId
   const taskId = createId('task')
   const task: GenerationTask = {
     taskId,
+    userId: effectiveUserId,
     featureType: input.featureType,
     workflowId: FEATURE_WORKFLOWS[input.featureType],
     inputAssetIds: input.inputAssetIds,
@@ -364,6 +411,9 @@ async function runTask(taskId: string) {
   const task = store.tasks.get(taskId)
   if (!task) return
 
+  // PR4：task.userId 由 createTask 注入；historical task 没存 userId 时回退到 defaultUserId。
+  const ownerUserId = task.userId ?? defaultUserId
+
   try {
     updateTask(taskId, {
       status: 'running',
@@ -404,7 +454,7 @@ async function runTask(taskId: string) {
     const persistedResults: ResultAsset[] = []
     const onShotResult = useStreamingPersist
       ? async (result: ResultAsset) => {
-          await persistOneResult(taskId, result)
+          await persistOneResult(taskId, result, ownerUserId)
           persistedResults.push(result)
         }
       : undefined
@@ -438,7 +488,7 @@ async function runTask(taskId: string) {
     const finalResults = useStreamingPersist ? persistedResults : results
     const resultAssetIds = useStreamingPersist
       ? persistedResults.map((item) => item.assetId)
-      : await saveResults(results)
+      : await saveResults(results, taskId, ownerUserId)
 
     const { status, message } = resolveTaskCompletion(task, finalResults)
     updateTask(taskId, {
@@ -469,16 +519,21 @@ async function runTask(taskId: string) {
  * 仅供 photo-fission onShotResult 回调使用。runTask 最终会用 persistedResults 替代
  * pipeline 返回值并跳过 saveResults，避免重复写盘。
  */
-async function persistOneResult(taskId: string, result: ResultAsset) {
+async function persistOneResult(
+  taskId: string,
+  result: ResultAsset,
+  ownerUserId: string = defaultUserId,
+) {
   // PR3：通过 storage-adapter 写「生成结果图」。local 模式仍落
   // `public/generated/results/{id}.ext`，cloud 模式落 R2 `users/{userId}/results/`。
-  const persisted = await storeResultFromResultAsset(result, defaultUserId)
+  // PR4：把 ownerUserId 透传给 adapter，cloud 模式下 R2 路径按用户隔离。
+  const persisted = await storeResultFromResultAsset(result, ownerUserId)
   result.url = persisted.url
   result.downloadUrl = persisted.url
 
   const asset: AssetRecord = {
     assetId: result.assetId,
-    userId: defaultUserId,
+    userId: ownerUserId,
     projectId: defaultProjectId,
     fileName: `${result.assetId}.jpg`,
     fileUrl: persisted.url,
@@ -486,6 +541,7 @@ async function persistOneResult(taskId: string, result: ResultAsset) {
     width: result.width,
     height: result.height,
     createdAt: new Date().toISOString(),
+    taskId,
   }
   store.assets.set(asset.assetId, asset)
   try {
@@ -584,16 +640,21 @@ function resolveTaskCompletion(task: GenerationTask, results: ResultAsset[]) {
   }
 }
 
-async function saveResults(results: ResultAsset[]) {
+async function saveResults(
+  results: ResultAsset[],
+  taskId?: string,
+  ownerUserId: string = defaultUserId,
+) {
   const resultAssetIds: string[] = []
 
   for (const result of results) {
     // PR3：通过 storage-adapter 写图。失败抛出由 runTask 外层 catch 接住标 failed。
-    const persistedResult = await storeResultFromResultAsset(result, defaultUserId)
+    // PR4：透传 ownerUserId，cloud 模式 R2 路径按用户隔离。
+    const persistedResult = await storeResultFromResultAsset(result, ownerUserId)
     const resultUrl = persistedResult.url
     const asset: AssetRecord = {
       assetId: result.assetId,
-      userId: defaultUserId,
+      userId: ownerUserId,
       projectId: defaultProjectId,
       fileName: `${result.assetId}.jpg`,
       fileUrl: resultUrl,
@@ -601,6 +662,7 @@ async function saveResults(results: ResultAsset[]) {
       width: result.width,
       height: result.height,
       createdAt: new Date().toISOString(),
+      taskId: taskId ?? null,
     }
 
     store.assets.set(asset.assetId, asset)
@@ -608,6 +670,7 @@ async function saveResults(results: ResultAsset[]) {
       await taskRepo().insertAsset(
         buildAssetRow(asset, {
           kind: 'generated',
+          taskId: taskId ?? null,
           bytes: persistedResult.bytes ?? null,
         }),
       )
@@ -779,11 +842,18 @@ function getExtension(mimeType: string) {
 export async function retryPhotoFissionShots(
   taskId: string,
   shotIds: string[],
+  userId?: string,
 ): Promise<GenerationTask> {
   await ensureStoreReady()
 
   const task = store.tasks.get(taskId)
   if (!task) {
+    throw new Error('任务不存在')
+  }
+  // PR4：ownership 校验。userId 传了就必须匹配，避免越权重跑别人的任务。
+  const ownerUserId = task.userId ?? defaultUserId
+  if (userId && userId.trim() && ownerUserId !== userId.trim()) {
+    // 与「任务不存在」语义对齐，避免暴露任务存在性给非授权用户
     throw new Error('任务不存在')
   }
   if (task.featureType !== 'photo-fission') {
@@ -850,7 +920,7 @@ export async function retryPhotoFissionShots(
       timeoutMs: Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000),
       targetShotIds: uniqueShotIds,
       onShotResult: async (result) => {
-        await persistOneResult(taskId, result)
+        await persistOneResult(taskId, result, ownerUserId)
       },
     })
   } catch (error) {
@@ -917,11 +987,17 @@ export async function retryPhotoFissionShots(
 export async function retryPoseFissionShots(
   taskId: string,
   templateIds: string[],
+  userId?: string,
 ): Promise<GenerationTask> {
   await ensureStoreReady()
 
   const task = store.tasks.get(taskId)
   if (!task) {
+    throw new Error('任务不存在')
+  }
+  // PR4：ownership 校验。
+  const ownerUserId = task.userId ?? defaultUserId
+  if (userId && userId.trim() && ownerUserId !== userId.trim()) {
     throw new Error('任务不存在')
   }
   if (task.featureType !== 'pose-fission') {
@@ -993,7 +1069,7 @@ export async function retryPoseFissionShots(
       timeoutMs: Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000),
       targetTemplateIds: uniqueTemplateIds,
       onShotResult: async (result) => {
-        await persistOneResult(taskId, result)
+        await persistOneResult(taskId, result, ownerUserId)
       },
     })
   } catch (error) {
@@ -1050,11 +1126,18 @@ export async function retryPoseFissionShots(
 export async function deleteResultFromTask(
   taskId: string,
   assetId: string,
+  userId?: string,
 ): Promise<boolean> {
   await ensureStoreReady()
 
   const task = store.tasks.get(taskId)
   if (!task) return false
+
+  // PR4：ownership 校验。userId 传了且不匹配，按「未找到」语义返回 false（不暴露存在性）。
+  const ownerUserId = task.userId ?? defaultUserId
+  if (userId && userId.trim() && ownerUserId !== userId.trim()) {
+    return false
+  }
 
   const resultIndex = task.results.findIndex((item) => item.assetId === assetId)
   const inIdsList = task.resultAssetIds.includes(assetId)

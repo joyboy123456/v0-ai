@@ -1,4 +1,5 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { requireUser } from '@/lib/server/auth/require-user'
 import { retryPhotoFissionShots } from '@/lib/server/task-store'
 
 interface RouteContext {
@@ -7,14 +8,22 @@ interface RouteContext {
   }>
 }
 
+export const runtime = 'nodejs'
+
 /**
  * POST /api/tasks/:taskId/retry-shots
  * Body: { shotIds: string[] }
  *
  * 重跑 photo-fission 任务中失败的镜头。仅 partial/failed 状态可用，
  * 复用原 inputAssetIds 与 shotPlan，流式持久化合并回原 task。
+ *
+ * PR4：加 userId 鉴权 + ownership 校验（task-store 内部按「任务不存在」处理越权）。
  */
-export async function POST(request: Request, context: RouteContext) {
+export async function POST(request: NextRequest, context: RouteContext) {
+  const userResult = await requireUser(request)
+  if (userResult instanceof NextResponse) return userResult
+  const { userId } = userResult
+
   const { taskId } = await context.params
 
   let body: unknown
@@ -41,7 +50,7 @@ export async function POST(request: Request, context: RouteContext) {
   }
 
   try {
-    const task = await retryPhotoFissionShots(taskId, shotIds)
+    const task = await retryPhotoFissionShots(taskId, shotIds, userId)
     return NextResponse.json(task)
   } catch (error) {
     const message = error instanceof Error ? error.message : '未知错误'

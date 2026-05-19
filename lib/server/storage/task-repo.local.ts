@@ -124,7 +124,8 @@ function assetToRow(asset: AssetRecord): AssetRow {
   return {
     id: asset.assetId,
     userId: asset.userId || DEFAULT_USER_ID_FALLBACK,
-    taskId: null, // local 模式 task-store 没在 AssetRecord 里记 taskId
+    // PR4：AssetRecord 增加了 taskId 字段（仅 generated 资产有意义）。
+    taskId: asset.taskId ?? null,
     kind: asset.fileUrl?.includes('/results/') ? 'generated' : 'upload',
     r2Key: asset.fileUrl ?? '',
     publicUrl: asset.fileUrl ?? null,
@@ -147,6 +148,7 @@ function rowToAsset(row: AssetRow): AssetRecord {
     width: row.width ?? 1024,
     height: row.height ?? 1365,
     createdAt: new Date(row.createdAt).toISOString(),
+    taskId: row.taskId ?? null,
   }
 }
 
@@ -247,11 +249,15 @@ export function createLocalTaskRepo(): TaskRepo {
       return task ? taskToRow(task) : null
     },
 
-    async listTasksByUser(_userId, opts) {
-      // PR3：不按 userId 过滤，全表返回。PR4 才接 user 隔离。
+    async listTasksByUser(userId, opts) {
+      // PR4：按 userId 过滤。空字符串 / 'demo_user' 视为「不过滤」（兼容历史调用）。
       const store = getSharedStore()
       const all = Array.from(store.tasks.values())
         .map(taskToRow)
+        .filter((row) => {
+          if (!userId || userId === DEFAULT_USER_ID_FALLBACK) return true
+          return row.userId === userId
+        })
         .sort((a, b) => b.createdAt - a.createdAt)
       const offset = opts?.offset ?? 0
       const limit = opts?.limit ?? all.length
@@ -275,14 +281,22 @@ export function createLocalTaskRepo(): TaskRepo {
       return asset ? assetToRow(asset) : null
     },
 
-    async listAssetsByTask(_taskId) {
-      // local 模式 AssetRecord 没存 taskId，没法过滤。PR4 改造 schema 之前先返回空集。
-      return []
+    async listAssetsByTask(taskId) {
+      // PR4：AssetRecord 现已携带 taskId 字段，按 taskId 过滤即可。
+      const store = getSharedStore()
+      return Array.from(store.assets.values())
+        .filter((asset) => asset.taskId === taskId)
+        .map(assetToRow)
+        .sort((a, b) => a.createdAt - b.createdAt)
     },
 
-    async listAssetsByUser(_userId, opts) {
+    async listAssetsByUser(userId, opts) {
       const store = getSharedStore()
       const all = Array.from(store.assets.values())
+        .filter((asset) => {
+          if (!userId || userId === DEFAULT_USER_ID_FALLBACK) return true
+          return asset.userId === userId
+        })
         .map(assetToRow)
         .sort((a, b) => b.createdAt - a.createdAt)
       const offset = opts?.offset ?? 0

@@ -1,4 +1,5 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { requireUser } from '@/lib/server/auth/require-user'
 import { createTask, listTasks } from '@/lib/server/task-store'
 import { FEATURES, type FeatureType, type TaskParams } from '@/lib/types'
 
@@ -10,13 +11,23 @@ interface CreateTaskBody {
 
 const featureIds = new Set<FeatureType>(FEATURES.map((feature) => feature.id))
 
-export async function GET() {
+export const runtime = 'nodejs'
+
+export async function GET(request: NextRequest) {
+  const userResult = await requireUser(request)
+  if (userResult instanceof NextResponse) return userResult
+  const { userId } = userResult
+
   return NextResponse.json({
-    tasks: await listTasks(),
+    tasks: await listTasks({ userId }),
   })
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+  const userResult = await requireUser(request)
+  if (userResult instanceof NextResponse) return userResult
+  const { userId } = userResult
+
   try {
     const body = (await request.json()) as CreateTaskBody
 
@@ -35,6 +46,7 @@ export async function POST(request: Request) {
       featureType: body.featureType as FeatureType,
       inputAssetIds: body.inputAssetIds,
       params: body.params,
+      userId,
     })
 
     return NextResponse.json({

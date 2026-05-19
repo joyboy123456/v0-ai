@@ -1,5 +1,8 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { requireUser } from '@/lib/server/auth/require-user'
 import { createAsset } from '@/lib/server/task-store'
+
+export const runtime = 'nodejs'
 
 // R6 输入预检：原始字节 > 7.5MB 时 base64 编码后约 10MB，接近 Google API 单图上限。
 // 这里按原始字节 7.5MB 拒绝，避免 base64 inline_data 超过 Google ~10MB 软上限触发 400。
@@ -14,7 +17,11 @@ const ALLOWED_MIME_TYPES = new Set([
   'image/gif',
 ])
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+  const userResult = await requireUser(request)
+  if (userResult instanceof NextResponse) return userResult
+  const { userId } = userResult
+
   const formData = await request.formData()
   const file = formData.get('file')
 
@@ -58,6 +65,8 @@ export async function POST(request: Request) {
   const dataUrl = `data:${mimeType};base64,${base64}`
   const dimensions = readImageDimensions(formData)
 
+  // PR4：把 userId 传给 createAsset，cloud 模式下 R2 路径前缀
+  // `users/{userId}/assets/...` 实现数据隔离。
   const asset = await createAsset({
     fileName: file.name,
     fileType: mimeType,
@@ -65,6 +74,7 @@ export async function POST(request: Request) {
     dataUrl,
     width: dimensions.width,
     height: dimensions.height,
+    userId,
   })
 
   return NextResponse.json({
