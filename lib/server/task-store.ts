@@ -11,6 +11,12 @@ import {
   runPhotoFissionPipeline,
 } from '@/lib/server/photo-fission-service'
 import {
+  getStorageAdapter,
+  getTaskRepo,
+  type AssetRow,
+  type TaskRow,
+} from '@/lib/server/storage'
+import {
   FEATURE_WORKFLOWS,
   type AssetRecord,
   type FeatureType,
@@ -20,7 +26,7 @@ import {
   type ResultAsset,
   type TaskParams,
 } from '@/lib/types'
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 const globalStore = globalThis as typeof globalThis & {
@@ -42,9 +48,8 @@ const defaultProjectId = 'demo_project'
 const workspaceRoot = process.cwd()
 const dataDir = path.join(workspaceRoot, 'data')
 const storeFilePath = path.join(dataDir, 'fashion-mvp-store.json')
-const publicGeneratedDir = path.join(workspaceRoot, 'public', 'generated')
-const publicAssetDir = path.join(publicGeneratedDir, 'assets')
-const publicResultDir = path.join(publicGeneratedDir, 'results')
+// PR3：原 publicGeneratedDir / publicAssetDir / publicResultDir 物理路径已下沉到
+// storage-adapter（local 实现），本文件不再直写 `public/generated/**`。
 let storeLoaded = false
 const storeReady = loadPersistedStore().finally(() => {
   storeLoaded = true
@@ -61,6 +66,156 @@ function getCredits(params: TaskParams) {
   return 0
 }
 
+// -----------------------------------------------------------------------------
+// PR3：storage 适配层接入点
+// -----------------------------------------------------------------------------
+//
+// 本节函数把 task-store 内部读写「图片字节流」/「Row 元数据」的能力，
+// 收口到 `lib/server/storage` 抽象。改造原则（参考任务说明）：
+// 1. 对外签名不变，所有 import task-store 的文件无需修改。
+// 2. 流式持久化 / 单失败容忍 / 子集重跑（streaming-fission-pipeline.md）
+//    在 local 模式下行为完全等价：底层 Map 仍是 `globalThis.fashionMvpStore`
+//    （local 模式 repo 共享同一份 Map）。
+// 3. 不引入新依赖，aws4fetch 已在 PR1 装好。
+//
+// 关于「shadow write」：local 模式 `getTaskRepo()` 返回的 repo 直接读写
+// `globalThis.fashionMvpStore`，所以 `repo.insertTask` 等于 `store.tasks.set`。
+// 不会双写，只是把写入入口收口在一个地方。
+
+const storage = () => getStorageAdapter()
+const taskRepo = () => getTaskRepo()
+
+function buildTaskRow(task: GenerationTask): TaskRow {
+  const createdMs = parseTimestampMs(task.createdAt) ?? Date.now()
+  const updatedMs = parseTimestampMs(task.finishedAt) ?? createdMs
+  return {
+    id: task.taskId,
+    userId: task.inputAssets?.[0]?.userId ?? defaultUserId,
+    type: task.featureType,
+    status: task.status,
+    payloadJson: JSON.stringify({
+      featureType: task.featureType,
+      workflowId: task.workflowId,
+      inputAssetIds: task.inputAssetIds,
+      params: task.params,
+      progress: task.progress,
+      message: task.message,
+      errorMessage: task.errorMessage,
+      creditsUsed: task.creditsUsed,
+    }),
+    resultJson: JSON.stringify({
+      resultAssetIds: task.resultAssetIds,
+      results: task.results,
+      finishedAt: task.finishedAt,
+    }),
+    createdAt: createdMs,
+    updatedAt: updatedMs,
+  }
+}
+
+function buildAssetRow(
+  asset: AssetRecord,
+  options?: {
+    kind?: AssetRow['kind']
+    taskId?: string | null
+    bytes?: number | null
+  },
+): AssetRow {
+  const createdMs = parseTimestampMs(asset.createdAt) ?? Date.now()
+  const kind =
+    options?.kind ?? (asset.fileUrl?.includes('/results/') ? 'generated' : 'upload')
+  return {
+    id: asset.assetId,
+    userId: asset.userId || defaultUserId,
+    taskId: options?.taskId ?? null,
+    kind,
+    r2Key: asset.fileUrl ?? '',
+    publicUrl: asset.fileUrl ?? null,
+    mime: asset.fileType ?? null,
+    bytes: options?.bytes ?? null,
+    width: asset.width ?? null,
+    height: asset.height ?? null,
+    createdAt: createdMs,
+  }
+}
+
+function parseTimestampMs(iso: string | undefined): number | null {
+  if (!iso) return null
+  const time = new Date(iso).getTime()
+  return Number.isFinite(time) ? time : null
+}
+
+/**
+ * 通过 storage-adapter 写一张「上传图 / 资产图」。
+ * local 模式落 `public/generated/assets/`；cloud 模式落 R2 `users/{userId}/assets/`。
+ *
+ * 与原 `persistDataUrl(publicAssetDir, ...)` 等价，但把扩展名推断 + 文件名拼接 +
+ * 落盘路径计算全部收口在 adapter；调用方只需要 dataUrl + 标识符。
+ */
+async function storeAssetFromDataUrl(
+  dataUrl: string,
+  assetId: string,
+  mimeTypeHint: string,
+  userId: string,
+): Promise<{ url: string; mime: string } | null> {
+  const extension = getExtension(mimeTypeHint || 'image/png')
+  const filename = `${assetId}.${extension}`
+  try {
+    const result = await storage().putImageFromDataUrl({
+      userId: userId === defaultUserId ? null : userId, // local 兼容旧路径
+      bucket: 'assets',
+      filename,
+      dataUrl,
+    })
+    return { url: result.publicUrl, mime: result.mime }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 通过 storage-adapter 写一张「生成结果图」。
+ * 替代原 `persistResultImage`，保持「dataURL 直存 / HTTP URL 拉回再存」两种入口。
+ */
+async function storeResultFromResultAsset(
+  result: ResultAsset,
+  userId: string,
+): Promise<{ url: string; bytes?: number }> {
+  if (result.url.startsWith('data:')) {
+    const persisted = await storage().putImageFromDataUrl({
+      userId: userId === defaultUserId ? null : userId,
+      bucket: 'results',
+      filename: `${result.assetId}.${getExtension(extractDataUrlMime(result.url) ?? 'image/png')}`,
+      dataUrl: result.url,
+    })
+    return { url: persisted.publicUrl, bytes: persisted.bytes }
+  }
+
+  if (!result.url.startsWith('http')) {
+    throw new Error(`生成图归档失败：URL 协议不支持（${result.url}）`)
+  }
+
+  const response = await fetch(result.url)
+  if (!response.ok) {
+    throw new Error(`生成图归档失败：HTTP ${response.status}（${result.url}）`)
+  }
+  const mimeType = response.headers.get('content-type') ?? 'image/jpeg'
+  const buffer = Buffer.from(await response.arrayBuffer())
+  const persisted = await storage().putImage({
+    userId: userId === defaultUserId ? null : userId,
+    bucket: 'results',
+    filename: `${result.assetId}.${getExtension(mimeType)}`,
+    body: buffer,
+    contentType: mimeType,
+  })
+  return { url: persisted.publicUrl, bytes: persisted.bytes }
+}
+
+function extractDataUrlMime(dataUrl: string): string | null {
+  const match = dataUrl.match(/^data:([^;]+);base64,/)
+  return match ? match[1] : null
+}
+
 export async function createAsset(input: {
   fileName: string
   fileType: string
@@ -71,8 +226,10 @@ export async function createAsset(input: {
 }) {
   await ensureStoreReady()
   const assetId = createId('asset')
+  // PR3：通过 storage-adapter 写图；local 模式落盘路径与之前等价
+  // （/generated/assets/{id}.ext），cloud 模式落 R2。
   const persistedFile = input.dataUrl
-    ? await persistDataUrl(input.dataUrl, publicAssetDir, assetId, input.fileType)
+    ? await storeAssetFromDataUrl(input.dataUrl, assetId, input.fileType, defaultUserId)
     : null
 
   const asset: AssetRecord = {
@@ -89,6 +246,13 @@ export async function createAsset(input: {
   }
 
   store.assets.set(asset.assetId, asset)
+  // PR3：shadow write 到 repo。local 模式 repo 共享同一份 Map，等价 no-op；
+  // cloud 模式会写入 D1 assets 表。失败不阻塞主流程，仅记录到 stderr。
+  try {
+    await taskRepo().insertAsset(buildAssetRow(asset, { kind: 'upload' }))
+  } catch (error) {
+    console.error('[task-store] insertAsset 失败：', error)
+  }
   await persistStore()
   return asset
 }
@@ -153,6 +317,13 @@ export async function createTask(input: {
   }
 
   store.tasks.set(taskId, task)
+  // PR3：shadow write 到 repo。local 模式 repo 共享同一份 Map，等价 no-op；
+  // cloud 模式会写入 D1 tasks 表。失败不阻塞主流程。
+  try {
+    await taskRepo().insertTask(buildTaskRow(task))
+  } catch (error) {
+    console.error('[task-store] insertTask 失败：', error)
+  }
   void persistStore()
   void runTask(taskId)
 
@@ -299,7 +470,9 @@ async function runTask(taskId: string) {
  * pipeline 返回值并跳过 saveResults，避免重复写盘。
  */
 async function persistOneResult(taskId: string, result: ResultAsset) {
-  const persisted = await persistResultImage(result)
+  // PR3：通过 storage-adapter 写「生成结果图」。local 模式仍落
+  // `public/generated/results/{id}.ext`，cloud 模式落 R2 `users/{userId}/results/`。
+  const persisted = await storeResultFromResultAsset(result, defaultUserId)
   result.url = persisted.url
   result.downloadUrl = persisted.url
 
@@ -315,6 +488,17 @@ async function persistOneResult(taskId: string, result: ResultAsset) {
     createdAt: new Date().toISOString(),
   }
   store.assets.set(asset.assetId, asset)
+  try {
+    await taskRepo().insertAsset(
+      buildAssetRow(asset, {
+        kind: 'generated',
+        taskId,
+        bytes: persisted.bytes ?? null,
+      }),
+    )
+  } catch (error) {
+    console.error('[task-store] insertAsset (result) 失败：', error)
+  }
 
   const currentTask = store.tasks.get(taskId)
   if (!currentTask) {
@@ -344,10 +528,25 @@ function updateTask(taskId: string, patch: Partial<GenerationTask>) {
   const task = store.tasks.get(taskId)
   if (!task) return
 
-  store.tasks.set(taskId, {
+  const next = {
     ...task,
     ...patch,
-  })
+  }
+  store.tasks.set(taskId, next)
+  // PR3：shadow write 到 repo。local 模式 repo 共享同一份 Map（已被上面 set 过了），
+  // 这里再调一次 repo.updateTask 在 local 模式下是 no-op；cloud 模式真正写 D1。
+  try {
+    const row = buildTaskRow(next)
+    void taskRepo().updateTask(taskId, {
+      type: row.type,
+      status: row.status,
+      payloadJson: row.payloadJson,
+      resultJson: row.resultJson,
+      updatedAt: row.updatedAt,
+    })
+  } catch (error) {
+    console.error('[task-store] updateTask 失败：', error)
+  }
   void persistStore()
 }
 
@@ -389,8 +588,8 @@ async function saveResults(results: ResultAsset[]) {
   const resultAssetIds: string[] = []
 
   for (const result of results) {
-    // B-fix: persistResultImage 失败会抛出，runTask 外层 catch 接住后标记任务 failed
-    const persistedResult = await persistResultImage(result)
+    // PR3：通过 storage-adapter 写图。失败抛出由 runTask 外层 catch 接住标 failed。
+    const persistedResult = await storeResultFromResultAsset(result, defaultUserId)
     const resultUrl = persistedResult.url
     const asset: AssetRecord = {
       assetId: result.assetId,
@@ -405,6 +604,16 @@ async function saveResults(results: ResultAsset[]) {
     }
 
     store.assets.set(asset.assetId, asset)
+    try {
+      await taskRepo().insertAsset(
+        buildAssetRow(asset, {
+          kind: 'generated',
+          bytes: persistedResult.bytes ?? null,
+        }),
+      )
+    } catch (error) {
+      console.error('[task-store] insertAsset (saveResults) 失败：', error)
+    }
     result.url = resultUrl
     result.downloadUrl = resultUrl
     resultAssetIds.push(asset.assetId)
@@ -516,27 +725,16 @@ async function writeStoreFile(): Promise<void> {
   )
 }
 
-async function persistDataUrl(dataUrl: string, directory: string, fileId: string, mimeType: string) {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
-  if (!match) return null
-
-  const extension = getExtension(match[1] || mimeType)
-  await mkdir(directory, { recursive: true })
-  const fileName = `${fileId}.${extension}`
-  const absolutePath = path.join(directory, fileName)
-  await writeFile(absolutePath, Buffer.from(match[2], 'base64'))
-
-  return {
-    url: `/generated/${path.basename(directory)}/${fileName}`,
-  }
-}
-
 /**
  * Convert an asset record into a self-contained data URL the third-party API can consume.
  *
  * The third-party proxy receives the request from the Node server and has no way to fetch
  * relative URLs like `/generated/assets/foo.png`. So whenever an asset only has a relative
  * fileUrl, we read the file from disk and inline it as a data URL.
+ *
+ * PR3 注：cloud 模式 `fileUrl` 是 R2 公共 URL（https://pub-xxx.r2.dev/...），
+ * 走分支 2（http(s)）直接由 third-party API 远端拉取，本函数无需改动。
+ * 仅 local 模式才进入 `/generated/` 磁盘读取分支。
  */
 async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null> {
   const { fileUrl, fileType } = asset
@@ -559,46 +757,6 @@ async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null>
   }
 
   return null
-}
-
-/**
- * B-fix: 持久化失败时显式抛错，由 runTask 外层 catch 接住将任务标记为 failed，
- * 避免客户拿到上游临时 URL 显示 404。
- */
-async function persistResultImage(result: ResultAsset) {
-  if (result.url.startsWith('data:')) {
-    const persisted = await persistDataUrl(
-      result.url,
-      publicResultDir,
-      result.assetId,
-      'image/png',
-    )
-    if (!persisted) {
-      throw new Error(`生成图归档失败：无法解析 dataURL（assetId=${result.assetId}）`)
-    }
-    return persisted
-  }
-
-  if (!result.url.startsWith('http')) {
-    throw new Error(`生成图归档失败：URL 协议不支持（${result.url}）`)
-  }
-
-  const response = await fetch(result.url)
-  if (!response.ok) {
-    throw new Error(`生成图归档失败：HTTP ${response.status}（${result.url}）`)
-  }
-
-  const mimeType = response.headers.get('content-type') ?? 'image/jpeg'
-  const extension = getExtension(mimeType)
-  await mkdir(publicResultDir, { recursive: true })
-  const fileName = `${result.assetId}.${extension}`
-  const absolutePath = path.join(publicResultDir, fileName)
-  const buffer = Buffer.from(await response.arrayBuffer())
-  await writeFile(absolutePath, buffer)
-
-  return {
-    url: `/generated/results/${fileName}`,
-  }
 }
 
 function getExtension(mimeType: string) {
@@ -918,6 +1076,11 @@ export async function deleteResultFromTask(
   if (updatedResults.length === 0 && updatedResultAssetIds.length === 0) {
     // task 删空了 → 整 task 一起删，避免历史记录留空壳
     store.tasks.delete(taskId)
+    try {
+      await taskRepo().deleteTask(taskId)
+    } catch (error) {
+      console.error('[task-store] deleteTask 失败：', error)
+    }
   } else {
     store.tasks.set(taskId, {
       ...task,
@@ -927,17 +1090,18 @@ export async function deleteResultFromTask(
   }
 
   store.assets.delete(assetId)
+  try {
+    await taskRepo().deleteAsset(assetId)
+  } catch (error) {
+    console.error('[task-store] deleteAsset 失败：', error)
+  }
   await persistStore()
 
-  // 物理文件删除是 best-effort：磁盘上图缺失也不影响列表正确性
-  if (targetResult?.url && targetResult.url.startsWith('/generated/')) {
-    const absolutePath = path.join(
-      workspaceRoot,
-      'public',
-      targetResult.url.replace(/^\//, ''),
-    )
+  // 物理文件删除是 best-effort：磁盘/R2 上图缺失也不影响列表正确性。
+  // PR3：用 storage-adapter 屏蔽 local（unlink）/ cloud（R2 DELETE）差异。
+  if (targetResult?.url) {
     try {
-      await unlink(absolutePath)
+      await storage().deleteImage(targetResult.url)
     } catch {
       // 文件不存在/权限问题/并发删除：忽略
     }
