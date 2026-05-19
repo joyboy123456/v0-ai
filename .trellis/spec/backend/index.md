@@ -20,6 +20,8 @@
 |---|---|---|
 | [External Image API Reliability](./external-image-api-reliability.md) | 外部图像生成 API（Google Gemini Image，未来七牛云等）的稳定性契约：错误分类、重试退避、限流、熔断、日志、env 命名 | active |
 | [Streaming Fission Pipeline](./streaming-fission-pipeline.md) | 「单任务 N 个子镜头 + 单失败容忍 + 流式持久化 + 子集重跑」fission pipeline 编排契约（photo-fission / pose-fission 共享） | active |
+| [Cloudflare Integration](./cloudflare-integration.md) | Cloudflare R2 / D1 / KV 远程存储集成契约：STORAGE_MODE 双轨、客户端 signature、wrangler `.env.local` 覆盖 trap、错误矩阵 | active |
+| [Multi-User Data Isolation](./multi-user-data-isolation.md) | 多用户数据隔离契约：cookie session → middleware → requireUser → service → repo 跨层数据流，DB / R2 key 强制约束 | active |
 
 ---
 
