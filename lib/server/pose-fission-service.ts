@@ -260,6 +260,10 @@ export async function runPoseFissionPipeline(
     throw new Error('姿势裂变 targetTemplateIds 与 poseTemplateSnapshots 不匹配')
   }
 
+  if (process.env.IMAGE_API_DEMO === '1') {
+    return runPoseFissionDemoPipeline(options, templates)
+  }
+
   const concurrencyRaw = Number(process.env.POSE_FISSION_CONCURRENCY ?? 2)
   const concurrency =
     Number.isFinite(concurrencyRaw) && concurrencyRaw >= 1
@@ -370,4 +374,61 @@ export async function runPoseFissionPipeline(
   }
 
   return successResults
+}
+
+const poseFissionDemoUrls = [
+  '/cases/pose-front-wave.jpg',
+  '/cases/pose-side-walk.jpg',
+  '/cases/pose-cross-step.jpg',
+  '/cases/pose-back-turn.jpg',
+  '/cases/pose-low-crouch.jpg',
+  '/cases/pose-bag-forward.jpg',
+]
+
+async function runPoseFissionDemoPipeline(
+  options: RunPoseFissionPipelineOptions,
+  templates: PoseTemplate[],
+): Promise<ResultAsset[]> {
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+
+  const results: ResultAsset[] = []
+  for (const [index, template] of templates.entries()) {
+    const prompt = buildPoseFissionPrompt(options.params, template)
+    const result: ResultAsset = {
+      assetId: `result_${options.taskId}_${template.id}`,
+      url: poseFissionDemoUrls[index % poseFissionDemoUrls.length],
+      downloadUrl: poseFissionDemoUrls[index % poseFissionDemoUrls.length],
+      width: 900,
+      height: 1200,
+      label: template.name,
+      shotId: template.id,
+      finalPrompt: prompt,
+    }
+
+    if (options.onShotResult) {
+      try {
+        await options.onShotResult(result)
+      } catch (persistError) {
+        const message = persistError instanceof Error ? persistError.message : '未知错误'
+        logImageEvent(
+          'gimg.fail',
+          {
+            traceId: `${options.taskId}_${template.id}`,
+            taskId: options.taskId,
+            shotId: template.id,
+          },
+          { stage: 'persist', reason: message },
+        )
+        continue
+      }
+    }
+
+    results.push(result)
+  }
+
+  if (!results.length) {
+    throw new Error('姿势裂变 Demo 全部姿势失败')
+  }
+
+  return results
 }

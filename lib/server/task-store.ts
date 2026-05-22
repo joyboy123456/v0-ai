@@ -178,7 +178,7 @@ async function storeAssetFromDataUrl(
 
 /**
  * 通过 storage-adapter 写一张「生成结果图」。
- * 替代原 `persistResultImage`，保持「dataURL 直存 / HTTP URL 拉回再存」两种入口。
+ * 替代原 `persistResultImage`，保持「dataURL 直存 / public 相对路径复制 / HTTP URL 拉回再存」三种入口。
  */
 async function storeResultFromResultAsset(
   result: ResultAsset,
@@ -190,6 +190,20 @@ async function storeResultFromResultAsset(
       bucket: 'results',
       filename: `${result.assetId}.${getExtension(extractDataUrlMime(result.url) ?? 'image/png')}`,
       dataUrl: result.url,
+    })
+    return { url: persisted.publicUrl, bytes: persisted.bytes }
+  }
+
+  if (result.url.startsWith('/')) {
+    const publicPath = path.join(workspaceRoot, 'public', result.url.replace(/^\//, ''))
+    const mimeType = getMimeTypeFromPath(publicPath)
+    const buffer = await readFile(publicPath)
+    const persisted = await storage().putImage({
+      userId: userId === defaultUserId ? null : userId,
+      bucket: 'results',
+      filename: `${result.assetId}.${getExtension(mimeType)}`,
+      body: buffer,
+      contentType: mimeType,
     })
     return { url: persisted.publicUrl, bytes: persisted.bytes }
   }
@@ -485,10 +499,15 @@ async function runTask(taskId: string) {
 
     // photo-fission / pose-fission：results 已在 onShotResult 内全部持久化，禁止再走 saveResults 重复写盘。
     // 其他 feature：批量持久化生成 resultAssetIds。
-    const finalResults = useStreamingPersist ? persistedResults : results
-    const resultAssetIds = useStreamingPersist
-      ? persistedResults.map((item) => item.assetId)
-      : await saveResults(results, taskId, ownerUserId)
+    // 正常 fission 生产路径会通过 onShotResult 流式持久化；demo 或未来兜底路径若只返回
+    // results 而未触发回调，则降级走批量保存，避免 CLI / 本地演示拿到空结果。
+    const streamingResults =
+      useStreamingPersist && persistedResults.length ? persistedResults : results
+    const finalResults = useStreamingPersist ? streamingResults : results
+    const resultAssetIds =
+      useStreamingPersist && persistedResults.length
+        ? persistedResults.map((item) => item.assetId)
+        : await saveResults(results, taskId, ownerUserId)
 
     const { status, message } = resolveTaskCompletion(task, finalResults)
     updateTask(taskId, {
@@ -827,6 +846,14 @@ function getExtension(mimeType: string) {
   if (mimeType.includes('webp')) return 'webp'
   if (mimeType.includes('gif')) return 'gif'
   return 'png'
+}
+
+function getMimeTypeFromPath(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase()
+  if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg'
+  if (extension === '.webp') return 'image/webp'
+  if (extension === '.gif') return 'image/gif'
+  return 'image/png'
 }
 
 /**

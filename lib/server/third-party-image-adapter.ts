@@ -55,14 +55,10 @@ const googleImageTimeoutMs = Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 60000
 
 const demoResults: Partial<Record<RunnableFeature, string[]>> = {
   'ai-fashion-photo': [
-    'https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1539109136881-3be0616acf4b?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1509631179647-0177331693ae?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1485968579580-b6d095142e6e?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1496747611176-843222e1e57c?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1469334031218-e382a71b716b?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1475180098004-ca77a66827be?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1483985988355-763728e1935b?w=900&h=1200&fit=crop',
+    '/cases/pose-bag-forward.jpg',
+    '/cases/pose-cross-step.jpg',
+    '/cases/pose-front-wave.jpg',
+    '/cases/pose-side-walk.jpg',
   ],
   'element-replace': [
     'https://images.unsplash.com/photo-1558769132-cb1aea458c5e?w=900&h=1200&fit=crop',
@@ -71,14 +67,15 @@ const demoResults: Partial<Record<RunnableFeature, string[]>> = {
     'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=900&h=1200&fit=crop',
   ],
   'photo-fission': [
-    'https://images.unsplash.com/photo-1485230895905-ec40ba36b9bc?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1495385794356-15371f348c31?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1506629905607-d9d297d20b6b?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1513094735237-8f2714d57c13?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1532453288672-3a27e9be9efd?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1552374196-1ab2a1c593e8?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1556905055-8f358a7a47b2?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1520975954732-35dd22299614?w=900&h=1200&fit=crop',
+    '/cases/photo-fission-kid-white-tee-shot-1.jpg',
+    '/cases/photo-fission-kid-white-tee-shot-2.jpg',
+    '/cases/photo-fission-kid-white-tee-shot-3.jpg',
+    '/cases/photo-fission-kid-white-tee-shot-4.jpg',
+    '/cases/photo-fission-kid-white-tee-shot-5.jpg',
+    '/cases/photo-fission-kid-white-tee-shot-6.jpg',
+    '/cases/photo-fission-kid-white-tee-shot-7.jpg',
+    '/cases/photo-fission-kid-white-tee-shot-8.jpg',
+    '/cases/photo-fission-kid-white-tee-shot-9.jpg',
   ],
   // pose-fission 走 task-store 内的 runPoseFissionPipeline 直连分支，
   // 不再经过 runThirdPartyWorkflow（也不消费此 demoResults['pose-fission']）。
