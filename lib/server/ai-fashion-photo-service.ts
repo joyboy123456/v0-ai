@@ -208,7 +208,7 @@ function readPromptMode(value: unknown): FashionPromptMode {
 }
 
 /**
- * 旧任务或前端遗漏 model 字段时降级到默认 3.1 稳定版，避免阻塞生成。
+ * 旧任务或前端遗漏 model 字段时降级到默认 Nano Banana，避免阻塞生成。
  * 显式传入但不在白名单（含已下线的 2.5）→ 直接拒绝，防止脏配置打通。
  */
 function readFashionModel(value: unknown): FashionModelId {

@@ -13,12 +13,23 @@ import {
   type PoseTemplate,
   type ResultAsset,
 } from '@/lib/types'
-import { runGoogleImageEdit } from './google-genai-adapter'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+import {
+  dispatchItemsForModel,
+  getAvailableProvidersForModel,
+  getFailoverProviderForModel,
+  getNoAvailableProviderMessage,
+  isGoogleImageModel,
+  type ImageProvider,
+} from './image-provider-pool'
 import { logImageEvent } from './log'
+import { runImageEditViaProvider } from './provider-image-router'
 
 const POSE_FISSION_MIN_TEMPLATES = 1
 const POSE_FISSION_MAX_TEMPLATES = 9
 const POSE_FISSION_CREDITS_COST = 0 as const
+const publicDir = path.resolve(process.cwd(), 'public')
 
 const poseImageRatioIds = new Set<PoseImageRatio>(
   // POSE_IMAGE_RATIOS 仅含 10 个真实比例；'more' 是前端 UI 概念，
@@ -107,7 +118,8 @@ export function buildPoseFissionPrompt(
 ): string {
   return [
     '基于上传的服装模特成片进行姿势裂变。',
-    '第一张图是需要保持人物、服装和画面质感的主图，后续图片若存在则是产品正面或背面细节参考。',
+    '第一张图是需要保持人物、服装和画面质感的主图，中间图片若存在则是产品正面或背面细节参考，最后一张图是目标姿势模板图。',
+    '目标姿势模板图只用于参考人体姿势、肢体角度、朝向和构图；不要复制模板图的人物身份、脸、发型、服装、背景或道具。',
     `目标姿势：${template.name}。`,
     template.prompt ? `姿势要求：${template.prompt}。` : '',
     params.hasFrontDetail
@@ -216,13 +228,14 @@ interface PoseRunResult {
   template: PoseTemplate
   result?: ResultAsset
   error?: string
+  providerId?: string
 }
 
 /**
- * 逐姿势模板调度 Google adapter。每个 template 单独调用一次 runGoogleImageEdit，
+ * 逐姿势模板调度 provider adapter。每个 template 单独调用一次 runImageEditViaProvider，
  * inputImages（主图 + 可选正面 + 可选背面）按顺序传给底层。
  *
- * 重试与错误分类由 runGoogleImageEdit 内部的 callGoogleImageWithRetry 统一负责；
+ * 重试与错误分类由 provider adapter 内部的 callGoogleImageWithRetry 统一负责；
  * 本函数只负责并发调度 + 失败容忍 + 流式持久化（参照 photo-fission 范式）。
  *
  * 失败容忍：单 pose 失败时继续后续 pose，全部失败时抛错让 runTask 标记为 failed。
@@ -260,35 +273,218 @@ export async function runPoseFissionPipeline(
     throw new Error('姿势裂变 targetTemplateIds 与 poseTemplateSnapshots 不匹配')
   }
 
-  const concurrencyRaw = Number(process.env.POSE_FISSION_CONCURRENCY ?? 2)
-  const concurrency =
-    Number.isFinite(concurrencyRaw) && concurrencyRaw >= 1
-      ? Math.min(Math.floor(concurrencyRaw), templates.length)
-      : Math.min(2, templates.length)
-
   const aspectRatio = params.imageRatio === 'more' ? undefined : params.imageRatio
   const imageSize = params.resolution.toUpperCase()
 
-  const poseResults: PoseRunResult[] = new Array(templates.length)
+  // ---- 多渠道分发 ----
+  const availableProviders = getAvailableProvidersForModel(params.model)
+  if (!availableProviders.length && !isGoogleImageModel(params.model)) {
+    throw new Error(getNoAvailableProviderMessage(params.model))
+  }
+
+  const useMultiProvider = availableProviders.length > 1
+
+  if (useMultiProvider) {
+    logImageEvent(
+      'pool.dispatch',
+      { traceId: taskId, taskId },
+      {
+        stage: 'pose-fission',
+        providers: availableProviders.map((p) => p.id),
+        templateCount: templates.length,
+      },
+    )
+  }
+
+  const groups = useMultiProvider
+    ? dispatchItemsForModel(templates, params.model)
+    : new Map([[
+        availableProviders[0]?.id ?? 'fallback',
+        {
+          provider: availableProviders[0] ?? {
+            id: 'fallback',
+            type: 'google' as const,
+            apiKey: options.apiKey,
+            model: params.model,
+            maxIpm: 10,
+            maxRpm: 150,
+            weight: 1,
+            enabled: true,
+            timeoutMs: options.timeoutMs,
+          },
+          items: templates,
+        },
+      ]])
+
+  const allPoseResults: PoseRunResult[] = new Array(templates.length)
+  const templateIndexMap = new Map(templates.map((t, idx) => [t.id, idx]))
+
+  const groupPromises = Array.from(groups.values()).map(
+    ({ provider, items: groupTemplates }) => {
+      return runPoseGroup({
+        taskId,
+        provider,
+        templates: groupTemplates,
+        params,
+        inputImages: options.inputImages,
+        apiKey: provider.apiKey || options.apiKey,
+        aspectRatio,
+        imageSize,
+        onShotResult: options.onShotResult,
+        templateIndexMap,
+        allPoseResults,
+      })
+    },
+  )
+
+  await Promise.all(groupPromises)
+
+  // ---- 跨渠道 Failover ----
+  if (useMultiProvider) {
+    const failedPoses = allPoseResults
+      .map((result, idx) => ({ result, template: templates[idx] }))
+      .filter(
+        (
+          entry,
+        ): entry is { result: PoseRunResult; template: PoseTemplate } =>
+          Boolean(entry.result?.error && !entry.result.result),
+      )
+
+    if (failedPoses.length > 0) {
+      const failoverGroups = new Map<
+        string,
+        { provider: ImageProvider; templates: PoseTemplate[] }
+      >()
+
+      for (const { result, template } of failedPoses) {
+        const excludeProviderIds = result.providerId ? [result.providerId] : []
+        const failoverProvider = getFailoverProviderForModel(
+          excludeProviderIds,
+          params.model,
+        )
+        if (!failoverProvider) continue
+
+        const group = failoverGroups.get(failoverProvider.id) ?? {
+          provider: failoverProvider,
+          templates: [],
+        }
+        group.templates.push(template)
+        failoverGroups.set(failoverProvider.id, group)
+      }
+
+      if (failoverGroups.size > 0) {
+        logImageEvent(
+          'pool.failover',
+          { traceId: taskId, taskId },
+          {
+            failedCount: failedPoses.length,
+            rerunCount: Array.from(failoverGroups.values()).reduce(
+              (sum, group) => sum + group.templates.length,
+              0,
+            ),
+            failoverProviders: Array.from(failoverGroups.keys()),
+          },
+        )
+
+        await Promise.all(
+          Array.from(failoverGroups.values()).map(({ provider, templates }) =>
+            runPoseGroup({
+              taskId,
+              provider,
+              templates,
+              params,
+              inputImages: options.inputImages,
+              apiKey: provider.apiKey,
+              aspectRatio,
+              imageSize,
+              onShotResult: options.onShotResult,
+              templateIndexMap,
+              allPoseResults,
+            }),
+          ),
+        )
+      }
+    }
+  }
+
+  const successResults = allPoseResults
+    .filter(
+      (entry): entry is PoseRunResult & { result: ResultAsset } =>
+        Boolean(entry?.result),
+    )
+    .map((entry) => entry.result)
+
+  if (!successResults.length) {
+    const firstError = allPoseResults.find((entry) => entry?.error)?.error
+    throw new Error(
+      firstError
+        ? `姿势裂变全部姿势失败：${firstError}`
+        : '姿势裂变全部姿势失败',
+    )
+  }
+
+  return successResults
+}
+
+interface RunPoseGroupOptions {
+  taskId: string
+  provider: ImageProvider
+  templates: PoseTemplate[]
+  params: PoseFissionParams
+  inputImages: string[]
+  apiKey: string
+  aspectRatio: string | undefined
+  imageSize: string
+  onShotResult?: (result: ResultAsset) => Promise<void>
+  templateIndexMap: Map<string, number>
+  allPoseResults: PoseRunResult[]
+}
+
+async function runPoseGroup(options: RunPoseGroupOptions): Promise<void> {
+  const {
+    taskId,
+    provider,
+    templates: groupTemplates,
+    params,
+    inputImages,
+    apiKey,
+    aspectRatio,
+    imageSize,
+    onShotResult,
+    templateIndexMap,
+    allPoseResults,
+  } = options
+
+  const concurrencyRaw = Number(process.env.POSE_FISSION_CONCURRENCY ?? 2)
+  const concurrency =
+    Number.isFinite(concurrencyRaw) && concurrencyRaw >= 1
+      ? Math.min(Math.floor(concurrencyRaw), groupTemplates.length)
+      : Math.min(2, groupTemplates.length)
+
   let nextIndex = 0
 
   const worker = async () => {
     while (true) {
       const currentIndex = nextIndex
       nextIndex += 1
-      if (currentIndex >= templates.length) return
+      if (currentIndex >= groupTemplates.length) return
 
-      const template = templates[currentIndex]
+      const template = groupTemplates[currentIndex]
+      const globalIndex = templateIndexMap.get(template.id)
+      if (globalIndex === undefined) continue
+
       const prompt = buildPoseFissionPrompt(params, template)
 
       try {
-        const single = await runGoogleImageEdit({
+        const poseReferenceImage = await readPoseTemplateImageDataUrl(template)
+
+        const single = await runImageEditViaProvider({
           taskId,
-          apiKey: options.apiKey,
+          provider,
+          fallbackApiKey: apiKey,
           model: params.model,
-          timeoutMs: options.timeoutMs,
           prompt,
-          inputImages: options.inputImages,
+          inputImages: [...inputImages, poseReferenceImage],
           count: 1,
           aspectRatio,
           imageSize,
@@ -298,9 +494,10 @@ export async function runPoseFissionPipeline(
 
         const first = single[0]
         if (!first) {
-          poseResults[currentIndex] = {
+          allPoseResults[globalIndex] = {
             template,
             error: '该姿势未返回图片',
+            providerId: provider.id,
           }
           continue
         }
@@ -313,14 +510,15 @@ export async function runPoseFissionPipeline(
           finalPrompt: prompt,
         }
 
-        poseResults[currentIndex] = {
+        allPoseResults[globalIndex] = {
           template,
           result: enriched,
+          providerId: provider.id,
         }
 
-        if (options.onShotResult) {
+        if (onShotResult) {
           try {
-            await options.onShotResult(enriched)
+            await onShotResult(enriched)
           } catch (persistError) {
             const message =
               persistError instanceof Error ? persistError.message : '未知错误'
@@ -331,20 +529,21 @@ export async function runPoseFissionPipeline(
                 taskId,
                 shotId: template.id,
               },
-              { stage: 'persist', reason: message },
+              { stage: 'persist', reason: message, providerId: provider.id },
             )
-            poseResults[currentIndex] = {
+            allPoseResults[globalIndex] = {
               template,
               error: `流式持久化失败：${message}`,
+              providerId: provider.id,
             }
           }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : '未知错误'
-        // wrapper 已经在 gimg.fail 里打过结构化日志，这里仅记录 pose 级 result 供上层 partial 判定
-        poseResults[currentIndex] = {
+        allPoseResults[globalIndex] = {
           template,
           error: message,
+          providerId: provider.id,
         }
       }
     }
@@ -352,22 +551,30 @@ export async function runPoseFissionPipeline(
 
   const workers = Array.from({ length: concurrency }, () => worker())
   await Promise.all(workers)
+}
 
-  const successResults = poseResults
-    .filter(
-      (entry): entry is PoseRunResult & { result: ResultAsset } =>
-        Boolean(entry?.result),
-    )
-    .map((entry) => entry.result)
+async function readPoseTemplateImageDataUrl(template: PoseTemplate): Promise<string> {
+  const imagePath = resolvePublicImagePath(template.imageUrl)
+  const mimeType = readImageMimeType(imagePath)
+  const image = await readFile(imagePath)
+  return `data:${mimeType};base64,${image.toString('base64')}`
+}
 
-  if (!successResults.length) {
-    const firstError = poseResults.find((entry) => entry?.error)?.error
-    throw new Error(
-      firstError
-        ? `姿势裂变全部姿势失败：${firstError}`
-        : '姿势裂变全部姿势失败',
-    )
+function resolvePublicImagePath(imageUrl: string): string {
+  const relativePath = imageUrl.startsWith('/') ? imageUrl.slice(1) : imageUrl
+  const imagePath = path.resolve(publicDir, relativePath)
+
+  if (!imagePath.startsWith(`${publicDir}${path.sep}`)) {
+    throw new Error(`姿势模板图片路径无效：${imageUrl}`)
   }
 
-  return successResults
+  return imagePath
+}
+
+function readImageMimeType(imagePath: string): string {
+  const ext = path.extname(imagePath).toLowerCase()
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg'
+  if (ext === '.png') return 'image/png'
+  if (ext === '.webp') return 'image/webp'
+  throw new Error(`姿势模板图片格式不支持：${ext}`)
 }

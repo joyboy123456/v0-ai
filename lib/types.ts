@@ -1,3 +1,13 @@
+import {
+  POSE_TEMPLATES_SEED,
+  POSE_TEMPLATES_DEFAULT_TRIO_SEED,
+  POSE_FISSION_CASE_BLACK_DRESS_TEMPLATE_IDS_SEED,
+} from './pose-templates-seed'
+import {
+  AI_FASHION_DEMO_TASKS as YIBAI_AI_FASHION_DEMO_TASKS,
+  YIBAI_PHOTO_FISSION_CASE_SHIRT_9GRID,
+} from './yibai-demo-cases'
+
 export type FeatureType =
   | 'ai-fashion-photo'
   | 'element-replace'
@@ -57,6 +67,7 @@ export type FashionPromptMode = 'enhanced' | 'raw'
 export type FashionModelId =
   | 'gemini-3.1-flash-image-preview'
   | 'gemini-3-pro-image-preview'
+  | 'gpt-image-2'
 
 export interface Feature {
   id: FeatureType
@@ -412,92 +423,22 @@ export const ELEMENT_REPLACE_TYPES = [
 ] satisfies { id: ElementReplaceType; label: string }[]
 
 /**
- * 姿势裂变占位姿势模板（MVP 用，图片暂用项目通用 placeholder）。
- * 8 个：6 个成人（覆盖 full / upper / lower）+ 2 个儿童（full / upper）。
- * 后续由产品同事替换为真实姿势图，只改这里的数据，不动 UI 代码。
+ * 姿势裂变姿势模板（POSE_TEMPLATES）。
+ *
+ * 数据由 scripts/seed-pose-templates.ts 从友商资料按关键词分桶筛选生成，
+ * 见 lib/pose-templates-seed.ts。本文件仅做 re-export，保持稳定接口。
  *
  * 关键字段说明：
  * - ageGroup：'adult' | 'kid' 控制 Modal 的「全部/成人/儿童」筛选
  * - bodyPart：'full' | 'upper' | 'lower' 控制 Modal 的「全部/全身/上半身/下半身」筛选
- * - prompt：尽量具体，让 Gemini 明确知道目标姿势是什么；
- *   描述时避免提到具体性别 / 服装，姿势 prompt 只负责姿势本身
+ * - prompt：姿势描述片段，避免提到具体性别 / 服装，姿势 prompt 只负责姿势本身
  */
-export const POSE_TEMPLATES: PoseTemplate[] = [
-  {
-    id: 'pose-tpl-stand-front',
-    name: '站姿1',
-    imageUrl: '/placeholder.jpg',
-    prompt: '人物正面站立，双脚自然分开与肩同宽，双手轻放体侧，肩颈放松，整体姿态自然挺拔，适合正面主图展示。',
-    ageGroup: 'adult',
-    bodyPart: 'full',
-  },
-  {
-    id: 'pose-tpl-stand-side',
-    name: '侧身1',
-    imageUrl: '/placeholder.jpg',
-    prompt: '人物侧身站立约 90 度，头部略微回望镜头，重心落在后脚，前脚轻点，整体姿态修长，展示侧面版型与轮廓。',
-    ageGroup: 'adult',
-    bodyPart: 'full',
-  },
-  {
-    id: 'pose-tpl-walk-step',
-    name: '行走1',
-    imageUrl: '/placeholder.jpg',
-    prompt: '人物正面行走中，一脚迈出，另一脚承重，双臂自然摆动，步态轻盈有动态感，展示服装的飘逸与版型。',
-    ageGroup: 'adult',
-    bodyPart: 'full',
-  },
-  {
-    id: 'pose-tpl-sit-chair',
-    name: '坐姿1',
-    imageUrl: '/placeholder.jpg',
-    prompt: '人物坐在简约凳子上，双腿自然交叉或并拢，双手放于膝上或大腿上，背部挺直，姿态优雅放松。',
-    ageGroup: 'adult',
-    bodyPart: 'full',
-  },
-  {
-    id: 'pose-tpl-upper-portrait',
-    name: '上半身肖像',
-    imageUrl: '/placeholder.jpg',
-    prompt: '人物正面上半身肖像，肩颈放松，双手抬至胸前轻触衣领或下颌附近，重点展示领口、面部表情与上半身搭配。',
-    ageGroup: 'adult',
-    bodyPart: 'upper',
-  },
-  {
-    id: 'pose-tpl-lower-crop',
-    name: '下半身特写',
-    imageUrl: '/placeholder.jpg',
-    prompt: '镜头聚焦人物腰部以下，双腿微叉或一脚轻抬，重点展示下装版型、裤型/裙摆轮廓与鞋履搭配。',
-    ageGroup: 'adult',
-    bodyPart: 'lower',
-  },
-  {
-    id: 'pose-tpl-kid-run',
-    name: '儿童跑跳',
-    imageUrl: '/placeholder.jpg',
-    prompt: '儿童正面跑跳中，一脚抬起，双臂张开，表情明亮活泼，展示童装的活泼与动态。',
-    ageGroup: 'kid',
-    bodyPart: 'full',
-  },
-  {
-    id: 'pose-tpl-kid-wave',
-    name: '儿童招手',
-    imageUrl: '/placeholder.jpg',
-    prompt: '儿童正面上半身，单手抬起向镜头招手，面带微笑，肩颈放松，重点展示童装上身效果。',
-    ageGroup: 'kid',
-    bodyPart: 'upper',
-  },
-]
+export const POSE_TEMPLATES: PoseTemplate[] = POSE_TEMPLATES_SEED
 
 /**
  * 「基础搭配 3 张」一键预设的姿势模板 id 集合（PRD D8）。
- * 选择 3 个最典型的成人全身姿势：正面站姿 / 侧身 / 行走。
  */
-export const POSE_TEMPLATES_DEFAULT_TRIO: string[] = [
-  'pose-tpl-stand-front',
-  'pose-tpl-stand-side',
-  'pose-tpl-walk-step',
-]
+export const POSE_TEMPLATES_DEFAULT_TRIO: string[] = POSE_TEMPLATES_DEFAULT_TRIO_SEED
 
 export const POSE_TEMPLATE_AGE_GROUPS = [
   { id: 'adult', label: '成人' },
@@ -580,33 +521,44 @@ export interface FashionModelOption {
   description: string
   maxInputImages: number
   maxResolutionLabel: '4K'
+  selectable?: boolean
 }
 
 /**
- * AI 服装大片可选模型清单（仅在 IMAGE_API_PROVIDER=google 时生效）。
+ * 生图模型元数据。
  *
- * 仅保留 Gemini 3 系列，2.5 已下线。
- * 选型依据见 .trellis/spec/frontend/quality-guidelines.md。
- * raycast 路径会忽略前端 model 选择，使用 env IMAGE_API_MODEL。
+ * selectable !== false 的条目会出现在本阶段模型选择器中。
+ * 当前可用模型：Google 两个（Nano Banana / Nano Banana Pro）+ GPT Image 2。
  */
 export const FASHION_MODELS: FashionModelOption[] = [
   {
     id: 'gemini-3.1-flash-image-preview',
-    label: '稳定版',
-    alias: 'Nano Banana 2',
-    description: '推荐默认。最多 14 张参考图，支持 4K 出图，单图约 2 分钟',
+    label: 'Nano Banana',
+    alias: 'Gemini 3.1 Flash',
+    description: '推荐默认。走 Google Gemini / 七牛 Gemini 图像渠道，最多 14 张参考图，支持 4K 出图',
     maxInputImages: 14,
     maxResolutionLabel: '4K',
   },
   {
+    id: 'gpt-image-2',
+    label: 'GPT Image 2',
+    alias: 'OpenAI 兼容',
+    description: '适合走七牛 OpenAI 图像模型渠道；使用前需配置支持 openai/gpt-image-* 的 qiniu provider',
+    maxInputImages: 10,
+    maxResolutionLabel: '4K',
+  },
+  {
     id: 'gemini-3-pro-image-preview',
-    label: '旗舰版',
-    alias: 'Nano Banana Pro',
-    description: '最高画质，thinking 模式，最多 14 张参考图，速度较慢',
+    label: 'Nano Banana Pro',
+    alias: 'Gemini 3 Pro',
+    description: 'Google 旗舰画质，thinking 模式，最多 14 张参考图，速度较慢',
     maxInputImages: 14,
     maxResolutionLabel: '4K',
   },
 ]
+
+export const SELECTABLE_FASHION_MODELS: FashionModelOption[] =
+  FASHION_MODELS.filter((option) => option.selectable !== false)
 
 export const DEFAULT_FASHION_MODEL: FashionModelId = 'gemini-3.1-flash-image-preview'
 
@@ -635,15 +587,8 @@ export const POSE_FISSION_CASES: PoseFissionCase[] = [
       '/cases/pose-cross-step.jpg',
       '/cases/pose-bag-forward.jpg',
     ],
-    poseTemplateIds: [
-      'pose-tpl-stand-front',
-      'pose-tpl-stand-side',
-      'pose-tpl-walk-step',
-      'pose-tpl-upper-portrait',
-      'pose-tpl-sit-chair',
-      'pose-tpl-lower-crop',
-    ],
-    model: 'gemini-3-pro-image-preview',
+    poseTemplateIds: POSE_FISSION_CASE_BLACK_DRESS_TEMPLATE_IDS_SEED,
+    model: DEFAULT_FASHION_MODEL,
     imageRatio: '3:4',
     resolution: '4k',
   },
@@ -688,7 +633,15 @@ export const PHOTO_FISSION_CASES: PhotoFissionCase[] = [
     resolution: '1k',
     modelId: 'gemini-3.1-flash-image-preview',
   },
+  YIBAI_PHOTO_FISSION_CASE_SHIRT_9GRID,
 ]
+
+/**
+ * AI 服装大片演示 task 库（仅 MVP 演示，不上线、不商用）。
+ * 在 right-panel.tsx 的 aiFashionGalleryItems 中合并到瀑布流末尾，
+ * 让案例库 Tab 始终有内容展示。详细说明见 ./yibai-demo-cases.ts。
+ */
+export const AI_FASHION_DEMO_TASKS = YIBAI_AI_FASHION_DEMO_TASKS
 
 export const FEATURE_WORKFLOWS: Record<FeatureType, string> = {
   'ai-fashion-photo': 'ai_fashion_photo_v1',

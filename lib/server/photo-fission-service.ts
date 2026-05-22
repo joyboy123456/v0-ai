@@ -12,8 +12,16 @@ import {
   type PhotoFissionShot,
   type ResultAsset,
 } from '@/lib/types'
-import { runGoogleImageEdit } from './google-genai-adapter'
+import {
+  dispatchItemsForModel,
+  getAvailableProvidersForModel,
+  getFailoverProviderForModel,
+  getNoAvailableProviderMessage,
+  isGoogleImageModel,
+  type ImageProvider,
+} from './image-provider-pool'
 import { logImageEvent } from './log'
+import { runImageEditViaProvider } from './provider-image-router'
 
 const photoFissionCategoryIds = new Set<PhotoFissionCategory>(
   PHOTO_FISSION_CATEGORIES.map((option) => option.id),
@@ -416,14 +424,21 @@ interface ShotRunResult {
   shot: PhotoFissionShot
   result?: ResultAsset
   error?: string
+  providerId?: string
 }
 
 /**
- * 逐 shot 调度 Google adapter。每个 shot 单独调用一次 runGoogleImageEdit，
+ * 逐 shot 调度 provider adapter。每个 shot 单独调用一次 runImageEditViaProvider，
  * inputImages（主图 + 可选正面 + 可选背面）按顺序传给底层，对应 prompt 的「图1/图2/图3」。
  *
- * 重试与错误分类由 runGoogleImageEdit 内部的 callGoogleImageWithRetry 统一负责（v4 R1 + R2）；
- * 本函数只负责并发调度 + 失败容忍 + 流式持久化。
+ * v5（2026-05-19 多渠道并发）：
+ * - 通过 dispatchItems() 将 shotPlan 按加权轮询分配到所有可用 provider
+ * - 每个 provider 独立运行 worker 组，各自走独立的 IPM/RPM 令牌桶
+ * - 单 provider 全部失败的 shot 会通过 getFailoverProvider() 尝试跨渠道 failover
+ * - 向后兼容：只有一个 provider 时行为与 v4 完全一致
+ *
+ * 重试与错误分类由 provider adapter 内部的 callGoogleImageWithRetry 统一负责（v4 R1 + R2）；
+ * 本函数只负责并发调度 + 失败容忍 + 流式持久化 + 跨渠道 failover。
  *
  * 失败容忍：单 shot 失败时继续后续 shot，全部失败时抛错让 runTask 标记为 failed。
  *
@@ -459,33 +474,222 @@ export async function runPhotoFissionPipeline(
     throw new Error('服装大片裂变 targetShotIds 与 shotPlan 不匹配')
   }
 
-  const concurrencyRaw = Number(process.env.PHOTO_FISSION_CONCURRENCY ?? 3)
-  const concurrency =
-    Number.isFinite(concurrencyRaw) && concurrencyRaw >= 1
-      ? Math.min(Math.floor(concurrencyRaw), shotPlan.length)
-      : Math.min(3, shotPlan.length)
-
   const aspectRatio = params.imageRatio
   const imageSize = params.resolution.toUpperCase()
 
-  const shotResults: ShotRunResult[] = new Array(shotPlan.length)
+  // ---- 多渠道分发 ----
+  const availableProviders = getAvailableProvidersForModel(params.model)
+  if (!availableProviders.length && !isGoogleImageModel(params.model)) {
+    throw new Error(getNoAvailableProviderMessage(params.model))
+  }
+
+  const useMultiProvider = availableProviders.length > 1
+
+  if (useMultiProvider) {
+    logImageEvent(
+      'pool.dispatch',
+      { traceId: taskId, taskId },
+      {
+        stage: 'photo-fission',
+        providers: availableProviders.map((p) => p.id),
+        shotCount: shotPlan.length,
+      },
+    )
+  }
+
+  // 将 shots 分发到可用 providers
+  const groups = useMultiProvider
+    ? dispatchItemsForModel(shotPlan, params.model)
+    : new Map([[
+        availableProviders[0]?.id ?? 'fallback',
+        {
+          provider: availableProviders[0] ?? {
+            id: 'fallback',
+            type: 'google' as const,
+            apiKey: options.apiKey,
+            model: params.model,
+            maxIpm: 10,
+            maxRpm: 150,
+            weight: 1,
+            enabled: true,
+            timeoutMs: options.timeoutMs,
+          },
+          items: shotPlan,
+        },
+      ]])
+
+  // 每个 provider 组独立跑一组 workers
+  const allShotResults: ShotRunResult[] = new Array(shotPlan.length)
+  // 需要维护 shotPlan 索引映射
+  const shotIndexMap = new Map(shotPlan.map((shot, idx) => [shot.shotId, idx]))
+
+  const groupPromises = Array.from(groups.values()).map(
+    ({ provider, items: groupShots }) => {
+      return runShotGroup({
+        taskId,
+        provider,
+        shots: groupShots,
+        params,
+        inputImages: options.inputImages,
+        apiKey: provider.apiKey || options.apiKey,
+        aspectRatio,
+        imageSize,
+        onShotResult: options.onShotResult,
+        shotIndexMap,
+        allShotResults,
+      })
+    },
+  )
+
+  await Promise.all(groupPromises)
+
+  // ---- 跨渠道 Failover ----
+  // 收集失败的 shot，尝试用其他 provider 重跑
+  if (useMultiProvider) {
+    const failedShots = allShotResults
+      .map((result, idx) => ({ result, shot: shotPlan[idx] }))
+      .filter(
+        (
+          entry,
+        ): entry is { result: ShotRunResult; shot: PhotoFissionShot } =>
+          Boolean(entry.result?.error && !entry.result.result),
+      )
+
+    if (failedShots.length > 0) {
+      const failoverGroups = new Map<
+        string,
+        { provider: ImageProvider; shots: PhotoFissionShot[] }
+      >()
+
+      for (const { result, shot } of failedShots) {
+        const excludeProviderIds = result.providerId ? [result.providerId] : []
+        const failoverProvider = getFailoverProviderForModel(
+          excludeProviderIds,
+          params.model,
+        )
+        if (!failoverProvider) continue
+
+        const group = failoverGroups.get(failoverProvider.id) ?? {
+          provider: failoverProvider,
+          shots: [],
+        }
+        group.shots.push(shot)
+        failoverGroups.set(failoverProvider.id, group)
+      }
+
+      if (failoverGroups.size > 0) {
+        logImageEvent(
+          'pool.failover',
+          { traceId: taskId, taskId },
+          {
+            failedCount: failedShots.length,
+            rerunCount: Array.from(failoverGroups.values()).reduce(
+              (sum, group) => sum + group.shots.length,
+              0,
+            ),
+            failoverProviders: Array.from(failoverGroups.keys()),
+          },
+        )
+
+        await Promise.all(
+          Array.from(failoverGroups.values()).map(({ provider, shots }) =>
+            runShotGroup({
+              taskId,
+              provider,
+              shots,
+              params,
+              inputImages: options.inputImages,
+              apiKey: provider.apiKey,
+              aspectRatio,
+              imageSize,
+              onShotResult: options.onShotResult,
+              shotIndexMap,
+              allShotResults,
+            }),
+          ),
+        )
+      }
+    }
+  }
+
+  const successResults = allShotResults
+    .filter(
+      (entry): entry is ShotRunResult & { result: ResultAsset } =>
+        Boolean(entry?.result),
+    )
+    .map((entry) => entry.result)
+
+  if (!successResults.length) {
+    const firstError = allShotResults.find((entry) => entry?.error)?.error
+    throw new Error(
+      firstError
+        ? `服装大片裂变全部镜头失败：${firstError}`
+        : '服装大片裂变全部镜头失败',
+    )
+  }
+
+  return successResults
+}
+
+interface RunShotGroupOptions {
+  taskId: string
+  provider: ImageProvider
+  shots: PhotoFissionShot[]
+  params: PhotoFissionParams
+  inputImages: string[]
+  apiKey: string
+  aspectRatio: string
+  imageSize: string
+  onShotResult?: (result: ResultAsset) => Promise<void>
+  shotIndexMap: Map<string, number>
+  allShotResults: ShotRunResult[]
+}
+
+/**
+ * 在单个 provider 内运行一组 shots，内部使用 worker 并发模型。
+ * worker 数量按 PHOTO_FISSION_CONCURRENCY 或 shots 数量取较小值。
+ */
+async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
+  const {
+    taskId,
+    provider,
+    shots,
+    params,
+    inputImages,
+    apiKey,
+    aspectRatio,
+    imageSize,
+    onShotResult,
+    shotIndexMap,
+    allShotResults,
+  } = options
+
+  const concurrencyRaw = Number(process.env.PHOTO_FISSION_CONCURRENCY ?? 3)
+  const concurrency =
+    Number.isFinite(concurrencyRaw) && concurrencyRaw >= 1
+      ? Math.min(Math.floor(concurrencyRaw), shots.length)
+      : Math.min(3, shots.length)
+
   let nextIndex = 0
 
   const worker = async () => {
     while (true) {
       const currentIndex = nextIndex
       nextIndex += 1
-      if (currentIndex >= shotPlan.length) return
+      if (currentIndex >= shots.length) return
 
-      const shot = shotPlan[currentIndex]
+      const shot = shots[currentIndex]
+      const globalIndex = shotIndexMap.get(shot.shotId)
+      if (globalIndex === undefined) continue
+
       try {
-        const single = await runGoogleImageEdit({
+        const single = await runImageEditViaProvider({
           taskId,
-          apiKey: options.apiKey,
+          provider,
+          fallbackApiKey: apiKey,
           model: params.model,
-          timeoutMs: options.timeoutMs,
           prompt: shot.prompt,
-          inputImages: options.inputImages,
+          inputImages,
           count: 1,
           aspectRatio,
           imageSize,
@@ -495,9 +699,10 @@ export async function runPhotoFissionPipeline(
 
         const first = single[0]
         if (!first) {
-          shotResults[currentIndex] = {
+          allShotResults[globalIndex] = {
             shot,
             error: '该镜头未返回图片',
+            providerId: provider.id,
           }
           continue
         }
@@ -510,36 +715,39 @@ export async function runPhotoFissionPipeline(
           finalPrompt: shot.prompt,
         }
 
-        shotResults[currentIndex] = {
+        allShotResults[globalIndex] = {
           shot,
           result: enriched,
+          providerId: provider.id,
         }
 
         // 流式持久化：先 await 回调把这张图写盘 + 更新 store，再启动下一个 shot。
         // 若回调本身抛错，按单 shot 失败处理，pipeline 继续。
-        if (options.onShotResult) {
+        if (onShotResult) {
           try {
-            await options.onShotResult(enriched)
+            await onShotResult(enriched)
           } catch (persistError) {
             const message =
               persistError instanceof Error ? persistError.message : '未知错误'
             logImageEvent(
               'gimg.fail',
               { traceId: `${taskId}_${shot.shotId}`, taskId, shotId: shot.shotId },
-              { stage: 'persist', reason: message },
+              { stage: 'persist', reason: message, providerId: provider.id },
             )
-            shotResults[currentIndex] = {
+            allShotResults[globalIndex] = {
               shot,
               error: `流式持久化失败：${message}`,
+              providerId: provider.id,
             }
           }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : '未知错误'
         // wrapper 已经在 gimg.fail 里打过结构化日志，这里仅记录 shot 级 result 供上层 partial 判定
-        shotResults[currentIndex] = {
+        allShotResults[globalIndex] = {
           shot,
           error: message,
+          providerId: provider.id,
         }
       }
     }
@@ -547,24 +755,6 @@ export async function runPhotoFissionPipeline(
 
   const workers = Array.from({ length: concurrency }, () => worker())
   await Promise.all(workers)
-
-  const successResults = shotResults
-    .filter(
-      (entry): entry is ShotRunResult & { result: ResultAsset } =>
-        Boolean(entry?.result),
-    )
-    .map((entry) => entry.result)
-
-  if (!successResults.length) {
-    const firstError = shotResults.find((entry) => entry?.error)?.error
-    throw new Error(
-      firstError
-        ? `服装大片裂变全部镜头失败：${firstError}`
-        : '服装大片裂变全部镜头失败',
-    )
-  }
-
-  return successResults
 }
 
 function readFashionModel(value: unknown): FashionModelId {
