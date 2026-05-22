@@ -34,7 +34,7 @@ function rowToUser(row: UserRow): User {
 }
 
 /**
- * 本地 mock：只内置 user01 / 123456。
+ * 本地 mock：只内置 user01 / shixue123。
  *
  * 用 `bcrypt.hashSync` 在模块加载时生成 hash，确保启动后内存里有一份现成的；
  * 重启进程会重新 hash 一次，password 不会泄露。
@@ -44,7 +44,7 @@ function rowToUser(row: UserRow): User {
  */
 const LOCAL_USERS: Map<string, User> = (() => {
   const map = new Map<string, User>()
-  const passwordHash = bcrypt.hashSync('123456', 10)
+  const passwordHash = bcrypt.hashSync('shixue123', 10)
   const user01: User = {
     id: 'usr_local_user01',
     username: 'user01',

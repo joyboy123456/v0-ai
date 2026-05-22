@@ -6,13 +6,9 @@
  * 设计要点（参考任务说明 §1）：
  * 1. 优先读 middleware 注入的 `x-user-id` header（cloud 模式 middleware
  *    已校验过 session 并写入），无需再调 KV/D1。
- * 2. 否则 fallback 到 cookie `session_id` → `getCurrentUser()` → `findUserById()`。
- * 3. **local 模式**：若上述两路都拿不到 userId，**fallback 到 user01**
- *    （本地 mock 默认用户）。原因：local 模式 middleware 在 Edge runtime
- *    放行（PR2 已知 trade-off），且 in-memory session 跨进程不通；如果不
- *    fallback，本地启动后 API 全部 401，开发体验崩溃。同时打 `console.warn`
- *    提醒开发者，避免线上误把 cloud 模式当 local 跑。
- * 4. **cloud 模式**：严格 null。让调用方返回 401。
+ * 2. local super-admin 模式直接返回本地超管用户（仅 `STORAGE_MODE=local`）。
+ * 3. 否则 fallback 到 cookie `session_id` → `getCurrentUser()` → `findUserById()`。
+ * 4. 拿不到用户时严格返回 null。
  *
  * 使用示例：
  * ```ts
@@ -27,16 +23,12 @@
 
 import { NextResponse, type NextRequest } from 'next/server'
 
+import { getLocalSuperAdminUser } from '@/lib/server/auth/local-super-admin'
 import { findUserById } from '@/lib/server/auth/user-repo'
 import { getSession } from '@/lib/server/auth/session'
-import { isLocal } from '@/lib/server/storage-mode'
 import type { User } from '@/lib/types'
 
 const SESSION_COOKIE_NAME = 'session_id'
-const LOCAL_FALLBACK_USERNAME = 'user01'
-const LOCAL_FALLBACK_USER_ID = 'usr_local_user01'
-
-let localFallbackWarned = false
 
 export interface RequestUser {
   userId: string
@@ -48,9 +40,9 @@ export interface RequestUser {
  *
  * 解析顺序：
  * 1. middleware 注入的 `x-user-id` header
- * 2. cookie session_id → getSession → findUserById
- * 3. local 模式兜底：返回 user01
- * 4. cloud 模式兜底：返回 null
+ * 2. local super-admin 模式 → 本地超管用户
+ * 3. cookie session_id → getSession → findUserById
+ * 4. 严格返回 null
  */
 export async function getRequestUser(
   request: NextRequest,
@@ -64,7 +56,13 @@ export async function getRequestUser(
     }
   }
 
-  // 2. fallback：从 cookie session_id 反查
+  // 2. local 内网演示：无需账号密码，统一按本地超管用户执行。
+  const localSuperAdmin = await getLocalSuperAdminUser()
+  if (localSuperAdmin) {
+    return { userId: localSuperAdmin.id, user: localSuperAdmin }
+  }
+
+  // 3. fallback：从 cookie session_id 反查
   const sessionId = request.cookies.get(SESSION_COOKIE_NAME)?.value
   if (sessionId) {
     try {
@@ -76,25 +74,10 @@ export async function getRequestUser(
         }
       }
     } catch {
-      // session/D1 不可达：cloud 模式严格 null，local 模式继续往下走 fallback
+      // session/D1 不可达：严格返回 null，让调用方 401。
     }
   }
 
-  // 3. local 模式兜底：返回 user01
-  if (isLocal()) {
-    const user = await findUserById(LOCAL_FALLBACK_USER_ID)
-    if (user) {
-      if (!localFallbackWarned) {
-        console.warn(
-          `[auth] local-mode anonymous fallback to ${LOCAL_FALLBACK_USERNAME}`,
-        )
-        localFallbackWarned = true
-      }
-      return { userId: user.id, user }
-    }
-  }
-
-  // 4. cloud 模式：严格 null
   return null
 }
 

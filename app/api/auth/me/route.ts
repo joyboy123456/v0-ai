@@ -1,13 +1,23 @@
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 
-import { AuthError, getCurrentUser } from '@/lib/server/auth'
+import { AuthError, getCurrentUser, toPublicUser } from '@/lib/server/auth'
+import { getLocalSuperAdminUser } from '@/lib/server/auth/local-super-admin'
 
 export const runtime = 'nodejs'
 
 const SESSION_COOKIE_NAME = 'session_id'
 
 export async function GET() {
+  const localSuperAdmin = await getLocalSuperAdminUser()
+  if (localSuperAdmin) {
+    return NextResponse.json({
+      ok: true,
+      user: toPublicUser(localSuperAdmin),
+      authMode: 'super-admin',
+    })
+  }
+
   const cookieStore = await cookies()
   const sessionId = cookieStore.get(SESSION_COOKIE_NAME)?.value
   if (!sessionId) {

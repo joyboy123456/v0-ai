@@ -4,8 +4,9 @@
  * 设计要点（任务说明 §7 / PRD D5）：
  * - 跳过登录页 / auth API / 静态资源 / API auth 子树
  * - cloud 模式：通过 KV REST API 校验 session（Edge runtime 能跑 fetch）
- * - local 模式：直接放行（local 用进程内 Map，middleware 在 Edge runtime
- *   隔离环境里看不见 Map，这是 PR2 的已知 trade-off，PR5 端到端时会用 cloud 模式实测）
+ * - local super-admin 模式：内网演示直接放行，不要求 cookie
+ * - local password 模式：Edge runtime 看不见 Node.js 进程内 session Map，所以只做
+ *   cookie 存在性拦截；真正有效性由 nodejs route / useAuth 再校验
  * - 失效或缺失：API → 401 JSON；页面 → 302 /login?next=<原始 path>
  * - 有效：通过 `x-user-id` header 把 userId 注入到下游
  *
@@ -14,6 +15,8 @@
  */
 
 import { NextResponse, type NextRequest } from 'next/server'
+
+import { isLocalSuperAdminEnabled } from '@/lib/server/auth/local-auth-mode'
 
 const SESSION_COOKIE_NAME = 'session_id'
 
@@ -30,6 +33,7 @@ const PUBLIC_PATH_PREFIXES = [
   '/poses',
   '/cases',
   '/generated', // public 静态资源（local 模式下生成的图片）
+  '/local-assets', // LOCAL_IMAGE_ROOT 自定义目录的本地图片读取路由
 ]
 
 function isPublicPath(pathname: string): boolean {
@@ -95,21 +99,43 @@ function rejectUnauthorized(request: NextRequest): NextResponse {
   return NextResponse.redirect(loginUrl)
 }
 
+function redirectLocalSuperAdminLogin(request: NextRequest): NextResponse {
+  const rawNext = request.nextUrl.searchParams.get('next')
+  const nextPath =
+    rawNext && rawNext.startsWith('/') && !rawNext.startsWith('//')
+      ? rawNext
+      : '/'
+  return NextResponse.redirect(new URL(nextPath, request.url))
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
+  const mode = readStorageMode()
+
+  if (
+    mode === 'local' &&
+    isLocalSuperAdminEnabled() &&
+    pathname === '/login'
+  ) {
+    return redirectLocalSuperAdminLogin(request)
+  }
+
   if (isPublicPath(pathname)) {
     return NextResponse.next()
   }
 
   const sessionId = request.cookies.get(SESSION_COOKIE_NAME)?.value
-  const mode = readStorageMode()
 
   if (mode === 'local') {
-    // local 模式：进程内 Map 在 Edge runtime 隔离环境不可见，
-    // 此处放行不强制鉴权（PR2 已知 trade-off，仅本地开发用）。
-    // 仍把 cookie 中的 sessionId 透传给下游路由，方便它们自己做软鉴权。
+    if (isLocalSuperAdminEnabled()) {
+      return NextResponse.next()
+    }
+
+    if (!sessionId) {
+      return rejectUnauthorized(request)
+    }
     const headers = new Headers(request.headers)
-    if (sessionId) headers.set('x-session-id', sessionId)
+    headers.set('x-session-id', sessionId)
     return NextResponse.next({ request: { headers } })
   }
 
