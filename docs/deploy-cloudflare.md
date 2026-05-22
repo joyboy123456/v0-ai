@@ -198,6 +198,10 @@ pnpm start          # 监听 3000，由 trellics 转发到公网
 ```bash
 # .env.local
 STORAGE_MODE=local
+LOCAL_AUTH_MODE=super-admin
+LOCAL_SUPER_ADMIN_USERNAME=user01
+# 可选：客户内网演示时把生成图放到仓库外本地目录
+LOCAL_IMAGE_ROOT=/Users/<you>/yibai-local-images
 ```
 
 重启 Next.js：
@@ -208,7 +212,9 @@ pnpm start
 
 回退后行为：
 - 任务记录写回 `data/fashion-mvp-store.json`
-- 上传图 / 生成图写回 `public/generated/**`
+- 上传图 / 生成图写回本地图片目录（默认 `public/generated/**`；设置
+  `LOCAL_IMAGE_ROOT` 后写到指定目录，浏览器走 `/local-assets/**`）
+- `LOCAL_AUTH_MODE=super-admin` 时不需要登录，所有内网请求视为本地超管 `user01`
 - 不需要 Cloudflare 凭证就能跑（除了 Google / Qiniu 的图像 API key）
 
 > 这是 D6 决议保证的：fresh start + 双路径并行，切回去随时回到原行为。
@@ -384,8 +390,11 @@ curl -s -b /tmp/cookies-u2.txt http://localhost:3000/api/tasks | jq
    ```
 3. 此时：
    - 任务记录写回 `data/fashion-mvp-store.json`
-   - 上传图 / 生成图写回 `public/generated/**`
-   - middleware 的 cloud session 校验自动放行（PR2 已知 trade-off，仅本地兜底）
+   - 上传图 / 生成图写回本地图片目录：
+     - 未设置 `LOCAL_IMAGE_ROOT`：`public/generated/**`
+     - 已设置 `LOCAL_IMAGE_ROOT`：对应本地目录，并通过 `/local-assets/**` 由应用读取
+   - 默认 `LOCAL_AUTH_MODE=super-admin`：内网直进工作台，所有请求视为本地超管账号
+   - 如需保留登录页，设置 `LOCAL_AUTH_MODE=password`，使用本地 mock 账号登录
 4. 已在 cloud 写过的任务/图片**不会丢**，仍存在 R2/D1；修复后切回 `STORAGE_MODE=cloud` 立刻可见。
 
 ⚠️ 注意：在 cloud ↔ local 之间反复切换会让用户的「任务历史视图」不一致（cloud 的看不到 local 的，反之亦然）。
@@ -418,3 +427,59 @@ trellics client 配置要点：
 
 具体 trellics client 启动命令 / token / 配置文件，本仓库不提供，由用户自己保管。
 
+---
+
+## 15. Tailscale Funnel 公网发布
+
+如果本次内测改走 Tailscale Funnel，不再走 trellics，则公网入口由 Tailscale 自动生成的
+`https://<machine>.<tailnet>.ts.net` 提供。Tailscale 官方在 1.52 后调整过
+Serve / Funnel CLI，发布前先确认本机版本：
+
+```bash
+tailscale version
+```
+
+### 15.1 前置检查
+
+1. Tailscale 已登录，并且当前设备在线：
+   ```bash
+   tailscale status
+   ```
+2. Tailnet 已允许当前设备使用 Funnel（Admin Console / policy 中允许 `funnel`）。
+3. Next.js 已在本机启动并监听 `127.0.0.1:3000`：
+   ```bash
+   curl -s http://127.0.0.1:3000/api/health | jq
+   ```
+4. `/api/health` 必须显示 `storageMode: "cloud"`，且 d1 / kv / r2 都为 `ok`。
+
+### 15.2 临时前台发布（首次推荐）
+
+```bash
+tailscale funnel 3000
+```
+
+命令输出中会出现 `Available on the internet` 与公网 HTTPS URL。前台模式便于观察；
+按 `Ctrl+C` 会退出当前发布。
+
+### 15.3 后台发布（确认无误后）
+
+```bash
+tailscale funnel --bg 3000
+tailscale funnel status
+```
+
+后台发布后，把 `tailscale funnel status` 中显示的 HTTPS URL 发给 5 个内测账号使用。
+
+### 15.4 停止公网发布
+
+```bash
+tailscale funnel reset
+```
+
+停止后再执行一次：
+
+```bash
+tailscale funnel status
+```
+
+确认没有公网转发残留。
