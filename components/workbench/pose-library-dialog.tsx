@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Star } from "lucide-react";
 import {
   Dialog,
@@ -60,11 +60,19 @@ export function PoseLibraryDialog({
   const [ageGroupFilter, setAgeGroupFilter] = useState<AgeGroupFilter>("all");
   const [bodyPartFilter, setBodyPartFilter] = useState<BodyPartFilter>("all");
   const [onlyFavorites, setOnlyFavorites] = useState(false);
+  const wasOpenRef = useRef(false);
 
-  // 每次重新打开 Modal 时，同步父组件回填的已选 → draft，清空筛选。
+  // 只在「关闭 → 打开」这一刻同步父组件回填的已选 → draft，清空筛选。
+  // 打开期间父组件可能因轮询、收藏等动作重渲染；不能因此覆盖用户正在多选的草稿。
   useEffect(() => {
-    if (!open) return;
-    setInternalSelectedIds(initialSelectedIds);
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (wasOpenRef.current) return;
+
+    wasOpenRef.current = true;
+    setInternalSelectedIds([...initialSelectedIds]);
     setAgeGroupFilter("all");
     setBodyPartFilter("all");
     setOnlyFavorites(false);
