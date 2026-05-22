@@ -64,6 +64,12 @@ export interface GoogleEditInput {
   traceId?: string
   /** 可选 shotId，仅用于日志透传（photo-fission 单 shot 调用） */
   shotId?: string
+  /** provider 唯一标识，用于令牌桶隔离。不传时降级到 apiKey */
+  providerId?: string
+  /** 该 provider 的 IPM 上限。不传时降级读 env */
+  maxIpm?: number
+  /** 该 provider 的 RPM 上限。不传时降级读 env */
+  maxRpm?: number
 }
 
 export async function runGoogleImageEdit(input: GoogleEditInput): Promise<ResultAsset[]> {
@@ -113,6 +119,7 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
           refs: input.inputImages.length,
           aspect: input.aspectRatio,
           size: input.imageSize,
+          providerId: input.providerId,
         })
 
         const data = await performSingleCall({
@@ -124,12 +131,18 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
 
         logImageEvent('gimg.success', { ...ctx, attempt }, {
           tookMs: Date.now() - callStart,
+          providerId: input.providerId,
         })
 
         return data
       },
       ctx,
-      { apiKey: input.apiKey },
+      {
+        apiKey: input.apiKey,
+        providerId: input.providerId,
+        maxIpm: input.maxIpm,
+        maxRpm: input.maxRpm,
+      },
     )
 
     const mimeType = inline.mimeType ?? 'image/png'

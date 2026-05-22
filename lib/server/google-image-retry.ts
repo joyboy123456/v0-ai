@@ -9,7 +9,7 @@ import { logImageEvent, type LogContext } from './log'
  * 2. 退避：delay = min(maxDelayMs, baseDelayMs × exponent^(attempt-1)) × (1 ± jitter)
  * 3. rate_limit：优先读 Retry-After header，取 max(Retry-After, 30s) 再叠加 jitter
  * 4. image_safety / safety_block 默认上限 1 次；empty_output 默认 2 次
- * 5. auth_failed 触发 30s 模块级熔断
+ * 5. auth_failed 触发 30s provider/key 级熔断
  * 6. throttle 在每次 attempt 进入 fetch 之前 acquire
  */
 
@@ -79,6 +79,17 @@ export interface RetryOptions {
   exponent?: number
   jitter?: number
   perCategoryMaxAttempts?: Partial<Record<GoogleImageErrorCategory, number>>
+}
+
+interface RetryAcquireOptions {
+  apiKey: string
+  signal?: AbortSignal
+  /** provider 唯一标识，用于令牌桶隔离。不传时降级到 apiKey */
+  providerId?: string
+  /** 该 provider 的 IPM 上限。不传时降级读 env */
+  maxIpm?: number
+  /** 该 provider 的 RPM 上限。不传时降级读 env */
+  maxRpm?: number
 }
 
 /**
@@ -167,23 +178,28 @@ function computeRateLimitDelay(retryAfterSeconds: number | undefined): number {
 
 // ---- 401/403 熔断 ----
 
-let authFailureUntil: number | null = null
+const authFailureUntilByKey = new Map<string, number>()
 const AUTH_BLOCK_DURATION_MS = 30_000
 
-function isAuthBlocked(): boolean {
-  if (authFailureUntil === null) return false
-  if (Date.now() < authFailureUntil) return true
-  authFailureUntil = null
+function getAuthCircuitKey(options: RetryAcquireOptions): string {
+  return options.providerId || options.apiKey || '__default__'
+}
+
+function isAuthBlocked(circuitKey: string): boolean {
+  const until = authFailureUntilByKey.get(circuitKey)
+  if (until === undefined) return false
+  if (Date.now() < until) return true
+  authFailureUntilByKey.delete(circuitKey)
   return false
 }
 
-function tripAuthFailure() {
-  authFailureUntil = Date.now() + AUTH_BLOCK_DURATION_MS
+function tripAuthFailure(circuitKey: string) {
+  authFailureUntilByKey.set(circuitKey, Date.now() + AUTH_BLOCK_DURATION_MS)
 }
 
 /** 测试用：解除熔断。生产代码不要调。 */
 export function __resetAuthCircuitForTests() {
-  authFailureUntil = null
+  authFailureUntilByKey.clear()
 }
 
 function sleep(ms: number): Promise<void> {
@@ -251,22 +267,26 @@ export function classifyUnknownError(error: unknown): GoogleImageError {
 export async function callGoogleImageWithRetry<T>(
   fn: (attempt: number) => Promise<T>,
   context: LogContext,
-  acquireOptions: { apiKey: string; signal?: AbortSignal },
+  acquireOptions: RetryAcquireOptions,
   options?: RetryOptions,
 ): Promise<T> {
   const resolved = resolveRetryOptions(options)
   const maxAttempts = Math.max(1, resolved.attempts)
+  const authCircuitKey = getAuthCircuitKey(acquireOptions)
 
   // 401/403 熔断快路径
-  if (isAuthBlocked()) {
+  if (isAuthBlocked(authCircuitKey)) {
     const err = new GoogleImageError({
       category: 'auth_failed',
-      message: 'Google API 凭证异常（熔断窗口未结束），请稍后重试或检查 GOOGLE_API_KEY',
+      message: acquireOptions.providerId
+        ? `生图渠道 ${acquireOptions.providerId} 凭证异常（熔断窗口未结束），请稍后重试或检查渠道 API Key`
+        : '生图 API 凭证异常（熔断窗口未结束），请稍后重试或检查 API Key',
       retryable: false,
     })
     logImageEvent('gimg.fail', { ...context, attempt: 1 }, {
       category: err.category,
       reason: 'auth_circuit_open',
+      providerId: acquireOptions.providerId,
     })
     throw err
   }
@@ -279,11 +299,14 @@ export async function callGoogleImageWithRetry<T>(
     await acquireGoogleImageSlot({
       apiKey: acquireOptions.apiKey,
       signal: acquireOptions.signal,
+      providerId: acquireOptions.providerId,
+      maxIpm: acquireOptions.maxIpm,
+      maxRpm: acquireOptions.maxRpm,
       onWait: (waitMs, reason) => {
         logImageEvent(
           'gimg.throttle',
           { ...context, attempt },
-          { waitMs, reason },
+          { waitMs, reason, providerId: acquireOptions.providerId },
         )
       },
     })
@@ -300,12 +323,13 @@ export async function callGoogleImageWithRetry<T>(
 
       // 401/403 触发熔断（但仍把当前错误抛出，不在熔断窗口内 retry）
       if (error.category === 'auth_failed') {
-        tripAuthFailure()
+        tripAuthFailure(authCircuitKey)
         logImageEvent('gimg.fail', { ...context, attempt }, {
           category: error.category,
           httpStatus: error.httpStatus,
           reason: error.message,
           authCircuitTrippedMs: AUTH_BLOCK_DURATION_MS,
+          providerId: acquireOptions.providerId,
         })
         throw error
       }

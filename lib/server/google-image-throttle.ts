@@ -1,16 +1,13 @@
 /**
- * 进程级 Google 生图客户端节流（IPM / RPM 令牌桶）。
+ * 进程级生图客户端节流（IPM / RPM 令牌桶）。
  *
- * 设计目标：
- * - 在客户端主动 sleep，避免连点 photo-fission 把 IPM 打满后被 Google 服务端 429
- * - 单例（挂 globalThis），按 apiKey 维护两个时间戳队列
- *   - imageStamps：60s 滚动窗口内的图像调用次数（计入 IPM）
- *   - requestStamps：60s 滚动窗口内的 HTTP 请求次数（计入 RPM）
- * - 失败也算配额消耗（不退还令牌），与 Google 服务端实际计算口径保持一致
+ * v2（2026-05-19）：支持多 provider 并发。
+ * - 令牌桶按 providerId（而非 apiKey）隔离
+ * - maxIpm / maxRpm 由调用方传入（provider 级别配置），不再读全局 env
+ * - 向后兼容：不传 providerId 时降级到 apiKey 作为桶 key
+ * - 不传 maxIpm/maxRpm 时降级读 GOOGLE_IMAGE_IPM/RPM env
  *
- * env 兜底（默认对齐 Tier 1）：
- * - GOOGLE_IMAGE_IPM=10
- * - GOOGLE_IMAGE_RPM=150
+ * 失败也算配额消耗（不退还令牌），与 Google 服务端实际计算口径保持一致。
  */
 
 interface ApiKeyBuckets {
@@ -34,13 +31,12 @@ function getStore(): ThrottleStore {
   return globalAny[globalKey]
 }
 
-function getBuckets(apiKey: string): ApiKeyBuckets {
+function getBuckets(bucketKey: string): ApiKeyBuckets {
   const store = getStore()
-  const key = apiKey || '__no_key__'
-  let bucket = store.buckets.get(key)
+  let bucket = store.buckets.get(bucketKey)
   if (!bucket) {
     bucket = { imageStamps: [], requestStamps: [] }
-    store.buckets.set(key, bucket)
+    store.buckets.set(bucketKey, bucket)
   }
   return bucket
 }
@@ -50,14 +46,6 @@ function readPositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback
   return Math.floor(parsed)
-}
-
-function getMaxIpm(): number {
-  return readPositiveInt(process.env.GOOGLE_IMAGE_IPM, 10)
-}
-
-function getMaxRpm(): number {
-  return readPositiveInt(process.env.GOOGLE_IMAGE_RPM, 150)
 }
 
 const WINDOW_MS = 60_000
@@ -114,21 +102,28 @@ export interface AcquireOptions {
   signal?: AbortSignal
   /** 用于日志回调，便于 wrapper 把 throttle 事件挂上 traceId */
   onWait?: (waitMs: number, reason: 'ipm' | 'rpm') => void
+  /** provider 唯一标识，用于令牌桶隔离。不传时降级到 apiKey */
+  providerId?: string
+  /** 该 provider 的 IPM 上限。不传时降级读 GOOGLE_IMAGE_IPM env（默认 10） */
+  maxIpm?: number
+  /** 该 provider 的 RPM 上限。不传时降级读 GOOGLE_IMAGE_RPM env（默认 150） */
+  maxRpm?: number
 }
 
 /**
- * 在发起一次 Google 生图请求前调用。若 IPM 或 RPM 任一已满，sleep 到队首过期。
+ * 在发起一次生图请求前调用。若 IPM 或 RPM 任一已满，sleep 到队首过期。
  * sleep 完成后再检查一次窗口（自旋避免并发抢同一名额导致瞬时超限）。
  *
- * 失败的请求不退还令牌：Google 服务端按调用次数计算，重试也会消耗下一个 60s 窗口的额度。
+ * 失败的请求不退还令牌：服务端按调用次数计算，重试也会消耗下一个 60s 窗口的额度。
  */
 export async function acquireGoogleImageSlot(
   options: AcquireOptions,
 ): Promise<void> {
-  const { apiKey, signal, onWait } = options
-  const bucket = getBuckets(apiKey)
-  const maxIpm = getMaxIpm()
-  const maxRpm = getMaxRpm()
+  const { apiKey, signal, onWait, providerId, maxIpm: optIpm, maxRpm: optRpm } = options
+  const bucketKey = providerId || apiKey || '__no_key__'
+  const bucket = getBuckets(bucketKey)
+  const maxIpm = optIpm ?? readPositiveInt(process.env.GOOGLE_IMAGE_IPM, 10)
+  const maxRpm = optRpm ?? readPositiveInt(process.env.GOOGLE_IMAGE_RPM, 150)
 
   // 最多自旋 5 次（实际仅在多 worker 高并发抢同一名额时 > 1）
   for (let spin = 0; spin < 5; spin += 1) {

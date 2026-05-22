@@ -1,0 +1,469 @@
+/**
+ * 多供应商并发生图调度池（Provider Pool）。
+ *
+ * 职责：
+ * 1. 解析 IMAGE_PROVIDERS JSON 或从单渠道 env 降级构造 provider 列表
+ * 2. 按加权轮询（Weighted Round-Robin）将 N 个生图任务分发到 M 个渠道
+ * 3. 每个 provider 维护独立的健康状态（熔断 / 限流标记）
+ * 4. 提供 failover 接口：当某个 provider 单次调用失败且重试耗尽时，
+ *    调度层可请求 pool 分配下一个可用 provider 重试
+ *
+ * 向后兼容：
+ * - 不配 IMAGE_PROVIDERS 时，自动从 GOOGLE_API_KEY / QINIU_IMAGE_API_KEY 等
+ *   单渠道 env 构造 provider 数组，Google 行为与改造前完全一致
+ */
+
+import { logImageEvent } from './log'
+
+export type ImageProviderType = 'google' | 'qiniu'
+
+export interface ImageProvider {
+  /** 唯一标识，用于日志、节流桶隔离和配置引用 */
+  id: string
+  /** 供应商类型：决定走哪个 adapter */
+  type: ImageProviderType
+  /** API 凭证 */
+  apiKey: string
+  /** 可选 API base URL（七牛云：https://api.qnaigc.com/v1） */
+  baseUrl?: string
+  /** 可选模型覆盖（不传走 env 默认） */
+  model?: string
+  /** 该渠道的 IPM 上限（用于独立节流） */
+  maxIpm: number
+  /** 该渠道的 RPM 上限 */
+  maxRpm: number
+  /** 权重（用于加权轮询调度，值越大分配越多） */
+  weight: number
+  /** 是否启用（运行时可熔断） */
+  enabled: boolean
+  /** 超时（ms） */
+  timeoutMs: number
+}
+
+// ---- 模块级 singleton ----
+
+const globalKey = '__image_provider_pool__'
+const globalAny = globalThis as typeof globalThis & {
+  [globalKey]?: ProviderPool
+}
+
+interface ProviderPool {
+  providers: ImageProvider[]
+  /** 加权轮询游标（跨调用递增） */
+  cursor: number
+  /** per-provider 临时熔断到期时间戳 */
+  circuitOpenUntil: Map<string, number>
+}
+
+function getPool(): ProviderPool {
+  if (!globalAny[globalKey]) {
+    globalAny[globalKey] = {
+      providers: loadProviders(),
+      cursor: 0,
+      circuitOpenUntil: new Map(),
+    }
+  }
+  return globalAny[globalKey]
+}
+
+// ---- 配置加载 ----
+
+function readPositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return Math.floor(parsed)
+}
+
+interface RawProviderJson {
+  id?: string
+  type?: string
+  apiKey?: string
+  baseUrl?: string
+  model?: string
+  maxIpm?: number
+  maxRpm?: number
+  weight?: number
+  enabled?: boolean
+  timeoutMs?: number
+}
+
+function loadProviders(): ImageProvider[] {
+  const raw = process.env.IMAGE_PROVIDERS
+  if (raw) {
+    try {
+      const parsed = parseProvidersConfig(raw)
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((item, index) => normalizeProviderConfig(item, index))
+      }
+    } catch (error) {
+      console.error(
+        '[provider-pool] IMAGE_PROVIDERS JSON 解析失败，降级到单渠道 env',
+        error,
+      )
+    }
+  }
+
+  // 降级：从单渠道 env 构造 provider 数组。
+  // Google 始终保留以维持历史兼容；七牛只有配置了 key 才加入。
+  return buildDefaultProviders()
+}
+
+function parseProvidersConfig(raw: string): RawProviderJson[] {
+  const trimmed = raw.trim()
+  const candidates = [
+    trimmed,
+    stripEnvWrappingQuotes(trimmed),
+  ].filter((item, index, list) => item && list.indexOf(item) === index)
+
+  let lastError: unknown
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as RawProviderJson[]
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  throw lastError
+}
+
+function stripEnvWrappingQuotes(value: string): string {
+  if (value.length < 2) return value
+  const first = value[0]
+  const last = value[value.length - 1]
+  if ((first === "'" && last === "'") || (first === '"' && last === '"')) {
+    return value.slice(1, -1)
+  }
+  return value
+}
+
+function buildDefaultProviders(): ImageProvider[] {
+  const providers = [buildDefaultGoogleProvider()]
+  const qiniuProvider = buildDefaultQiniuProvider()
+  if (qiniuProvider) providers.push(qiniuProvider)
+  return providers
+}
+
+function buildDefaultGoogleProvider(): ImageProvider {
+  return {
+    id: 'google-default',
+    type: 'google',
+    apiKey: process.env.GOOGLE_API_KEY ?? '',
+    model: process.env.GOOGLE_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview',
+    maxIpm: readPositiveInt(process.env.GOOGLE_IMAGE_IPM, 10),
+    maxRpm: readPositiveInt(process.env.GOOGLE_IMAGE_RPM, 150),
+    weight: 1,
+    enabled: true,
+    timeoutMs: readPositiveInt(process.env.GOOGLE_IMAGE_TIMEOUT_MS, 600000),
+  }
+}
+
+function buildDefaultQiniuProvider(): ImageProvider | null {
+  const apiKey = process.env.QINIU_IMAGE_API_KEY ?? process.env.QINIU_API_KEY ?? ''
+  if (!apiKey) return null
+
+  return {
+    id: 'qiniu-default',
+    type: 'qiniu',
+    apiKey,
+    baseUrl: process.env.QINIU_IMAGE_BASE_URL ?? 'https://api.qnaigc.com',
+    model: process.env.QINIU_IMAGE_MODEL ?? 'openai/gpt-image-2',
+    maxIpm: readPositiveInt(process.env.QINIU_IMAGE_IPM, 10),
+    maxRpm: readPositiveInt(process.env.QINIU_IMAGE_RPM, 150),
+    weight: 1,
+    enabled: true,
+    timeoutMs: readPositiveInt(process.env.QINIU_IMAGE_TIMEOUT_MS, 600000),
+  }
+}
+
+function normalizeProviderConfig(raw: RawProviderJson, index: number): ImageProvider {
+  return {
+    id: raw.id || `provider-${index}`,
+    type: (raw.type as ImageProviderType) || 'google',
+    apiKey: raw.apiKey || '',
+    baseUrl: raw.baseUrl,
+    model: raw.model,
+    maxIpm: raw.maxIpm ?? 10,
+    maxRpm: raw.maxRpm ?? 150,
+    weight: raw.weight ?? 1,
+    enabled: raw.enabled !== false,
+    timeoutMs: raw.timeoutMs ?? 600000,
+  }
+}
+
+// ---- 健康状态管理 ----
+
+const CIRCUIT_OPEN_DURATION_MS = 30_000
+
+function isProviderAvailable(pool: ProviderPool, provider: ImageProvider): boolean {
+  if (!provider.enabled) return false
+  if (!provider.apiKey) return false
+
+  const until = pool.circuitOpenUntil.get(provider.id)
+  if (until !== undefined) {
+    if (Date.now() < until) return false
+    // 熔断窗口已过，清除标记
+    pool.circuitOpenUntil.delete(provider.id)
+  }
+
+  return true
+}
+
+/**
+ * 标记某个 provider 进入熔断状态（30s 不可用）。
+ * 用于 auth_failed (401/403) 等不可恢复错误场景。
+ */
+export function tripProviderCircuit(providerId: string): void {
+  const pool = getPool()
+  pool.circuitOpenUntil.set(providerId, Date.now() + CIRCUIT_OPEN_DURATION_MS)
+  logImageEvent(
+    'pool.circuit',
+    { traceId: 'pool', taskId: '' },
+    { providerId, durationMs: CIRCUIT_OPEN_DURATION_MS },
+  )
+}
+
+// ---- 调度 API ----
+
+/**
+ * 获取所有已注册的 provider（含不可用的）。
+ * 调用方用于构建降级链。
+ */
+export function getAllProviders(): ImageProvider[] {
+  return getPool().providers
+}
+
+/**
+ * Health 快照：每个 provider 的当前可用性 / 熔断到期时间。
+ * 供 /api/health/providers 端点使用，方便运维一眼看出哪个渠道在抽风。
+ */
+export interface ProviderHealthEntry {
+  id: string
+  type: ImageProviderType
+  enabled: boolean
+  hasApiKey: boolean
+  available: boolean
+  weight: number
+  maxIpm: number
+  maxRpm: number
+  circuitOpenUntil: number | null
+  circuitRemainMs: number | null
+}
+
+export function getProviderHealthSnapshot(): ProviderHealthEntry[] {
+  const pool = getPool()
+  const now = Date.now()
+  return pool.providers.map((p) => {
+    const until = pool.circuitOpenUntil.get(p.id) ?? null
+    const circuitOpen = until !== null && now < until
+    return {
+      id: p.id,
+      type: p.type,
+      enabled: p.enabled,
+      hasApiKey: Boolean(p.apiKey),
+      available: isProviderAvailable(pool, p),
+      weight: p.weight,
+      maxIpm: p.maxIpm,
+      maxRpm: p.maxRpm,
+      circuitOpenUntil: circuitOpen ? until : null,
+      circuitRemainMs: circuitOpen ? Math.max(0, (until as number) - now) : null,
+    }
+  })
+}
+
+/**
+ * 获取当前可用的 provider 列表（排除 enabled=false、apiKey 为空、熔断中的）。
+ */
+export function getAvailableProviders(): ImageProvider[] {
+  const pool = getPool()
+  return pool.providers.filter((p) => isProviderAvailable(pool, p))
+}
+
+export function isGoogleImageModel(model: string | undefined): boolean {
+  if (!model) return true
+  return model.trim().toLowerCase().startsWith('gemini-')
+}
+
+export function isQiniuImageModel(model: string | undefined): boolean {
+  if (!model) return true
+  const lower = model.trim().toLowerCase()
+  return (
+    lower.startsWith('gemini-') ||
+    lower.startsWith('gpt-image-') ||
+    lower.startsWith('openai/gpt-image-')
+  )
+}
+
+export function isImageProviderModelCompatible(
+  provider: ImageProvider,
+  model: string | undefined,
+): boolean {
+  const candidate = model || provider.model
+  if (provider.type === 'google') return isGoogleImageModel(candidate)
+  if (provider.type === 'qiniu') return isQiniuImageModel(candidate)
+  return false
+}
+
+/**
+ * 获取当前可用且支持指定模型的 provider。
+ * 例如 gpt-image-* 只能走七牛 OpenAI 兼容渠道，不能分发给 Google 官方 adapter。
+ */
+export function getAvailableProvidersForModel(
+  model: string | undefined,
+): ImageProvider[] {
+  return getAvailableProviders().filter((provider) =>
+    isImageProviderModelCompatible(provider, model),
+  )
+}
+
+export function getNoAvailableProviderMessage(model: string | undefined): string {
+  if (!model) return '没有可用的生图渠道（所有 provider 均不可用）'
+
+  const lower = model.trim().toLowerCase()
+  if (lower.startsWith('gpt-image-') || lower.startsWith('openai/gpt-image-')) {
+    const providers = getAllProviders()
+    const qiniuProviders = providers.filter((provider) => provider.type === 'qiniu')
+    const availableQiniuProviders = getAvailableProviders().filter(
+      (provider) => provider.type === 'qiniu',
+    )
+
+    return [
+      `没有可用的生图渠道支持模型 ${model}`,
+      'GPT Image 2 只走七牛云 qiniu 渠道，不走 Raycast，也不能落到 Google 官方 adapter',
+      '请确认 IMAGE_PROVIDERS 中至少有一个 type="qiniu" 且 apiKey 不为空的 provider，或配置 QINIU_IMAGE_API_KEY',
+      `当前已加载 qiniu provider ${qiniuProviders.length} 个，可用 ${availableQiniuProviders.length} 个`,
+      '如果刚修改过 .env.local，请重启 pnpm dev 让 Next.js 重新读取环境变量',
+    ].join('。')
+  }
+
+  return `没有可用的生图渠道支持模型 ${model}`
+}
+
+/**
+ * 加权轮询选一个可用 provider。
+ * 多次调用自动轮转，适合 ai-fashion-photo 等 count>1 串行场景。
+ *
+ * 返回 null 表示所有 provider 都不可用。
+ */
+export function pickNextProvider(): ImageProvider | null {
+  const available = getAvailableProviders()
+  if (!available.length) return null
+  if (available.length === 1) return available[0]
+
+  const pool = getPool()
+  // 构建加权序列
+  const weighted = buildWeightedList(available)
+  const index = pool.cursor % weighted.length
+  pool.cursor += 1
+  return weighted[index]
+}
+
+/**
+ * 将 N 个工作单元（shot / 图片）按加权轮询分配到可用 provider。
+ * 返回 Map<providerId, workItems[]>。
+ *
+ * 适用于 photo-fission / pose-fission 等批量生图场景。
+ *
+ * @param items - 待分发的工作单元数组
+ * @returns 按 providerId 分组的 Map，value 是 { provider, item } 元组
+ */
+export function dispatchItems<T>(
+  items: T[],
+): Map<string, { provider: ImageProvider; items: T[] }> {
+  return dispatchItemsWithProviders(items, getAvailableProviders(), undefined)
+}
+
+export function dispatchItemsForModel<T>(
+  items: T[],
+  model: string | undefined,
+): Map<string, { provider: ImageProvider; items: T[] }> {
+  return dispatchItemsWithProviders(
+    items,
+    getAvailableProvidersForModel(model),
+    model,
+  )
+}
+
+function dispatchItemsWithProviders<T>(
+  items: T[],
+  available: ImageProvider[],
+  model: string | undefined,
+): Map<string, { provider: ImageProvider; items: T[] }> {
+  if (!available.length) {
+    throw new Error(getNoAvailableProviderMessage(model))
+  }
+
+  const pool = getPool()
+  const weighted = buildWeightedList(available)
+  const groups = new Map<string, { provider: ImageProvider; items: T[] }>()
+
+  for (let i = 0; i < items.length; i++) {
+    const providerIndex = (pool.cursor + i) % weighted.length
+    const provider = weighted[providerIndex]
+
+    let group = groups.get(provider.id)
+    if (!group) {
+      group = { provider, items: [] }
+      groups.set(provider.id, group)
+    }
+    group.items.push(items[i])
+  }
+
+  pool.cursor += items.length
+  return groups
+}
+
+/**
+ * 当某个 provider 对某个 item 失败且重试耗尽时，尝试获取下一个可用 provider。
+ * 排除指定的 excludeProviderIds。
+ *
+ * 返回 null 表示没有其他可用 provider。
+ */
+export function getFailoverProvider(excludeProviderIds: string[]): ImageProvider | null {
+  const excludeSet = new Set(excludeProviderIds)
+  const available = getAvailableProviders().filter((p) => !excludeSet.has(p.id))
+  if (!available.length) return null
+  // 取权重最高的（作为降级首选）
+  return available.reduce((best, curr) =>
+    curr.weight > best.weight ? curr : best,
+  )
+}
+
+export function getFailoverProviderForModel(
+  excludeProviderIds: string[],
+  model: string | undefined,
+): ImageProvider | null {
+  const excludeSet = new Set(excludeProviderIds)
+  const available = getAvailableProvidersForModel(model).filter(
+    (p) => !excludeSet.has(p.id),
+  )
+  if (!available.length) return null
+  return available.reduce((best, curr) =>
+    curr.weight > best.weight ? curr : best,
+  )
+}
+
+// ---- 内部工具 ----
+
+/**
+ * 构建加权列表：weight=2 的 provider 出现 2 次，weight=1 的出现 1 次。
+ * 避免超大 weight 导致内存膨胀，单 provider 最大展开 10 次。
+ */
+function buildWeightedList(providers: ImageProvider[]): ImageProvider[] {
+  const list: ImageProvider[] = []
+  for (const provider of providers) {
+    const count = Math.min(Math.max(1, Math.floor(provider.weight)), 10)
+    for (let i = 0; i < count; i++) {
+      list.push(provider)
+    }
+  }
+  return list
+}
+
+// ---- 测试工具 ----
+
+/** 测试用：重置 pool singleton。生产代码不要调用。 */
+export function __resetProviderPoolForTests(): void {
+  delete globalAny[globalKey]
+}

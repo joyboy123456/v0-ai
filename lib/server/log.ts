@@ -13,6 +13,9 @@ export type ImageEventName =
   | 'gimg.fail'
   | 'gimg.retry'
   | 'gimg.throttle'
+  | 'pool.dispatch'
+  | 'pool.failover'
+  | 'pool.circuit'
 
 export interface LogContext {
   traceId: string
@@ -27,6 +30,9 @@ const eventLevel: Record<ImageEventName, 'info' | 'warn' | 'error'> = {
   'gimg.fail': 'error',
   'gimg.retry': 'warn',
   'gimg.throttle': 'info',
+  'pool.dispatch': 'info',
+  'pool.failover': 'warn',
+  'pool.circuit': 'error',
 }
 
 export function logImageEvent(

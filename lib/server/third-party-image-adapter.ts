@@ -10,8 +10,14 @@ import {
 import {
   buildAiFashionPhotoPrompt,
 } from './ai-fashion-photo-service'
-import { runGoogleImageEdit } from './google-genai-adapter'
+import {
+  getAvailableProvidersForModel,
+  getNoAvailableProviderMessage,
+  type ImageProvider,
+} from './image-provider-pool'
+import { logImageEvent } from './log'
 import { runPhotoFissionPipeline } from './photo-fission-service'
+import { runImageEditViaProvider } from './provider-image-router'
 
 type RunnableFeature = FeatureType
 
@@ -141,28 +147,72 @@ async function runGoogleProviderEdits(input: ThirdPartyWorkflowInput) {
   const count = getGenerateCount(input.params)
   const { aspectRatio, imageSize } = extractGoogleImageOptions(input.params)
   // AI 服装大片支持按任务覆盖模型；其他模块走 env 默认。
-  // 旧任务可能没有 model 字段，readFashionModel 已在 normalize 阶段降级到 DEFAULT_FASHION_MODEL，
-  // 这里再做一次降级是为了兼容其他 featureType 走 Google 时直接落到 env。
   const taskModel =
     input.featureType === 'ai-fashion-photo'
       ? (input.params as AiFashionPhotoParams).model
       : undefined
-  const modelToUse = taskModel ?? googleImageModel
 
-  return runGoogleImageEdit({
-    taskId: input.taskId,
-    apiKey: googleApiKey,
-    model: modelToUse,
-    timeoutMs: googleImageTimeoutMs,
-    prompt,
-    inputImages: input.inputImages,
-    count,
-    aspectRatio,
-    imageSize,
-    // ai-fashion-photo 等单批次走 google：traceId 默认等于 taskId；
-    // count > 1 时 adapter 内部会自动派生 ${taskId}_v${n}。
-    traceId: input.taskId,
-  })
+  // v6：单图/元素类任务固定走「七牛优先，Google 官方兜底」。
+  // fission 类任务仍由各自 pipeline 做多 provider 分发和 per-shot failover。
+  const modelToUse = taskModel ?? googleImageModel
+  const providerChain = buildSingleImageProviderChain(modelToUse)
+  if (!providerChain.length) {
+    throw new Error(getNoAvailableProviderMessage(modelToUse))
+  }
+
+  logImageEvent(
+    'pool.dispatch',
+    { traceId: input.taskId, taskId: input.taskId },
+    {
+      stage: input.featureType,
+      strategy: 'qiniu-first-google-fallback',
+      providers: providerChain.map((item) => item.id),
+    },
+  )
+
+  let lastError: unknown
+  for (let index = 0; index < providerChain.length; index += 1) {
+    const candidate = providerChain[index]
+    try {
+      return await runImageEditViaProvider({
+        taskId: input.taskId,
+        provider: candidate,
+        fallbackApiKey: googleApiKey,
+        model: modelToUse,
+        prompt,
+        inputImages: input.inputImages,
+        count,
+        aspectRatio,
+        imageSize,
+        traceId: input.taskId,
+      })
+    } catch (error) {
+      lastError = error
+      const nextProvider = providerChain[index + 1]
+      if (nextProvider) {
+        logImageEvent(
+          'pool.failover',
+          { traceId: input.taskId, taskId: input.taskId },
+          {
+            failedProviderId: candidate.id,
+            failoverProviderId: nextProvider.id,
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        )
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('所有生图渠道均调用失败')
+}
+
+function buildSingleImageProviderChain(model: string): ImageProvider[] {
+  const providers = getAvailableProvidersForModel(model)
+  const qiniuProviders = providers.filter((item) => item.type === 'qiniu')
+  const googleProviders = providers.filter((item) => item.type === 'google')
+  return [...qiniuProviders, ...googleProviders]
 }
 
 function extractGoogleImageOptions(params: TaskParams) {
