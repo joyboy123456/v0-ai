@@ -5,7 +5,12 @@
  * 内部模块（r2-client / task-repo.local / task-repo.d1）禁止直接 import。
  */
 
-export { getStorageAdapter, buildPublicUrlForKey } from './storage-adapter'
+export {
+  getStorageAdapter,
+  buildPublicUrlForKey,
+  buildLocalAssetPublicUrl,
+  getLocalImageForPublicUrl,
+} from './storage-adapter'
 export type {
   StorageAdapter,
   StorageBucket,

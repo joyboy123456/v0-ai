@@ -10,7 +10,9 @@ import {
   normalizePhotoFissionParams,
   runPhotoFissionPipeline,
 } from '@/lib/server/photo-fission-service'
+import { isLocalSuperAdminEnabled } from '@/lib/server/auth/local-auth-mode'
 import {
+  getLocalImageForPublicUrl,
   getStorageAdapter,
   getTaskRepo,
   type AssetRow,
@@ -85,6 +87,10 @@ function getCredits(params: TaskParams) {
 const storage = () => getStorageAdapter()
 const taskRepo = () => getTaskRepo()
 
+function shouldBypassOwnership(userId: string | undefined): boolean {
+  return Boolean(userId?.trim()) && isLocalSuperAdminEnabled()
+}
+
 function buildTaskRow(task: GenerationTask): TaskRow {
   const createdMs = parseTimestampMs(task.createdAt) ?? Date.now()
   const updatedMs = parseTimestampMs(task.finishedAt) ?? createdMs
@@ -150,7 +156,7 @@ function parseTimestampMs(iso: string | undefined): number | null {
 
 /**
  * 通过 storage-adapter 写一张「上传图 / 资产图」。
- * local 模式落 `public/generated/assets/`；cloud 模式落 R2 `users/{userId}/assets/`。
+ * local 模式落本地图片目录；cloud 模式落 R2 `users/{userId}/assets/`。
  *
  * 与原 `persistDataUrl(publicAssetDir, ...)` 等价，但把扩展名推断 + 文件名拼接 +
  * 落盘路径计算全部收口在 adapter；调用方只需要 dataUrl + 标识符。
@@ -235,8 +241,8 @@ export async function createAsset(input: {
   const assetId = createId('asset')
   const effectiveUserId =
     input.userId && input.userId.trim() ? input.userId : defaultUserId
-  // PR3：通过 storage-adapter 写图；local 模式落盘路径与之前等价
-  // （/generated/assets/{id}.ext），cloud 模式落 R2。
+  // PR3：通过 storage-adapter 写图；local 模式落本地图片目录并返回稳定 URL，
+  // cloud 模式落 R2。
   // PR4：把 effectiveUserId 透传给 adapter，cloud 模式下 R2 路径前缀
   // `users/{userId}/assets/...` 实现数据隔离。
   const persistedFile = input.dataUrl
@@ -288,9 +294,10 @@ export async function getAsset(assetId: string) {
 export async function listTasks(opts?: { userId?: string }) {
   await ensureStoreReady()
   const userId = opts?.userId?.trim()
+  const bypassOwnership = shouldBypassOwnership(userId)
   return Array.from(store.tasks.values())
     .filter((task) => {
-      if (!userId) return true
+      if (!userId || bypassOwnership) return true
       // 历史任务 task.userId 可能 undefined，过滤时视为 demo_user
       return (task.userId ?? defaultUserId) === userId
     })
@@ -312,7 +319,7 @@ export async function getTask(taskId: string, opts?: { userId?: string }) {
   const task = store.tasks.get(taskId)
   if (!task) return undefined
   const userId = opts?.userId?.trim()
-  if (userId) {
+  if (userId && !shouldBypassOwnership(userId)) {
     const ownerId = task.userId ?? defaultUserId
     if (ownerId !== userId) return undefined
   }
@@ -512,7 +519,7 @@ async function runTask(taskId: string) {
 
 /**
  * 流式持久化单张已成功的 ResultAsset：
- * - 复用 persistResultImage 把图片写入 public/generated/results/
+ * - 复用 storage-adapter 把图片写入本地目录或 R2
  * - 在 store.assets 中登记对应 AssetRecord
  * - 增量更新 task 的 results / resultAssetIds / progress / message
  *
@@ -524,8 +531,8 @@ async function persistOneResult(
   result: ResultAsset,
   ownerUserId: string = defaultUserId,
 ) {
-  // PR3：通过 storage-adapter 写「生成结果图」。local 模式仍落
-  // `public/generated/results/{id}.ext`，cloud 模式落 R2 `users/{userId}/results/`。
+  // PR3：通过 storage-adapter 写「生成结果图」。local 模式落本地图片目录，
+  // cloud 模式落 R2 `users/{userId}/results/`。
   // PR4：把 ownerUserId 透传给 adapter，cloud 模式下 R2 路径按用户隔离。
   const persisted = await storeResultFromResultAsset(result, ownerUserId)
   result.url = persisted.url
@@ -792,12 +799,13 @@ async function writeStoreFile(): Promise<void> {
  * Convert an asset record into a self-contained data URL the third-party API can consume.
  *
  * The third-party proxy receives the request from the Node server and has no way to fetch
- * relative URLs like `/generated/assets/foo.png`. So whenever an asset only has a relative
- * fileUrl, we read the file from disk and inline it as a data URL.
+ * relative URLs like `/generated/assets/foo.png` or `/local-assets/assets/foo.png`.
+ * So whenever an asset only has a relative fileUrl, we read the file from disk and
+ * inline it as a data URL.
  *
  * PR3 注：cloud 模式 `fileUrl` 是 R2 公共 URL（https://pub-xxx.r2.dev/...），
  * 走分支 2（http(s)）直接由 third-party API 远端拉取，本函数无需改动。
- * 仅 local 模式才进入 `/generated/` 磁盘读取分支。
+ * 仅 local 模式才进入本地 URL 磁盘读取分支。
  */
 async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null> {
   const { fileUrl, fileType } = asset
@@ -808,15 +816,14 @@ async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null>
     return fileUrl
   }
 
-  if (fileUrl.startsWith('/generated/')) {
-    const absolutePath = path.join(workspaceRoot, 'public', fileUrl.replace(/^\//, ''))
-    try {
-      const buffer = await readFile(absolutePath)
-      const mimeType = fileType?.startsWith('image/') ? fileType : `image/${getExtension(fileType ?? 'image/png')}`
-      return `data:${mimeType};base64,${buffer.toString('base64')}`
-    } catch {
-      return null
-    }
+  if (fileUrl.startsWith('/generated/') || fileUrl.startsWith('/local-assets/')) {
+    const image = await getLocalImageForPublicUrl(fileUrl)
+    if (!image) return null
+    const buffer = Buffer.from(image.body)
+    const mimeType = fileType?.startsWith('image/')
+      ? fileType
+      : (image.contentType ?? `image/${getExtension(fileType ?? 'image/png')}`)
+    return `data:${mimeType};base64,${buffer.toString('base64')}`
   }
 
   return null
@@ -852,7 +859,12 @@ export async function retryPhotoFissionShots(
   }
   // PR4：ownership 校验。userId 传了就必须匹配，避免越权重跑别人的任务。
   const ownerUserId = task.userId ?? defaultUserId
-  if (userId && userId.trim() && ownerUserId !== userId.trim()) {
+  if (
+    userId &&
+    userId.trim() &&
+    !shouldBypassOwnership(userId) &&
+    ownerUserId !== userId.trim()
+  ) {
     // 与「任务不存在」语义对齐，避免暴露任务存在性给非授权用户
     throw new Error('任务不存在')
   }
@@ -997,7 +1009,12 @@ export async function retryPoseFissionShots(
   }
   // PR4：ownership 校验。
   const ownerUserId = task.userId ?? defaultUserId
-  if (userId && userId.trim() && ownerUserId !== userId.trim()) {
+  if (
+    userId &&
+    userId.trim() &&
+    !shouldBypassOwnership(userId) &&
+    ownerUserId !== userId.trim()
+  ) {
     throw new Error('任务不存在')
   }
   if (task.featureType !== 'pose-fission') {
@@ -1118,7 +1135,7 @@ export async function retryPoseFissionShots(
  *
  * - 从对应 task 的 results / resultAssetIds 移除该 assetId
  * - 从 store.assets 移除对应 AssetRecord
- * - 异步尝试删除 public/generated/results/ 下的物理文件（失败仅记录，不阻塞）
+ * - 异步尝试删除存储层物理文件（失败仅记录，不阻塞）
  * - 如果 task 删完后没有任何剩余 result，则同步删除整个 task（避免历史记录里堆积空 task）
  *
  * 返回 true 表示找到了对应 result 并完成删除，false 表示 task / assetId 不匹配。
@@ -1135,7 +1152,12 @@ export async function deleteResultFromTask(
 
   // PR4：ownership 校验。userId 传了且不匹配，按「未找到」语义返回 false（不暴露存在性）。
   const ownerUserId = task.userId ?? defaultUserId
-  if (userId && userId.trim() && ownerUserId !== userId.trim()) {
+  if (
+    userId &&
+    userId.trim() &&
+    !shouldBypassOwnership(userId) &&
+    ownerUserId !== userId.trim()
+  ) {
     return false
   }
 

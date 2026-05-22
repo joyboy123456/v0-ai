@@ -124,6 +124,42 @@ function byteLengthOf(
   return (body as Uint8Array).byteLength
 }
 
+/**
+ * 把 R2PutInput.body 规范化为 fetch 能正确推断 Content-Length 的形态。
+ *
+ * 为什么需要这一步：
+ * - Cloudflare R2 的 S3 兼容 API 强制要求 `Content-Length`，**不接受**
+ *   `Transfer-Encoding: chunked`。未设置 Content-Length 直接报
+ *   HTTP 411 `MissingContentLength`。
+ * - Node.js 18+ 的 undici fetch 在 body 类型「不够明确」时会走 chunked
+ *   encoding（例如把 Buffer 当成 stream-like）。把 body 统一成 Uint8Array /
+ *   Blob 后，undici 才会自动加上 Content-Length。
+ * - 同时我们在 r2Put headers 里也显式带 `Content-Length`，让 aws4fetch 把
+ *   它算入 SigV4 签名，双保险。
+ */
+function normalizeR2Body(
+  body: Buffer | Uint8Array | ArrayBuffer | Blob | string,
+): Uint8Array | Blob {
+  if (typeof Blob !== 'undefined' && body instanceof Blob) {
+    return body
+  }
+  if (body instanceof Uint8Array) {
+    // Buffer 是 Uint8Array 的子类，这一分支已覆盖 Buffer
+    return body
+  }
+  if (body instanceof ArrayBuffer) {
+    return new Uint8Array(body)
+  }
+  if (typeof body === 'string') {
+    return new TextEncoder().encode(body)
+  }
+  // 类型上已穷尽；兜底抛错让上层立刻发现非法 body 类型，避免静默走 chunked
+  throw new R2Error({
+    code: 'BAD_REQUEST',
+    message: `R2 PUT body 类型不支持：${Object.prototype.toString.call(body)}`,
+  })
+}
+
 export interface R2PutInput {
   /** R2 object key（不要以 / 开头，例如 `users/abc/uploads/xxx.png`） */
   key: string
@@ -142,9 +178,14 @@ export async function r2Put(input: R2PutInput): Promise<R2PutResult> {
   const { client } = getClient()
   const { url, publicUrl } = buildObjectUrl(input.key)
   const bytes = byteLengthOf(input.body)
+  const normalizedBody = normalizeR2Body(input.body)
 
+  // 关键：R2 强制要求 Content-Length 且不支持 chunked transfer encoding。
+  // 显式声明 Content-Length 让 aws4fetch SigV4 签名包含它，同时让 undici
+  // 走定长 body 路径，规避 HTTP 411 MissingContentLength。
   const headers: Record<string, string> = {
     'Content-Type': input.contentType ?? 'application/octet-stream',
+    'Content-Length': String(bytes),
   }
   if (input.cacheControl) headers['Cache-Control'] = input.cacheControl
 
@@ -153,7 +194,7 @@ export async function r2Put(input: R2PutInput): Promise<R2PutResult> {
     response = await client.fetch(url, {
       method: 'PUT',
       headers,
-      body: input.body as BodyInit,
+      body: normalizedBody as BodyInit,
     })
   } catch (cause) {
     throw new R2Error({

@@ -7,11 +7,11 @@
  *
  * 路径约定（参考 prd.md §D5「完全私有的数据隔离」）：
  * - local 模式：
- *   - 有 userId：`public/generated/{bucket}/{userId}/{filename}`
+ *   - 默认根目录：`public/generated/{bucket}/{userId}/{filename}`
  *     publicUrl = `/generated/{bucket}/{userId}/{filename}`
- *   - 匿名（PR3 兼容现状）：`public/generated/{bucket}/{filename}`
- *     publicUrl = `/generated/{bucket}/{filename}`
- *     （PR4 接通 auth 后逐步去掉匿名兜底）
+ *   - 设置 `LOCAL_IMAGE_ROOT` 后：`{LOCAL_IMAGE_ROOT}/{bucket}/{userId}/{filename}`
+ *     publicUrl = `/local-assets/{bucket}/{userId}/{filename}`
+ *   - 匿名（PR3 兼容现状）不带 `{userId}` 段（PR4 接通 auth 后逐步去掉匿名兜底）
  * - cloud 模式：
  *   - key = `users/{userId}/{bucket}/{filename}`
  *   - publicUrl = `R2_PUBLIC_URL + '/' + key`
@@ -58,7 +58,7 @@ export interface PutImageFromDataUrlInput {
 export interface PutImageResult {
   /** 存储层 key：local 是磁盘相对路径，cloud 是 R2 object key */
   key: string
-  /** 可对外公开访问的 URL：local 是 `/generated/...`，cloud 是 R2 公共 URL */
+  /** 可对外公开访问的 URL：local 是本应用本地 URL，cloud 是 R2 公共 URL */
   publicUrl: string
   bytes: number
 }
@@ -92,6 +92,17 @@ export interface StorageAdapter {
 const workspaceRoot = process.cwd()
 const publicRootDir = path.join(workspaceRoot, 'public')
 const publicGeneratedDir = path.join(publicRootDir, 'generated')
+const localAssetPublicPrefix = '/local-assets'
+
+function readLocalImageRootDir(): string {
+  const raw = process.env.LOCAL_IMAGE_ROOT?.trim()
+  if (!raw) return publicGeneratedDir
+  return path.resolve(workspaceRoot, raw)
+}
+
+function isCustomLocalImageRoot(): boolean {
+  return readLocalImageRootDir() !== publicGeneratedDir
+}
 
 function parseDataUrl(
   dataUrl: string,
@@ -121,6 +132,83 @@ function sanitizeBucket(bucket: StorageBucket): StorageBucket {
   return bucket
 }
 
+function buildLocalRelativePath(
+  bucket: StorageBucket,
+  userId: string | null | undefined,
+  filename: string,
+): string {
+  return isAnonymousUser(userId)
+    ? path.posix.join(bucket, filename)
+    : path.posix.join(bucket, sanitizeUserSegment(userId as string), filename)
+}
+
+function buildLocalPublicUrl(relativePath: string): string {
+  if (isCustomLocalImageRoot()) {
+    return `${localAssetPublicPrefix}/${relativePath}`
+  }
+  return `/generated/${relativePath}`
+}
+
+function normalizeLocalImageKey(
+  key: string,
+): { root: string; relativePath: string } {
+  const withoutQuery = key.split('?')[0] ?? key
+  const normalized = withoutQuery.replace(/^\//, '')
+  if (normalized.startsWith('generated/')) {
+    return {
+      root: publicGeneratedDir,
+      relativePath: normalized.slice('generated/'.length),
+    }
+  }
+  if (normalized.startsWith('local-assets/')) {
+    return {
+      root: readLocalImageRootDir(),
+      relativePath: normalized.slice('local-assets/'.length),
+    }
+  }
+  return {
+    root: readLocalImageRootDir(),
+    relativePath: normalized,
+  }
+}
+
+function resolveLocalImagePath(key: string): string | null {
+  const { root, relativePath } = normalizeLocalImageKey(key)
+  const absolutePath = path.resolve(root, relativePath)
+  const rootWithSeparator = root.endsWith(path.sep) ? root : `${root}${path.sep}`
+  if (absolutePath !== root && !absolutePath.startsWith(rootWithSeparator)) {
+    return null
+  }
+  return absolutePath
+}
+
+function inferContentType(absolutePath: string): string {
+  const ext = path.extname(absolutePath).toLowerCase()
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg'
+  if (ext === '.png') return 'image/png'
+  if (ext === '.webp') return 'image/webp'
+  if (ext === '.gif') return 'image/gif'
+  return 'application/octet-stream'
+}
+
+async function readLocalImageByKey(key: string): Promise<GetImageResult | null> {
+  const absolutePath = resolveLocalImagePath(key)
+  if (!absolutePath) return null
+
+  try {
+    const buffer = await readFile(absolutePath)
+    return {
+      body: buffer.buffer.slice(
+        buffer.byteOffset,
+        buffer.byteOffset + buffer.byteLength,
+      ) as ArrayBuffer,
+      contentType: inferContentType(absolutePath),
+    }
+  } catch {
+    return null
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Local 实现
 // -----------------------------------------------------------------------------
@@ -128,27 +216,26 @@ function sanitizeBucket(bucket: StorageBucket): StorageBucket {
 const localAdapter: StorageAdapter = {
   async putImage(input) {
     const bucket = sanitizeBucket(input.bucket)
-    const dir = isAnonymousUser(input.userId)
-      ? path.join(publicGeneratedDir, bucket)
-      : path.join(
-          publicGeneratedDir,
-          bucket,
-          sanitizeUserSegment(input.userId as string),
-        )
+    const relativePath = buildLocalRelativePath(
+      bucket,
+      input.userId,
+      input.filename,
+    )
+    const absolutePath = resolveLocalImagePath(relativePath)
+    if (!absolutePath) {
+      throw new Error(`本地图片路径不合法（filename=${input.filename}）`)
+    }
+    const dir = path.dirname(absolutePath)
 
     await mkdir(dir, { recursive: true })
-    const absolutePath = path.join(dir, input.filename)
     const buffer =
       input.body instanceof Buffer ? input.body : Buffer.from(input.body)
     await writeFile(absolutePath, buffer)
-
-    const relative = isAnonymousUser(input.userId)
-      ? `/generated/${bucket}/${input.filename}`
-      : `/generated/${bucket}/${sanitizeUserSegment(input.userId as string)}/${input.filename}`
+    const publicUrl = buildLocalPublicUrl(relativePath)
 
     return {
-      key: relative,
-      publicUrl: relative,
+      key: publicUrl,
+      publicUrl,
       bytes: buffer.byteLength,
     }
   },
@@ -169,36 +256,13 @@ const localAdapter: StorageAdapter = {
   },
 
   async getImage(key) {
-    // local 模式 key 与 publicUrl 同形（`/generated/...`）；都按相对 public 路径处理
-    const normalized = key.replace(/^\//, '')
-    const absolutePath = path.join(publicRootDir, normalized)
-    try {
-      const buffer = await readFile(absolutePath)
-      // 简单按扩展名推断 contentType
-      const ext = path.extname(absolutePath).toLowerCase()
-      const contentType =
-        ext === '.jpg' || ext === '.jpeg'
-          ? 'image/jpeg'
-          : ext === '.png'
-            ? 'image/png'
-            : ext === '.webp'
-              ? 'image/webp'
-              : 'application/octet-stream'
-      return {
-        body: buffer.buffer.slice(
-          buffer.byteOffset,
-          buffer.byteOffset + buffer.byteLength,
-        ) as ArrayBuffer,
-        contentType,
-      }
-    } catch {
-      return null
-    }
+    // local 模式 key 与 publicUrl 同形，兼容旧 `/generated/...` 与新 `/local-assets/...`。
+    return readLocalImageByKey(key)
   },
 
   async deleteImage(key) {
-    const normalized = key.replace(/^\//, '')
-    const absolutePath = path.join(publicRootDir, normalized)
+    const absolutePath = resolveLocalImagePath(key)
+    if (!absolutePath) return
     try {
       await unlink(absolutePath)
     } catch {
@@ -319,4 +383,18 @@ export function buildPublicUrlForKey(key: string): string {
     return key.startsWith('/') ? key : `/${key}`
   }
   return buildR2PublicUrl(key)
+}
+
+/**
+ * 供 `/local-assets/[...path]` route 和 task-store 服务端回读使用。
+ * 只读取 local 图片根目录内的文件；路径逃逸会返回 null。
+ */
+export async function getLocalImageForPublicUrl(
+  publicUrl: string,
+): Promise<GetImageResult | null> {
+  return readLocalImageByKey(publicUrl)
+}
+
+export function buildLocalAssetPublicUrl(relativePath: string): string {
+  return buildLocalPublicUrl(relativePath)
 }

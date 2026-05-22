@@ -51,7 +51,7 @@ export interface AssetRow {
   userId: string
   taskId: string | null
   kind: 'upload' | 'generated'
-  /** local 模式 = publicUrl（`/generated/...`）；cloud 模式 = R2 object key */
+  /** local 模式 = publicUrl（`/generated/...` 或 `/local-assets/...`）；cloud 模式 = R2 object key */
   r2Key: string
   publicUrl: string | null
   mime: string | null

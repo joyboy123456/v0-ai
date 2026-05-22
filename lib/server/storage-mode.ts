@@ -2,8 +2,9 @@
  * STORAGE_MODE 双轨开关。
  *
  * 由 `05-19-cloudflare-backend-foundation` PR2 引入：
- * - `local`：沿用 `data/fashion-mvp-store.json` + `public/generated/**` 老路径，
- *   user / session 走内存 mock，便于无网开发与测试。
+ * - `local`：沿用 `data/fashion-mvp-store.json` + 本地图片目录
+ *   （默认 `public/generated/**`，可用 `LOCAL_IMAGE_ROOT` 指到仓库外），
+ *   user / session 走内存 mock，便于无网开发与客户演示。
  * - `cloud`：调用 Cloudflare D1 / KV / R2 真实远程服务。
  *
  * 本模块只暴露开关，**不实现** storage-adapter（PR3 才做）。任何 server 端
