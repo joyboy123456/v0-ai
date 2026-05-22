@@ -72,10 +72,10 @@
 - **Decision**：沿用 photo-fission `partial` 状态机 + 流式持久化 + 「重跑失败镜头」按钮模式
 - **Consequences**：复用 `retryPhotoFissionShots` 等价物 → 抽出通用 `retryFissionShots(taskId, shotIds, featureType)` 或新建 `retryPoseFissionShots`
 
-### D11（2026-05-18）：模型选择复用 FashionModelOption
+### D11（2026-05-18，2026-05-19 更新）：模型选择复用 FashionModelOption，统一开放三种可用模型
 
-- **Decision**：模型字段使用 `FashionModelId = 'gemini-3.1-flash-image-preview' | 'gemini-3-pro-image-preview'`，UI 显示「稳定版 / 旗舰版」
-- **Consequences**：直接复用 `FASHION_MODELS` 常量与现有 `ModelSelector` 组件
+- **Decision**：模型字段使用 `FashionModelId = 'gemini-3.1-flash-image-preview' | 'gemini-3-pro-image-preview' | 'gpt-image-2'`；模型选择器统一展示 `SELECTABLE_FASHION_MODELS`：Nano Banana / Nano Banana Pro / GPT Image 2
+- **Consequences**：AI 服装大片、服装大片裂变、姿势裂变共用同一种模型下拉样式；后端 provider dispatch 必须按模型过滤，`gpt-image-2` 只能分发给支持 `openai/gpt-image-*` 的 `qiniu` provider，不能落到 Google 官方 adapter
 
 ## Requirements
 
@@ -85,7 +85,7 @@
 2. 上传 1 张穿搭主图（必填）
 3. 可选上传产品正面细节图（最多 1 张）
 4. 可选上传产品背面细节图（最多 1 张）
-5. 选择模型版本（稳定版 / 旗舰版）
+5. 选择模型版本（Nano Banana / Nano Banana Pro / GPT Image 2）
 6. 点击「+ 去姿势库选择合适的姿势」→ 弹出姿势库 Modal
 7. 在 Modal 中筛选（人群/身位/收藏）并多选 1-9 个姿势模板（或点「基础搭配 3 张」快捷选 3 个）
 8. 点击「确定」回到主表单，左面板「选择姿势」区显示已选姿势缩略图 + 数量
@@ -116,7 +116,7 @@
 - [ ] 「基础搭配 3 张」按钮一键勾选预设 3 个 templateId
 - [ ] 「重置」清空已选，「确定」回到主表单并显示已选缩略图
 - [ ] 主表单「选择姿势」区域显示「N 个姿势已选」+ 缩略图横排
-- [ ] 模型选择支持「稳定版」「旗舰版」两个选项
+- [ ] 模型选择支持「Nano Banana」「Nano Banana Pro」「GPT Image 2」三个选项
 - [ ] 用户能多选 9 个姿势 + 点立即生成 → 后端流式返回 9 张图，每张对应一个 pose
 - [ ] 每张结果图保持原图人物身份、服装细节、画面质感，仅换姿势
 - [ ] N 个姿势中部分失败时 task.status = 'partial'，已成功的图正常显示
