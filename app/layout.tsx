@@ -1,14 +1,14 @@
 import type { Metadata } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 
-const _geist = Geist({ subsets: ["latin"] });
-const _geistMono = Geist_Mono({ subsets: ["latin"] });
+// 注：原本 import 了 `Geist` / `Geist_Mono` 两个 Google Fonts，但变量名带 `_`
+// 前缀且全文未使用（body 用的是 tailwind `font-sans`）。Mac mini 部署环境
+// 访问 fonts.googleapis.com 受限，next build 会失败。直接移除死代码。
 
 export const metadata: Metadata = {
-  title: 'AI服装电商 - 智能生成，高效出图',
-  description: 'AI服装电商创作工作台，帮助服装电商商家批量生成高质量电商素材',
+  title: '商拍生成工作台',
+  description: '服装电商创作工作台，帮助商家批量生成高质量电商素材',
   generator: 'v0.app',
   icons: {
     icon: [

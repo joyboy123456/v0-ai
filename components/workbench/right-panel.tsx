@@ -20,6 +20,7 @@ import {
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn, validateUploadSize } from "@/lib/utils";
 import {
+  AI_FASHION_DEMO_TASKS,
   FASHION_MODELS,
   FASHION_PROMPT_MODES,
   FEATURE_LABELS,
@@ -141,14 +142,26 @@ export function RightPanel({
   );
 
   const aiFashionGalleryItems = useMemo(
-    () =>
-      currentFeatureTasks.flatMap((task) =>
+    () => [
+      ...currentFeatureTasks.flatMap((task) =>
         task.results.map((image) => ({
           image,
           task,
         })),
       ),
-    [currentFeatureTasks],
+      // MVP 演示用：把 yibaiaigc 友商图作为"历史精选"追加到瀑布流末尾。
+      // 仅 ai-fashion-photo 功能下注入；不污染 task-store，刷新页面不消失。
+      // 上线前必须替换为本平台真实生成的素材。
+      ...(isAiFashionPhoto
+        ? AI_FASHION_DEMO_TASKS.flatMap((task) =>
+            task.results.map((image) => ({
+              image,
+              task,
+            })),
+          )
+        : []),
+    ],
+    [currentFeatureTasks, isAiFashionPhoto],
   );
 
   const visibleTask =

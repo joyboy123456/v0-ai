@@ -32,7 +32,6 @@ import {
   ELEMENT_REPLACE_TYPES,
   FEATURE_LABELS,
   FASHION_IMAGE_RATIOS,
-  FASHION_MODELS,
   FASHION_PROMPT_MODES,
   FASHION_RESOLUTIONS,
   GENERATE_COUNTS,
@@ -44,6 +43,7 @@ import {
   POSE_TEMPLATES,
   POSE_IMAGE_RATIOS,
   POSE_RESOLUTIONS,
+  SELECTABLE_FASHION_MODELS,
   type BackgroundReplaceParams,
   type CompanyModel,
   type ElementReplaceType,
@@ -189,7 +189,7 @@ export function LeftPanel({
 
     if (
       params.model &&
-      FASHION_MODELS.some((option) => option.id === params.model)
+      SELECTABLE_FASHION_MODELS.some((option) => option.id === params.model)
     ) {
       setFashionModel(params.model);
     }
@@ -217,7 +217,13 @@ export function LeftPanel({
     if (!photoFissionCaseRequest) return;
 
     const { case: photoFissionCase } = photoFissionCaseRequest;
-    setPhotoFissionModel(photoFissionCase.modelId);
+    const nextModel = SELECTABLE_FASHION_MODELS.some(
+      (option) => option.id === photoFissionCase.modelId,
+    )
+      ? photoFissionCase.modelId
+      : DEFAULT_FASHION_MODEL;
+
+    setPhotoFissionModel(nextModel);
     setPhotoFissionCategory(photoFissionCase.category);
     setPhotoFissionImageRatio(photoFissionCase.imageRatio);
     setPhotoFissionResolution(photoFissionCase.resolution);
@@ -298,7 +304,11 @@ export function LeftPanel({
       .filter((tpl): tpl is PoseTemplate => Boolean(tpl));
 
     onChangeSelectedPoseTemplates(templates);
-    setPoseFissionModel(poseCase.model);
+    setPoseFissionModel(
+      SELECTABLE_FASHION_MODELS.some((option) => option.id === poseCase.model)
+        ? poseCase.model
+        : DEFAULT_FASHION_MODEL,
+    );
     setPoseImageRatio(poseCase.imageRatio);
     setPoseResolution(poseCase.resolution);
     setError("");
@@ -702,6 +712,55 @@ export function LeftPanel({
   );
 }
 
+function FashionModelSelect({
+  label,
+  value,
+  onChange,
+  className,
+}: {
+  label: string;
+  value: FashionModelId;
+  onChange: (value: FashionModelId) => void;
+  className?: string;
+}) {
+  const activeModel =
+    SELECTABLE_FASHION_MODELS.find((option) => option.id === value) ??
+    SELECTABLE_FASHION_MODELS[0];
+
+  return (
+    <div className={cn("space-y-2", className)}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm text-foreground">{label}</span>
+        {activeModel && (
+          <span className="truncate text-[10px] text-muted-foreground">
+            {activeModel.alias}
+          </span>
+        )}
+      </div>
+      <Select
+        value={activeModel?.id ?? value}
+        onValueChange={(nextValue) => onChange(nextValue as FashionModelId)}
+      >
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder="选择模型" />
+        </SelectTrigger>
+        <SelectContent>
+          {SELECTABLE_FASHION_MODELS.map((option) => (
+            <SelectItem key={option.id} value={option.id}>
+              {option.label} · {option.alias}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {activeModel && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          {activeModel.description}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function PoseFissionForm({
   mainImage,
   frontDetailImage,
@@ -745,25 +804,11 @@ function PoseFissionForm({
 
   return (
     <div className="space-y-4">
-      {/* 后续可考虑抽出通用 ModelSelector 共享给 ai-fashion-photo / photo-fission / pose-fission（待第 4 个 feature 出现再抽象，YAGNI）。 */}
-      <div className="space-y-2">
-        <span className="text-sm text-foreground">模型版本</span>
-        <Select
-          value={model}
-          onValueChange={(value) => onModelChange(value as FashionModelId)}
-        >
-          <SelectTrigger className="w-full">
-            <SelectValue placeholder="选择模型" />
-          </SelectTrigger>
-          <SelectContent>
-            {FASHION_MODELS.map((option) => (
-              <SelectItem key={option.id} value={option.id}>
-                {option.label} · {option.alias}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <FashionModelSelect
+        label="模型版本"
+        value={model}
+        onChange={onModelChange}
+      />
 
       <UploadBox
         label="主图"
@@ -900,48 +945,16 @@ function AiFashionPhotoForm({
   const activePromptMode = FASHION_PROMPT_MODES.find(
     (mode) => mode.id === promptMode,
   );
-  const activeModel = FASHION_MODELS.find((option) => option.id === model);
   const sectionClass = "rounded-md bg-secondary p-4";
 
   return (
     <div className="space-y-4">
-      <div className={cn(sectionClass, "space-y-3")}>
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-foreground">模型</span>
-          <span className="text-[10px] text-muted-foreground">
-            {activeModel?.alias}
-          </span>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          {FASHION_MODELS.map((option) => {
-            const isActive = option.id === model;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => onModelChange(option.id)}
-                className={cn(
-                  "rounded-md border bg-secondary px-3 py-2 text-left text-xs transition-colors",
-                  isActive
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground",
-                )}
-                title={option.description}
-              >
-                <span className="block font-medium">{option.label}</span>
-                <span className="block text-[10px] text-muted-foreground">
-                  最多 {option.maxInputImages} 图 · {option.maxResolutionLabel}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        {activeModel && (
-          <p className="text-[11px] leading-relaxed text-muted-foreground">
-            {activeModel.description}
-          </p>
-        )}
-      </div>
+      <FashionModelSelect
+        label="模型"
+        value={model}
+        onChange={onModelChange}
+        className={sectionClass}
+      />
 
       <div className={cn(sectionClass, "space-y-4")}>
         <FashionReferenceUploader
@@ -1497,24 +1510,11 @@ function PhotoFissionForm({
 
   return (
     <div className="space-y-4">
-      <div className="space-y-2">
-        <span className="text-sm text-foreground">模型</span>
-        <Select
-          value={model}
-          onValueChange={(value) => onModelChange(value as FashionModelId)}
-        >
-          <SelectTrigger className="w-full">
-            <SelectValue placeholder="选择模型" />
-          </SelectTrigger>
-          <SelectContent>
-            {FASHION_MODELS.map((option) => (
-              <SelectItem key={option.id} value={option.id}>
-                {option.label} · {option.alias}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <FashionModelSelect
+        label="模型"
+        value={model}
+        onChange={onModelChange}
+      />
 
       <div className="space-y-2">
         <span className="text-sm text-foreground">品类</span>

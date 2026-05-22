@@ -1,10 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { FeatureSidebar } from './feature-sidebar'
 import { LeftPanel } from './left-panel'
 import { RightPanel } from './right-panel'
 import { PoseLibraryDialog } from './pose-library-dialog'
+import { useAuth } from '@/hooks/use-auth'
 import {
   type CompanyModel,
   type FashionReferenceImage,
@@ -20,6 +22,9 @@ const companyModelsStorageKey = 'fashion_company_models'
 const maxFashionReferences = 10
 
 export function Workbench() {
+  const router = useRouter()
+  const { user, isLoading: isAuthLoading, error: authError, logout } = useAuth()
+  const [redirectingToLogin, setRedirectingToLogin] = useState(false)
   const [currentFeature, setCurrentFeature] = useState<FeatureType>('ai-fashion-photo')
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [tasks, setTasks] = useState<GenerationTask[]>([])
@@ -45,13 +50,39 @@ export function Workbench() {
     case: PoseFissionCase
   } | null>(null)
 
+  useEffect(() => {
+    const clearStaleModalLock = () => {
+      const hasOpenDialog = document.querySelector('[role="dialog"][data-state="open"]')
+      if (hasOpenDialog) return
+
+      document.body.style.pointerEvents = ''
+      document
+        .querySelectorAll('[data-slot="dialog-overlay"], [data-slot="alert-dialog-overlay"]')
+        .forEach((node) => node.remove())
+    }
+
+    clearStaleModalLock()
+    const timeoutId = window.setTimeout(clearStaleModalLock, 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [])
+
+  const redirectToLogin = useCallback(() => {
+    setRedirectingToLogin(true)
+    router.replace('/login')
+    router.refresh()
+  }, [router])
+
   const loadTasks = useCallback(async () => {
     const response = await fetch('/api/tasks', { cache: 'no-store' })
+    if (response.status === 401) {
+      redirectToLogin()
+      return
+    }
     if (!response.ok) return
 
     const data = (await response.json()) as { tasks: GenerationTask[] }
     setTasks(data.tasks)
-  }, [])
+  }, [redirectToLogin])
 
   // 从右侧瀑布流 / 案例库 hover 操作里删单张「效果不好的」生成图。
   // 后端会同步把 task.results 中对应条目移除（删空整个 task 也会被一起删），
@@ -101,6 +132,10 @@ export function Workbench() {
 
   const loadTask = useCallback(async (taskId: string) => {
     const response = await fetch(`/api/tasks/${taskId}`, { cache: 'no-store' })
+    if (response.status === 401) {
+      redirectToLogin()
+      return
+    }
     if (!response.ok) return
 
     const task = (await response.json()) as GenerationTask
@@ -113,11 +148,18 @@ export function Workbench() {
 
       return currentTasks.map((item) => (item.taskId === task.taskId ? task : item))
     })
-  }, [])
+  }, [redirectToLogin])
 
   useEffect(() => {
+    if (!isAuthLoading && !user) {
+      redirectToLogin()
+    }
+  }, [isAuthLoading, redirectToLogin, user])
+
+  useEffect(() => {
+    if (!user) return
     void loadTasks()
-  }, [loadTasks])
+  }, [loadTasks, user])
 
   useEffect(() => {
     try {
@@ -148,6 +190,7 @@ export function Workbench() {
   }, [companyModels, companyModelsHydrated])
 
   useEffect(() => {
+    if (!user) return
     if (!activeTaskId) return
 
     const intervalId = window.setInterval(() => {
@@ -157,7 +200,7 @@ export function Workbench() {
     void loadTask(activeTaskId)
 
     return () => window.clearInterval(intervalId)
-  }, [activeTaskId, loadTask])
+  }, [activeTaskId, loadTask, user])
 
   const activeTask = tasks.find((task) => task.taskId === activeTaskId) ?? null
 
@@ -219,6 +262,7 @@ export function Workbench() {
   // PR3：组件挂载时一次性 fetch templates，避免 LeftPanel / RightPanel 各自重复请求。
   // 失败时静默 fallback，等到用户切到 pose-fission 再走 retry（PR4 会做更优雅的 UX）。
   useEffect(() => {
+    if (!user) return
     let cancelled = false
 
     async function loadPoseTemplates() {
@@ -237,7 +281,13 @@ export function Workbench() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [user])
+
+  const handleLogout = useCallback(async () => {
+    await logout()
+    router.replace('/login')
+    router.refresh()
+  }, [logout, router])
 
   const handleConfirmPoseLibrary = useCallback((selectedTemplates: PoseTemplate[]) => {
     setSelectedPoseTemplates(selectedTemplates)
@@ -259,9 +309,30 @@ export function Workbench() {
   // PR4：PoseFissionCaseLibrary 不再做单选高亮，case 卡片直接点「做同款」派发 request。
   // PR1/PR3 阶段的 selectedPoseFissionCaseId 兜底已可移除。
 
+  if (isAuthLoading || redirectingToLogin || !user) {
+    return (
+      <main className="flex h-screen items-center justify-center bg-background px-4 text-foreground">
+        <div className="w-full max-w-sm rounded-md border border-border bg-card p-5">
+          <p className="text-sm font-medium">
+            {redirectingToLogin || !user ? '正在前往登录页' : '正在检查登录状态'}
+          </p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {authError ? '登录态读取失败，请重新登录。' : '请稍候…'}
+          </p>
+        </div>
+      </main>
+    )
+  }
+
   return (
     <main className="flex h-screen overflow-hidden bg-background">
-      <FeatureSidebar activeFeature={currentFeature} onFeatureChange={setCurrentFeature} />
+      <FeatureSidebar
+        activeFeature={currentFeature}
+        onFeatureChange={setCurrentFeature}
+        user={user}
+        isAuthLoading={isAuthLoading}
+        onLogout={handleLogout}
+      />
       <LeftPanel
         feature={currentFeature}
         selectedPoseTemplates={selectedPoseTemplates}
