@@ -23,7 +23,7 @@
 [App 业务代码]
    ↓
 [lib/server/storage/storage-adapter.ts]  ← 业务层入口，按 STORAGE_MODE 切换
-   ├─ local: lib/server/storage/task-repo.local.ts + public/generated/**
+   ├─ local: lib/server/storage/task-repo.local.ts + 本地图片目录（默认 public/generated/**）
    └─ cloud: lib/server/storage/task-repo.d1.ts + R2
               ↓
    [lib/server/cloudflare/{d1,kv,shared}-client.ts]  ← 远程 REST API 客户端
@@ -80,6 +80,19 @@ export async function r2Head(key: string): Promise<{ exists: boolean; bytes?: nu
 
 参考：`lib/server/storage-mode.ts:1`
 
+### 3.2.1 Local 图片根目录
+
+`local` 模式默认继续写 `public/generated/**` 并返回 `/generated/**`，保持历史开发体验。
+如果需要客户内网演示或把生成图片放到仓库外，设置：
+
+```bash
+LOCAL_IMAGE_ROOT=/Users/<you>/yibai-local-images
+```
+
+此时上传图 / 生成图写入 `{LOCAL_IMAGE_ROOT}/{bucket}/...`，浏览器通过
+`/local-assets/**` 由应用 Node route 读取；业务代码仍只能通过
+`getStorageAdapter()` 写入，不得直接拼本地文件路径。
+
 ### 3.3 Environment
 
 所有 env key 必须同步 `.env.example`：
@@ -96,6 +109,9 @@ D1_DATABASE_ID=
 D1_DATABASE_NAME=
 KV_NAMESPACE_ID=
 STORAGE_MODE=local               # 或 cloud
+LOCAL_AUTH_MODE=super-admin      # local 模式默认内网超管；password 则保留账号登录
+LOCAL_SUPER_ADMIN_USERNAME=user01
+LOCAL_IMAGE_ROOT=                # local 模式可选；留空默认 public/generated
 ```
 
 ---
@@ -145,7 +161,7 @@ const result = await adapter.putImage({
   body: buffer,
   contentType: 'image/png',
 })
-// → local 模式写 public/generated/uploads/{userId}/avatar.png
+// → local 模式写本地图片目录 uploads/{userId}/avatar.png
 // → cloud 模式写 R2 users/{userId}/uploads/avatar.png
 // 业务代码无需关心 mode
 ```

@@ -107,12 +107,13 @@ const key = `${userId}-${filename}`   // 不可读、不可用 prefix lifecycle
 
 参考 `lib/server/auth/session.ts:1`、`app/api/auth/login/route.ts:1`
 
-### 3.5 Local mode fallback 契约（开发友好）
+### 3.5 Local mode 契约（内网演示优先）
 
-- Local 模式下 middleware 与 server in-memory Map 跨进程不通，无法 enforce session
-- `requireUser` **可以** fallback 到一个 mock user（推荐 user01）方便本地联调
-- **Cloud 模式严禁 fallback**——必须严格返回 null / 401
-- Fallback 触发时打 `console.warn('[auth] local-mode anonymous fallback to ...')`
+- `STORAGE_MODE=cloud` 永远强制账号登录与 KV session 校验。
+- `STORAGE_MODE=local` 默认 `LOCAL_AUTH_MODE=super-admin`，用于客户内网演示：middleware 不要求 cookie，`requireUser` 直接返回本地超管用户。
+- 本地超管用户名由 `LOCAL_SUPER_ADMIN_USERNAME` 指定，默认 `user01`，必须能在 local user-repo 中找到。
+- 如需恢复账号登录，把 `.env.local` 设为 `LOCAL_AUTH_MODE=password`，此时 middleware 只做 `session_id` cookie 存在性拦截，真正有效性由 nodejs route / `useAuth` 再校验。
+- 业务 API 仍必须调用 `requireUser(request)`；不要在路由里自己判断 local auth mode。
 
 参考 `lib/server/auth/require-user.ts:1`
 

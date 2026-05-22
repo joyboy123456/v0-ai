@@ -89,9 +89,23 @@ The `ai-fashion-photo` prompt textarea uses a multi-line placeholder to guide us
 
 - **Controlled mode**：`open: boolean` + `onOpenChange(open: boolean)`，宿主组件持有 open state
 - **Initial selection 回填**：父组件传入 `initialSelectedIds: string[]`，Modal 打开时把 `internalSelectedIds` 初始化为 `initialSelectedIds` 的副本
+- **Open-transition 初始化**：初始化必须只发生在「关闭 → 打开」这一刻；Modal 打开期间父组件可能因轮询、收藏、任务刷新等动作重渲染，不能因为 `initialSelectedIds` 是新数组引用就覆盖用户正在编辑的 draft
 - **Draft / Commit 分离**：`internalSelectedIds` 是 Modal 内部 draft state，只在用户点「确定」时通过 `onConfirm(ids)` 传给父组件；点「取消」或关闭直接丢弃 draft
 
 ```tsx
+const wasOpenRef = useRef(false)
+
+useEffect(() => {
+  if (!open) {
+    wasOpenRef.current = false
+    return
+  }
+  if (wasOpenRef.current) return
+
+  wasOpenRef.current = true
+  setInternalSelectedIds([...initialSelectedIds])
+}, [open, initialSelectedIds])
+
 <PoseLibraryDialog
   open={open}
   onOpenChange={setOpen}

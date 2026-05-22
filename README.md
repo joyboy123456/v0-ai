@@ -2,13 +2,13 @@
 
 > 面向服装电商商家的 AI 出图工作台，一站式生成模特大片、详情页图与投流素材。
 
-基于 [Next.js](https://nextjs.org) + [v0](https://v0.app) 搭建的 MVP 项目。生图后端默认接入 **Google Gemini 官方图像 API**（Nano Banana 2 / Pro），并保留 OpenAI 兼容协议（Raycast Local Proxy）作为兜底。
+基于 [Next.js](https://nextjs.org) + [v0](https://v0.app) 搭建的 MVP 项目。生图后端默认接入 **Google Gemini 官方图像 API**（Nano Banana / Nano Banana Pro），并可通过七牛 OpenAI 兼容渠道使用 GPT Image 2。
 
 ## ✨ 核心功能
 
 | 功能 | 说明 | 输入 | 输出 |
 | --- | --- | --- | --- |
-| **AI 服装大片** | 上传参考图 + 选择「我的模特」生成高级商拍大片 | 多张参考图 + 模特素材 + Prompt | 1 张大片（1k / 2k / 4k，按任务可切换 Nano Banana 2 / Pro） |
+| **AI 服装大片** | 上传参考图 + 选择「我的模特」生成高级商拍大片 | 多张参考图 + 模特素材 + Prompt | 1 张大片（1k / 2k / 4k，按任务可切换 Nano Banana / Nano Banana Pro / GPT Image 2） |
 | **服装大片 - 元素替换** | 替换原图中的服装、环境或人像元素 | 原图 + 替换元素图 + Prompt | 4 / 8 / 12 / 16 张 |
 | **服装大片裂变** | 上传产品图，按固定 9 镜头蓝图自动生成全景套图 | 服装产品图（可选正/背面细节） | **9 张固定套图**（支持失败镜头单独重跑） |
 | **姿势裂变** | 从内置 45 个姿势模板里多选 1–9 个，保留服装细节生成同款多姿势素材 | 主图 + 可选正/背面细节 + 多选姿势 | **N 张**（N = 用户选中的姿势数，1 ≤ N ≤ 9） |
@@ -30,7 +30,8 @@
 - **后端**：Next.js API Routes
 - **存储**：进程内 Map + JSON 文件持久化（MVP 阶段，未接数据库）
 - **AI 生图**：
-  - 默认 **Google Gemini 官方 API**（`gemini-3.1-flash-image-preview` Nano Banana 2 / `gemini-3-pro-image-preview` Nano Banana Pro）
+  - 默认 **Google Gemini 官方 API**（`gemini-3.1-flash-image-preview` Nano Banana / `gemini-3-pro-image-preview` Nano Banana Pro）
+  - 可选 **GPT Image 2**（`gpt-image-2`，需配置支持 `openai/gpt-image-*` 的七牛 `qiniu` provider）
   - 兜底 **OpenAI 兼容 `/v1/images/edits`**（默认指向 Raycast Local Proxy）
 - **Prompt 工程**：服装大片裂变 Prompt 已基于「一百 AIGC」研究重写镜头描述，强化身份/服装/环境锁定
 
@@ -58,7 +59,7 @@ IMAGE_API_DEMO=1
 | --- | --- | --- |
 | `IMAGE_API_PROVIDER` | 生图后端：`google`（官方 Gemini）/ `raycast`（兜底） | `google` |
 | `GOOGLE_API_KEY` | Google AI Studio API Key（[申请](https://aistudio.google.com/apikey)） | 空 |
-| `GOOGLE_IMAGE_MODEL` | Gemini 模型：`gemini-3.1-flash-image-preview` / `gemini-3-pro-image-preview` | `gemini-3.1-flash-image-preview` |
+| `GOOGLE_IMAGE_MODEL` | Gemini 默认模型：`gemini-3.1-flash-image-preview` / `gemini-3-pro-image-preview` | `gemini-3.1-flash-image-preview` |
 | `GOOGLE_IMAGE_TIMEOUT_MS` | Gemini 单图超时（2K/4K + 多图建议 ≥ 480s） | `600000` |
 | `GOOGLE_IMAGE_IPM` | 每分钟最多发起的 image 请求数（Free=2 / Tier1=10 / Tier2=50） | `10` |
 | `GOOGLE_IMAGE_RPM` | 每分钟最多发起的总请求数 | `150` |
@@ -71,6 +72,9 @@ IMAGE_API_DEMO=1
 | `IMAGE_API_TIMEOUT_MS` | Raycast / OpenAI 兼容超时 | `120000` |
 | `IMAGE_API_SKIP_HEALTHCHECK` | 跳过本地健康检查 | `0` |
 | `IMAGE_API_DEMO` | 启用本地 Demo 模式（不调用任何 provider） | `0` |
+| `STORAGE_MODE` | `local` 本地演示 / `cloud` Cloudflare 线上存储 | `local` |
+| `LOCAL_AUTH_MODE` | local 认证：`super-admin` 内网直进 / `password` 账号登录 | `super-admin` |
+| `LOCAL_IMAGE_ROOT` | local 图片根目录；留空使用 `public/generated` | 空 |
 
 ## 📁 目录结构
 
@@ -93,7 +97,7 @@ lib/
   types.ts                       # 全局类型 + 功能/比例/分辨率枚举
 data/                            # MVP 阶段的 JSON 持久化文件
 public/
-  generated/             # 上传素材与生成结果落盘目录
+  generated/             # 默认本地图片目录；也可用 LOCAL_IMAGE_ROOT 指到仓库外
   poses/                 # 45 张姿势参考缩略图
 scripts/                 # 姿势模板拉取、维护脚本
 ```
@@ -101,7 +105,7 @@ scripts/                 # 姿势模板拉取、维护脚本
 ## 🔄 生图任务流程
 
 ```
-前端上传素材 ──► POST /api/assets/upload ──► 落盘 public/generated/assets/
+前端上传素材 ──► POST /api/assets/upload ──► 落盘本地图片目录 / R2
         │
         └──► POST /api/tasks ──► 任务进入 pending
                                     │
@@ -114,7 +118,7 @@ scripts/                 # 姿势模板拉取、维护脚本
               限流（IPM/RPM）+ 重试（指数退避 + jitter）+ 并发控制
                                     │
                                     ▼
-              结果写入 public/generated/results/，状态置为 success
+              结果写入本地图片目录 / R2，状态置为 success
                                     │
             前端每 900ms 轮询 GET /api/tasks/[taskId] 更新进度
             （服装大片裂变支持失败镜头单独重跑：targetShotIds）
@@ -126,7 +130,7 @@ scripts/                 # 姿势模板拉取、维护脚本
 
 - ✅ 工作台 UI 与四大功能参数收集
 - ✅ 任务编排、轮询、历史与下载
-- ✅ Google Gemini 官方 API 接入（Nano Banana 2 / Pro 可切换）
+- ✅ 模型选择器（Nano Banana / Nano Banana Pro / GPT Image 2）
 - ✅ Raycast / OpenAI 兼容 API 兜底
 - ✅ 服装大片裂变 9 张固定镜头蓝图 + 失败镜头单独重跑
 - ✅ 姿势裂变多选模板（1–9 张）+ 45 个姿势模板种子库

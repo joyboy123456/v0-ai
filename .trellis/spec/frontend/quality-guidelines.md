@@ -4,7 +4,7 @@
 
 The project supports two image generation providers, switched via `IMAGE_API_PROVIDER` env var.
 
-> **Fission features exception**：`pose-fission` 跳过 `IMAGE_API_PROVIDER` 切换，直接在 `task-store.runTask` 内分流到 `runPoseFissionPipeline` → `runGoogleImageEdit`。原因详见 `backend/streaming-fission-pipeline.md §8.1`。`photo-fission` 出于历史 demo 路径兼容仍走 `runThirdPartyWorkflow`，但 provider 实际只有 `google` 路径。新增 fission feature 时**应直接学 pose-fission 的分流**，省一层 dispatcher。
+> **Fission features exception**：`pose-fission` 跳过 `IMAGE_API_PROVIDER` 切换，直接在 `task-store.runTask` 内分流到 `runPoseFissionPipeline` → `runImageEditViaProvider`。原因详见 `backend/streaming-fission-pipeline.md`。`photo-fission` 出于历史 demo 路径兼容仍走 `runThirdPartyWorkflow`，但实际 provider 调用同样经 `runImageEditViaProvider`。新增 fission feature 时**应直接学 pose-fission 的分流**，省一层 dispatcher。
 
 ### Provider: `raycast` (default)
 
@@ -38,12 +38,15 @@ The project supports two image generation providers, switched via `IMAGE_API_PRO
 - Response: `candidates[0].content.parts[*].inlineData.data` (base64, skip parts with `thought: true`)
 - Timeout: `GOOGLE_IMAGE_TIMEOUT_MS` (default 600s — 3.x models can take 2+ minutes, multi-image / Pro thinking pushes 200s+)
 
-### Available Google Models
+### Available Selectable Models
 
 | Model ID | Name | Notes |
 |---|---|---|
-| `gemini-3.1-flash-image-preview` | Nano Banana 2 | Max 14 input images, up to 4K, ~2min |
-| `gemini-3-pro-image-preview` | Nano Banana Pro | Max 14 input images, up to 4K, thinking mode |
+| `gemini-3.1-flash-image-preview` | Nano Banana | Max 14 input images, up to 4K |
+| `gemini-3-pro-image-preview` | Nano Banana Pro | Google flagship quality, thinking mode, slower |
+| `gpt-image-2` | GPT Image 2 | Requires a compatible `qiniu` provider (`openai/gpt-image-*`) |
+
+All feature forms that expose model choice should use the shared `FashionModelSelect` style and render `SELECTABLE_FASHION_MODELS`, so AI fashion photo, photo fission, and pose fission stay visually consistent.
 
 ## Asset Resolution Before API Call
 

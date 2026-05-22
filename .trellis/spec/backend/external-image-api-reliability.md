@@ -64,9 +64,40 @@ export interface AcquireOptions {
   apiKey: string
   signal?: AbortSignal
   onWait?: (waitMs: number, reason: 'ipm' | 'rpm') => void
+  providerId?: string      // 多渠道时用于令牌桶与 auth 熔断隔离
+  maxIpm?: number          // provider 级 IPM；不传回退 GOOGLE_IMAGE_IPM
+  maxRpm?: number          // provider 级 RPM；不传回退 GOOGLE_IMAGE_RPM
 }
 
 export async function acquireGoogleImageSlot(opts: AcquireOptions): Promise<void>
+```
+
+### 2.3.1 多渠道 provider
+
+`lib/server/image-provider-pool.ts`
+
+```ts
+export type ImageProviderType = 'google' | 'qiniu'
+
+export interface ImageProvider {
+  id: string
+  type: ImageProviderType
+  apiKey: string
+  baseUrl?: string
+  model?: string
+  maxIpm: number
+  maxRpm: number
+  weight: number
+  enabled: boolean
+  timeoutMs: number
+}
+
+export function pickNextProvider(): ImageProvider | null
+export function dispatchItems<T>(items: T[]): Map<string, { provider: ImageProvider; items: T[] }>
+export function getFailoverProvider(excludeProviderIds: string[]): ImageProvider | null
+export function getAvailableProvidersForModel(model?: string): ImageProvider[]
+export function dispatchItemsForModel<T>(items: T[], model?: string): Map<string, { provider: ImageProvider; items: T[] }>
+export function getFailoverProviderForModel(excludeProviderIds: string[], model?: string): ImageProvider | null
 ```
 
 ### 2.4 日志事件
@@ -113,14 +144,16 @@ task-store.runTask / retryPhotoFissionShots
    ↓
 third-party-image-adapter.runGoogleProviderEdits / photo-fission-service.runPhotoFissionPipeline
    ↓
-google-genai-adapter.runGoogleImageEdit
+provider-image-router.runImageEditViaProvider
    ↓
-callGoogleImageWithRetry(fn=performSingleCall, context, { apiKey })
-       ├─ 1. isAuthBlocked() 检查（401/403 熔断快路径）
+google-genai-adapter.runGoogleImageEdit / qiniu-image-adapter.runQiniuImageEdit
+   ↓
+callGoogleImageWithRetry(fn=performSingleCall, context, { apiKey, providerId, maxIpm, maxRpm })
+       ├─ 1. isAuthBlocked(providerId || apiKey) 检查（401/403 熔断快路径）
        ├─ 2. for attempt in attempts:
-       │      ├─ acquireGoogleImageSlot(apiKey)      ← 必在 fetch 之前
+       │      ├─ acquireGoogleImageSlot(apiKey, providerId, maxIpm, maxRpm) ← 必在 fetch 之前
        │      ├─ logImageEvent('gimg.attempt', ctx)
-       │      ├─ await fn(attempt) → fetch Google
+       │      ├─ await fn(attempt) → fetch provider
        │      ├─ 解析 response 抛 GoogleImageError
        │      └─ 分类 → 决定 retryable / 等待 / 熔断
        └─ 3. 成功 → 返回 T；失败 → throw GoogleImageError
@@ -128,8 +161,9 @@ callGoogleImageWithRetry(fn=performSingleCall, context, { apiKey })
 
 **绝对禁止**：
 - 在 wrapper 之外直接 `fetch(googleEndpoint)`
+- 新增 provider adapter 时绕开 `callGoogleImageWithRetry` 自己写 retry / throttle
 - 在 wrapper 之外做 `acquireGoogleImageSlot`（必须由 wrapper 在每次 attempt 内调用）
-- 在 wrapper 之外用 `console.log/warn` 打 Google 调用相关日志（必须走 `logImageEvent`）
+- 在 wrapper 之外用 `console.log/warn` 打 provider 调用相关日志（必须走 `logImageEvent`）
 
 ### 3.2 traceId 命名
 
@@ -155,6 +189,57 @@ callGoogleImageWithRetry(fn=performSingleCall, context, { apiKey })
 
 每次新增 env 必须 **同步更新 `.env.example` 并加中文注释说明 tier 推荐值**。
 
+### 3.3.1 `IMAGE_PROVIDERS` 多渠道配置
+
+`IMAGE_PROVIDERS` 是可选 JSON 数组；不配置时自动回退到 `GOOGLE_API_KEY` 单渠道。
+
+```json
+[
+  {
+    "id": "google-1",
+    "type": "google",
+    "apiKey": "AIza...",
+    "model": "gemini-3.1-flash-image-preview",
+    "maxIpm": 10,
+    "maxRpm": 150,
+    "weight": 1,
+    "timeoutMs": 600000
+  },
+  {
+    "id": "qiniu-1",
+    "type": "qiniu",
+    "apiKey": "your-qiniu-api-key",
+    "baseUrl": "https://api.qnaigc.com",
+    "model": "gemini-3.0-pro-image-preview",
+    "maxIpm": 10,
+    "maxRpm": 150,
+    "weight": 1,
+    "timeoutMs": 600000
+  },
+  {
+    "id": "qiniu-gpt-1",
+    "type": "qiniu",
+    "apiKey": "your-qiniu-api-key",
+    "baseUrl": "https://api.qnaigc.com",
+    "model": "openai/gpt-image-2",
+    "maxIpm": 10,
+    "maxRpm": 150,
+    "weight": 1,
+    "timeoutMs": 600000
+  }
+]
+```
+
+约束：
+- `provider.id` 必须稳定；日志、令牌桶、auth 熔断都依赖它
+- `maxIpm/maxRpm` 是单 provider 配额；同一个真实 API key 不要伪装成多个 provider 抬高并发
+- 新增 provider type 时只改 `provider-image-router.ts` + 对应 adapter，不要在 photo/pose pipeline 内写 switch
+- 七牛 `type: "qiniu"` 当前只允许 `gemini-*` 与 `openai/gpt-image-*` 模型；其他模型即使文档支持，也不要接入本项目
+- 前端任务级模型选择优先于 provider 默认模型；`runImageEditViaProvider` 必须把 `input.model` 传给 adapter，不能用 `provider.model` 覆盖用户选择
+- 任何 fission / 单图多 provider 调度前必须按模型过滤 provider：`gpt-image-*` / `openai/gpt-image-*` 只能分发给 `qiniu`，不能落到 Google 官方 adapter
+- 七牛文生图走 `/v1/images/generations`；只要 `inputImages.length > 0` 就走 `/v1/images/edits`
+- 七牛 GPT 图像模型用 `size/quality`；七牛 Gemini 图像模型用 `image_config.aspect_ratio/image_size`
+
 ### 3.4 默认重试参数（PRD §15.3 验收基准）
 
 ```
@@ -176,9 +261,11 @@ perCategoryMaxAttempts:
 
 `computeRateLimitDelay` 必须取 `max(Retry-After × 1000, 30000) × (1 ± 10% jitter)`。Retry-After 缺失或非法时 fallback 到指数退避。
 
-### 3.6 401/403 全局熔断
+### 3.6 401/403 provider/key 级熔断
 
-任意一次响应触发 `category === 'auth_failed'` → 模块级 `authFailureUntil = Date.now() + 30_000`。窗口内所有 `callGoogleImageWithRetry` 进入前 fast-fail。窗口过期自动解除，不需要重启进程。
+任意一次响应触发 `category === 'auth_failed'` → `authFailureUntilByKey.set(providerId || apiKey, Date.now() + 30_000)`。同一 provider/key 在窗口内 fast-fail；其他 provider 不受影响。窗口过期自动解除，不需要重启进程。
+
+`runImageEditViaProvider` 还必须调用 `tripProviderCircuit(provider.id)`，让 provider pool 在 30s 内不再把新 work item 分配给这个渠道。
 
 ---
 
@@ -252,7 +339,9 @@ shot_5 连续 3 次 finishReason=STOP 但无 inlineData
 - `parseRetryAfter('45')` → 45；`parseRetryAfter('Wed, 21 Oct 2026 07:28:00 GMT')` → 与当前时间 diff（≥0）；`parseRetryAfter(null)` → undefined
 - `computeRateLimitDelay(10)` → ≥ 27000 ms（max(10s, 30s) ± 10%）
 - `classifyUnknownError(new Error('fetch failed'))` → `category === 'network'`
-- 401/403 熔断：连续两次抛 `auth_failed`，第二次必须在 attempt=1 就 fast-fail（不进 fn）
+- 401/403 熔断：同一 `providerId` 连续两次抛 `auth_failed`，第二次必须在 attempt=1 就 fast-fail（不进 fn）
+- 多 provider auth 隔离：`provider-a` 抛 `auth_failed` 后，`provider-b` 仍可进入 fn，不被全局熔断误伤
+- 七牛 adapter：HTTP 429 / 503 必须携带 `retryAfterSeconds=parseRetryAfter(header)` 进入 wrapper，触发 `gimg.retry`
 
 ### 6.2 集成 / 手测（无法跳过）
 
@@ -305,9 +394,24 @@ return callGoogleImageWithRetry(fn, ctx, { apiKey })
 ```ts
 // 在 callGoogleImageWithRetry 内部：
 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-  await acquireGoogleImageSlot({ apiKey, signal })
+  await acquireGoogleImageSlot({ apiKey, providerId, maxIpm, maxRpm, signal })
   // ...fetch...
 }
+```
+
+### 7.2.1 多渠道熔断隔离
+
+#### ❌ Wrong — 一个 key 坏掉拖死所有渠道
+```ts
+let authFailureUntil: number | null = null
+if (isAuthBlocked()) throw authFailed
+```
+**为什么错**：`qiniu-1` 或 `google-1` 凭证异常时会让所有其他 provider 也 fast-fail，高并发多渠道退化成单点故障。
+
+#### ✅ Correct — provider/key 级熔断
+```ts
+const circuitKey = providerId || apiKey
+authFailureUntilByKey.set(circuitKey, Date.now() + 30_000)
 ```
 
 ---
