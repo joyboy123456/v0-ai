@@ -164,6 +164,40 @@ export interface PhotoFissionShot {
   order: number
 }
 
+/**
+ * v5 LLM Shot Planner 产物：单个镜头卡片。
+ *
+ * 由 `lib/server/photo-fission-shot-planner.ts` 调用七牛云文本 LLM
+ * （`moonshotai/kimi-k2.5`）生成，9 个一组组成 `ShotPlannerOutput`。
+ *
+ * - `shotId`：稳定 id（shot_1 ~ shot_9，与系统提示词中的输出契约对齐）
+ * - `role`：镜头中文角色名（如「正面全身主图」）
+ * - `imagePrompt`：衣百风格自然语言段落，**直接传给出图模型**，
+ *   不再走 v4 的 12 段拼装链路
+ */
+export interface PhotoFissionShotCard {
+  shotId: string
+  role: string
+  imagePrompt: string
+}
+
+/**
+ * v5 LLM Shot Planner 完整输出。
+ * 严格 9 个 ShotCard，顺序对应 shotIndex 0-8。
+ */
+export interface PhotoFissionShotPlannerOutput {
+  shots: PhotoFissionShotCard[]
+}
+
+/**
+ * v5 LLM Shot Planner 调用入参。
+ */
+export interface PhotoFissionShotPlannerInput {
+  category: PhotoFissionCategory
+  childrensCategory?: PhotoFissionChildrensCategory
+  imageRatio: PhotoFissionImageRatio
+}
+
 export interface PhotoFissionParams {
   model: FashionModelId
   category: PhotoFissionCategory

@@ -31,6 +31,11 @@ import {
   getChildrensCategoryShotBlueprint,
   getChildrensCategoryStyleAnchor,
 } from './prompt-templates/childrens-dress'
+import { buildPlannerRulePlan } from './photo-fission-rule-engine'
+import {
+  invokeShotPlanner,
+  ShotPlannerError,
+} from './photo-fission-shot-planner'
 import { runImageEditViaProvider } from './provider-image-router'
 
 const photoFissionCategoryIds = new Set<PhotoFissionCategory>(
@@ -607,6 +612,14 @@ export async function runPhotoFissionPipeline(
     throw new Error('服装大片裂变缺少参考图')
   }
 
+  // ---- v5 LLM Planner 接入 ----
+  // 在分发到出图模型之前，先调用文本 LLM 镜头策划器（D15-D18）。
+  // 成功时用衣百风格自然语言段落覆盖 fullPlan 每个 shot 的 prompt；
+  // 任何异常（未实现品类 / 配置缺失 / LLM 故障 / Schema 校验失败）都
+  // 静默回退到 v4 buildShotPrompt 的拼装 prompt（已在 fullPlan 内），
+  // 服务不挂、画面不空。
+  await applyShotPlannerOverride(fullPlan, params, taskId)
+
   // 过滤目标 shot：targetShotIds 非空时只跑子集
   const targetSet =
     options.targetShotIds && options.targetShotIds.length > 0
@@ -975,4 +988,83 @@ function readOptionalBoolean(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * v5 LLM Planner 接入：在 pipeline 入口对 fullPlan 做衣百风格 prompt 覆盖。
+ *
+ * 流程：
+ * 1. 调 rule-engine 拿系统提示词（命中品类才有）
+ * 2. 未命中品类（如非童装连衣裙）→ 直接返回，保持 v4 fallback
+ * 3. 调 LLM Planner（七牛云 kimi-k2.5，纯文本，~1-3s）
+ * 4. 按 shotId 写回 fullPlan[i].prompt
+ * 5. 任何错误都吞掉、打 warn 日志，让 v4 fallback 接管
+ *
+ * 透明降级：调用方完全不感知 Planner 是否成功，pipeline 后续逻辑无变化。
+ */
+async function applyShotPlannerOverride(
+  fullPlan: PhotoFissionShot[],
+  params: PhotoFissionParams,
+  taskId: string,
+): Promise<void> {
+  const plan = buildPlannerRulePlan(params.category, params.childrensCategory)
+  if (!plan) {
+    // 未命中 v5 路径（非童装连衣裙）→ 直接走 v4
+    return
+  }
+
+  const startedAt = Date.now()
+  try {
+    const output = await invokeShotPlanner({
+      systemPrompt: plan.systemPrompt,
+      userPrompt: plan.userPrompt,
+      traceId: taskId,
+    })
+
+    // 按 shotId 索引覆盖；任何缺失或越界都跳过单条，不影响其它 shot
+    const indexByShotId = new Map<string, number>()
+    fullPlan.forEach((shot, idx) => indexByShotId.set(shot.shotId, idx))
+
+    let overridden = 0
+    for (const card of output.shots) {
+      const idx = indexByShotId.get(card.shotId)
+      if (idx === undefined) continue
+      const next = card.imagePrompt.trim()
+      if (!next) continue
+      fullPlan[idx] = { ...fullPlan[idx], prompt: next }
+      overridden += 1
+    }
+
+    // eslint-disable-next-line no-console
+    console.log(
+      JSON.stringify({
+        lvl: 'info',
+        evt: 'planner.success',
+        ts: new Date().toISOString(),
+        traceId: taskId,
+        taskId,
+        latencyMs: Date.now() - startedAt,
+        overridden,
+        total: fullPlan.length,
+      }),
+    )
+  } catch (error) {
+    const stage =
+      error instanceof ShotPlannerError ? error.stage ?? 'unknown' : 'unknown'
+    const message = error instanceof Error ? error.message : String(error)
+    // eslint-disable-next-line no-console
+    console.error(
+      JSON.stringify({
+        lvl: 'warn',
+        evt: 'planner.fallback',
+        ts: new Date().toISOString(),
+        traceId: taskId,
+        taskId,
+        latencyMs: Date.now() - startedAt,
+        stage,
+        reason: message,
+      }),
+    )
+    // 不抛出，让 v4 fallback prompt 继续走
+  }
 }
