@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/streaming-fission-pipeline.md", "reason": "自检 shotPlan 编排未破坏：长度仍为 9、shotId 命名一致、worker pool 调度路径不变、targetShotIds 重跑路径仍能命中新模板"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "PhotoFissionCategory / PhotoFissionChildrensCategory 类型在 prompt 模板模块中保持类型安全、no any、字符串字面量使用枚举常量"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "自检 types ⇄ service ⇄ template 跨层数据流：模板仅依赖 types 公共类型，不反向依赖 service；不通过字符串硬编码 shotId"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "自检：未把通用蓝图（PHOTO_FISSION_SHOT_BLUEPRINT）复制粘贴到模板模块；buildShotPrompt 拼装函数复用，仅替换 description"}

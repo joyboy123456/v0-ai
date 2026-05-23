@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/streaming-fission-pipeline.md", "reason": "自检 shotPlan 编排未破坏：长度仍为 9、shotId 命名一致、worker pool 调度路径不变、targetShotIds 重跑路径仍能命中新模板"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "PhotoFissionChildrensCategory 在新增 outdoor getter 中保持类型安全；no any；OUTDOOR_SHOT_INDICES 走 readonly number[] 或 tuple 字面量"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "自检 types ⇄ service ⇄ template 跨层数据流：新增 outdoor 常量仍由模板模块导出、service 层只调 getter、不反向依赖；不通过字符串硬编码 shotId 或 index 数字"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "自检：未把通用蓝图（PHOTO_FISSION_SHOT_BLUEPRINT）复制粘贴到模板模块；外景常量注入复用 buildShotSection / buildStyleLockSection 既有 section 拼装路径，不另起新的 if-else 分支"}
+{"file": ".trellis/tasks/05-23-childrens-dress-sit-pose-rules/prd.md", "reason": "对照 v3 终稿 Acceptance Criteria 逐条勾选：shot_1~6 是否完全随机化、shot_7 椅子规则、shot_8/9 外景常量、椅子术语统一、邻家小姑娘锚点是否保留"}
+{"file": ".trellis/tasks/05-23-childrens-dress-sit-pose-rules/research/outdoor-grassland-scene-preset.md", "reason": "自检外景常量措辞是否完整覆盖 background/ground/atmosphere/lighting/camera/style 六大组、是否漏写关键负面词（室内/城市/阴天等）"}
