@@ -36,6 +36,7 @@ import {
   FASHION_RESOLUTIONS,
   GENERATE_COUNTS,
   IMAGE_RATIOS,
+  PHOTO_FISSION_CHILDRENS_CATEGORIES,
   PHOTO_FISSION_CATEGORIES,
   PHOTO_FISSION_RATIOS_EXTRA,
   PHOTO_FISSION_RATIOS_MAIN,
@@ -57,6 +58,7 @@ import {
   type GenerateCount,
   type ImageRatio,
   type PhotoFissionCategory,
+  type PhotoFissionChildrensCategory,
   type PhotoFissionCase,
   type PhotoFissionImageRatio,
   type PhotoFissionParams,
@@ -129,6 +131,8 @@ export function LeftPanel({
   );
   const [photoFissionCategory, setPhotoFissionCategory] =
     useState<PhotoFissionCategory>("childrens");
+  const [photoFissionChildrensCategory, setPhotoFissionChildrensCategory] =
+    useState<PhotoFissionChildrensCategory>("dress");
   const [photoFissionMainImage, setPhotoFissionMainImage] =
     useState<UploadedImage | null>(null);
   const [photoFissionFrontDetail, setPhotoFissionFrontDetail] =
@@ -449,6 +453,10 @@ export function LeftPanel({
       return {
         model: photoFissionModel,
         category: photoFissionCategory,
+        childrensCategory:
+          photoFissionCategory === "childrens"
+            ? photoFissionChildrensCategory
+            : undefined,
         hasFrontDetail: Boolean(photoFissionFrontDetail),
         hasBackDetail: Boolean(photoFissionBackDetail),
         imageRatio: photoFissionImageRatio,
@@ -571,6 +579,7 @@ export function LeftPanel({
               <PhotoFissionForm
                 model={photoFissionModel}
                 category={photoFissionCategory}
+                childrensCategory={photoFissionChildrensCategory}
                 mainImage={photoFissionMainImage}
                 frontDetailImage={photoFissionFrontDetail}
                 backDetailImage={photoFissionBackDetail}
@@ -579,6 +588,7 @@ export function LeftPanel({
                 helperText={helperText}
                 onModelChange={setPhotoFissionModel}
                 onCategoryChange={setPhotoFissionCategory}
+                onChildrensCategoryChange={setPhotoFissionChildrensCategory}
                 onMainUploaded={(image) => {
                   setPhotoFissionMainImage(image);
                   if (!photoFissionRatioUserOverrideRef.current) {
@@ -1468,6 +1478,7 @@ function getPoseRatioStyle(id: PoseImageRatio) {
 function PhotoFissionForm({
   model,
   category,
+  childrensCategory,
   mainImage,
   frontDetailImage,
   backDetailImage,
@@ -1476,6 +1487,7 @@ function PhotoFissionForm({
   helperText,
   onModelChange,
   onCategoryChange,
+  onChildrensCategoryChange,
   onMainUploaded,
   onMainRemove,
   onFrontDetailUploaded,
@@ -1487,6 +1499,7 @@ function PhotoFissionForm({
 }: {
   model: FashionModelId;
   category: PhotoFissionCategory;
+  childrensCategory: PhotoFissionChildrensCategory;
   mainImage: UploadedImage | null;
   frontDetailImage: UploadedImage | null;
   backDetailImage: UploadedImage | null;
@@ -1495,6 +1508,7 @@ function PhotoFissionForm({
   helperText: string;
   onModelChange: (value: FashionModelId) => void;
   onCategoryChange: (value: PhotoFissionCategory) => void;
+  onChildrensCategoryChange: (value: PhotoFissionChildrensCategory) => void;
   onMainUploaded: (image: UploadedImage) => void;
   onMainRemove: () => void;
   onFrontDetailUploaded: (image: UploadedImage) => void;
@@ -1536,6 +1550,31 @@ function PhotoFissionForm({
           </SelectContent>
         </Select>
       </div>
+
+      {category === "childrens" && (
+        <div className="space-y-2">
+          <span className="text-sm text-foreground">童装品类</span>
+          <Select
+            value={childrensCategory}
+            onValueChange={(value) =>
+              onChildrensCategoryChange(
+                value as PhotoFissionChildrensCategory,
+              )
+            }
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="选择童装品类" />
+            </SelectTrigger>
+            <SelectContent>
+              {PHOTO_FISSION_CHILDRENS_CATEGORIES.map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       <UploadBox
         label="主图"

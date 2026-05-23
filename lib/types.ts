@@ -49,6 +49,7 @@ export type PhotoFissionCategory =
   | 'suit'
   | 'outerwear'
   | 'childrens'
+export type PhotoFissionChildrensCategory = 'dress'
 export type PhotoFissionImageRatio =
   | '1:1'
   | '3:2'
@@ -166,6 +167,7 @@ export interface PhotoFissionShot {
 export interface PhotoFissionParams {
   model: FashionModelId
   category: PhotoFissionCategory
+  childrensCategory?: PhotoFissionChildrensCategory
   hasFrontDetail: boolean
   hasBackDetail: boolean
   imageRatio: PhotoFissionImageRatio
@@ -370,6 +372,10 @@ export const PHOTO_FISSION_CATEGORIES = [
   { id: 'outerwear', label: '外套' },
   { id: 'childrens', label: '童装' },
 ] satisfies { id: PhotoFissionCategory; label: string }[]
+
+export const PHOTO_FISSION_CHILDRENS_CATEGORIES = [
+  { id: 'dress', label: '连衣裙' },
+] satisfies { id: PhotoFissionChildrensCategory; label: string }[]
 
 /**
  * 服装大片裂变（photo-fission）支持的全部 10 个真实图片比例。
@@ -605,7 +611,7 @@ export const PHOTO_FISSION_CASES: PhotoFissionCase[] = [
     name: '童装白T 9 宫格',
     description:
       '童装白色T恤+深色半裙的标准电商套图：正面、侧面、背面、近景、远景、特写、45度等 9 个镜头',
-    category: 'childrens',
+    category: 'tops',
     mainImageUrl: '/cases/photo-fission-kid-white-tee.jpg',
     resultImageUrls: [
       '/cases/photo-fission-kid-white-tee-shot-1.jpg',
@@ -670,4 +676,3 @@ export interface User {
   displayName: string | null
   createdAt: number
 }
-

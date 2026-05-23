@@ -1,11 +1,13 @@
 import {
   DEFAULT_FASHION_MODEL,
+  PHOTO_FISSION_CHILDRENS_CATEGORIES,
   FASHION_MODELS,
   PHOTO_FISSION_CATEGORIES,
   PHOTO_FISSION_IMAGE_RATIOS,
   PHOTO_FISSION_RESOLUTIONS,
   type FashionModelId,
   type PhotoFissionCategory,
+  type PhotoFissionChildrensCategory,
   type PhotoFissionImageRatio,
   type PhotoFissionParams,
   type PhotoFissionResolution,
@@ -21,10 +23,21 @@ import {
   type ImageProvider,
 } from './image-provider-pool'
 import { logImageEvent } from './log'
+import {
+  getChildrensCategoryAngleControl,
+  getChildrensCategoryNegativeAddon,
+  getChildrensCategoryOutdoorScene,
+  getChildrensCategoryOutdoorShotIndices,
+  getChildrensCategoryShotBlueprint,
+  getChildrensCategoryStyleAnchor,
+} from './prompt-templates/childrens-dress'
 import { runImageEditViaProvider } from './provider-image-router'
 
 const photoFissionCategoryIds = new Set<PhotoFissionCategory>(
   PHOTO_FISSION_CATEGORIES.map((option) => option.id),
+)
+const photoFissionChildrensCategoryIds = new Set<PhotoFissionChildrensCategory>(
+  PHOTO_FISSION_CHILDRENS_CATEGORIES.map((option) => option.id),
 )
 const photoFissionImageRatioIds = new Set<PhotoFissionImageRatio>(
   PHOTO_FISSION_IMAGE_RATIOS.map((option) => option.id),
@@ -38,6 +51,9 @@ const fashionModelIds = new Set<FashionModelId>(
 
 const photoFissionCategoryLabelMap = new Map(
   PHOTO_FISSION_CATEGORIES.map((option) => [option.id, option.label]),
+)
+const photoFissionChildrensCategoryLabelMap = new Map(
+  PHOTO_FISSION_CHILDRENS_CATEGORIES.map((option) => [option.id, option.label]),
 )
 
 /**
@@ -100,6 +116,14 @@ const categoryRequirementMap: Record<PhotoFissionCategory, string> = {
   childrens: '保持儿童体型比例、童装版型宽松度与亲和感；避免成人化处理',
 }
 
+const childrensCategoryRequirementMap: Record<
+  PhotoFissionChildrensCategory,
+  string
+> = {
+  dress:
+    '童装连衣裙品类规则：保持连衣裙结构，有明确上身与裙身连接关系，裙摆轮廓自然可见，不能生成成裤装、瑜伽裤、紧身裤或贴腿包裹的下装。动作常量：正面全身站立、转动裙摆、轻拉裙摆、背面展示、坐姿铺开裙摆；表情常量：开心甜美、自然可爱、表情自然、动作自然优雅。',
+}
+
 export function normalizePhotoFissionParams(
   params: unknown,
   inputAssetCount: number,
@@ -110,6 +134,10 @@ export function normalizePhotoFissionParams(
 
   const model = readFashionModel(params.model)
   const category = readPhotoFissionCategory(params.category)
+  const childrensCategory =
+    category === 'childrens'
+      ? readPhotoFissionChildrensCategory(params.childrensCategory)
+      : undefined
   const hasFrontDetail = readOptionalBoolean(
     params.hasFrontDetail,
     false,
@@ -131,6 +159,7 @@ export function normalizePhotoFissionParams(
 
   const shotPlan = buildPhotoFissionShotPlan({
     category,
+    childrensCategory,
     imageRatio,
     resolution,
     hasFrontDetail,
@@ -149,6 +178,7 @@ export function normalizePhotoFissionParams(
   return {
     model,
     category,
+    childrensCategory,
     hasFrontDetail,
     hasBackDetail,
     imageRatio,
@@ -160,6 +190,7 @@ export function normalizePhotoFissionParams(
 
 export interface PhotoFissionShotPlanInput {
   category: PhotoFissionCategory
+  childrensCategory?: PhotoFissionChildrensCategory
   imageRatio: PhotoFissionImageRatio
   resolution: PhotoFissionResolution
   hasFrontDetail: boolean
@@ -191,13 +222,23 @@ export interface PhotoFissionShotPlanInput {
 export function buildPhotoFissionShotPlan(
   input: PhotoFissionShotPlanInput,
 ): PhotoFissionShot[] {
-  return PHOTO_FISSION_SHOT_BLUEPRINT.map((blueprint, index) => {
+  // 童装二级品类（如连衣裙）走专属 9 shot 模板（角度规则 + 动作骨架 + 表情神态）；
+  // 其它品类沿用通用 PHOTO_FISSION_SHOT_BLUEPRINT。
+  const childrensBlueprint =
+    input.category === 'childrens' && input.childrensCategory
+      ? getChildrensCategoryShotBlueprint(input.childrensCategory)
+      : undefined
+  const activeBlueprint = childrensBlueprint ?? PHOTO_FISSION_SHOT_BLUEPRINT
+
+  return activeBlueprint.map((blueprint, index) => {
     const shotId = `shot_${index + 1}`
     const order = index + 1
     const prompt = buildShotPrompt({
       label: blueprint.label,
       shotDescription: blueprint.description,
+      shotIndex: index,
       category: input.category,
+      childrensCategory: input.childrensCategory,
       imageRatio: input.imageRatio,
       resolution: input.resolution,
       hasFrontDetail: input.hasFrontDetail,
@@ -216,7 +257,9 @@ export function buildPhotoFissionShotPlan(
 interface BuildShotPromptInput {
   label: string
   shotDescription: string
+  shotIndex: number
   category: PhotoFissionCategory
+  childrensCategory?: PhotoFissionChildrensCategory
   imageRatio: PhotoFissionImageRatio
   resolution: PhotoFissionResolution
   hasFrontDetail: boolean
@@ -234,24 +277,43 @@ function buildShotPrompt(input: BuildShotPromptInput): string {
     '',
     buildWardrobeLockSection(),
     '',
-    buildSceneLockSection(orientation),
+    buildSceneLockSection(orientation, input.shotIndex, input.category, input.childrensCategory),
     '',
     buildLightingLockSection(),
     '',
-    buildStyleLockSection(input.shotDescription),
+    buildStyleLockSection(
+      input.shotDescription,
+      input.category,
+      input.childrensCategory,
+    ),
+    '',
+    buildAngleControlSection(input.category, input.childrensCategory),
     '',
     buildShotSection(input.label, input.shotDescription),
     '',
-    buildCategoryLockSection(input.category),
+    buildCategoryLockSection(input.category, input.childrensCategory),
     '',
     buildAnatomySection(),
     '',
-    buildOutputParamsSection(input.category, input.imageRatio, input.resolution, orientation),
+    buildOutputParamsSection(
+      input.category,
+      input.childrensCategory,
+      input.imageRatio,
+      input.resolution,
+      orientation,
+    ),
     '',
-    buildNegativeSection(),
+    buildNegativeSection(input.category, input.childrensCategory),
   ]
 
-  return sections.join('\n')
+  // 过滤掉条件性 section 返回空字符串的占位（保持 prompt 紧凑）
+  return sections.filter((line, index, arr) => {
+    if (line !== '') return true
+    // 空行只在前后都有非空内容时保留
+    const prev = arr[index - 1]
+    const next = arr[index + 1]
+    return prev !== '' && next !== undefined && next !== ''
+  }).join('\n')
 }
 
 /**
@@ -337,7 +399,22 @@ function buildWardrobeLockSection(): string {
   ].join('\n')
 }
 
-function buildSceneLockSection(orientation: string): string {
+function buildSceneLockSection(
+  orientation: string,
+  shotIndex: number,
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+): string {
+  // 童装二级品类有外景白名单时，命中 index 的 shot 替换为外景常量
+  if (category === 'childrens' && childrensCategory) {
+    const outdoorIndices = getChildrensCategoryOutdoorShotIndices(childrensCategory)
+    if (outdoorIndices?.includes(shotIndex)) {
+      const outdoorScene = getChildrensCategoryOutdoorScene(childrensCategory)
+      if (outdoorScene) {
+        return outdoorScene
+      }
+    }
+  }
   return [
     '【场景呈现 SCENE】',
     `背景延续图1的房间/空间与陈设（墙面、地板、家具、灯具、植物、道具均与图1一致），整体画面保持${orientation}下的电商主图调性，主体清晰突出。`,
@@ -352,14 +429,40 @@ function buildLightingLockSection(): string {
   ].join('\n')
 }
 
-function buildStyleLockSection(shotDescription: string): string {
+function buildStyleLockSection(
+  shotDescription: string,
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+): string {
   const cinematicPrefix = shouldUseCinematicPrefix(shotDescription)
     ? 'Arricam LT, Cooke Panchro, 50mm, f1.4。'
     : ''
-  return [
+  const lines = [
     '【画面质感 STYLE】',
     `${cinematicPrefix}写实风格摄影，色彩饱和度适中，细节丰富，衣物纹理与面料质感清晰可见，具有电影感的逼真渲染效果，整体氛围接近时尚杂志的经典大片风格。`,
-  ].join('\n')
+  ]
+  // 童装二级品类有专属灵性气质锚点时，追加到 STYLE 段尾部
+  if (category === 'childrens' && childrensCategory) {
+    const anchor = getChildrensCategoryStyleAnchor(childrensCategory)
+    if (anchor) {
+      lines.push(anchor)
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 角度差异化铁律段：只在童装二级品类有专属规则时输出。
+ * 用于强制 9 shot 角度分布不雷同，避免当前裂变 9 shot 偏 45° 雷同的痛点。
+ */
+function buildAngleControlSection(
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+): string {
+  if (category !== 'childrens' || !childrensCategory) {
+    return ''
+  }
+  return getChildrensCategoryAngleControl(childrensCategory) ?? ''
 }
 
 function buildShotSection(label: string, shotDescription: string): string {
@@ -369,8 +472,36 @@ function buildShotSection(label: string, shotDescription: string): string {
   ].join('\n')
 }
 
-function buildCategoryLockSection(category: PhotoFissionCategory): string {
-  return ['【品类呈现重点】', categoryRequirementMap[category]].join('\n')
+function buildCategoryLockSection(
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+): string {
+  const lines = ['【品类呈现重点】']
+  // 儿童气质引导语只在选择「童装」时输出，避免污染上衣 / 裤子 / 裙子 / 套装 / 外套 等成人品类。
+  if (category === 'childrens') {
+    lines.push(
+      '本功能面向童装商拍，整体保持儿童年龄感、童装亲和感与自然真实的儿童姿态，避免成人化表达。',
+    )
+  }
+  lines.push(categoryRequirementMap[category])
+  if (category === 'childrens' && childrensCategory) {
+    lines.push(childrensCategoryRequirementMap[childrensCategory])
+  }
+  return lines.join('\n')
+}
+
+function buildPhotoFissionCategoryLabel(
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+): string {
+  const categoryLabel = photoFissionCategoryLabelMap.get(category) ?? category
+  if (category !== 'childrens' || !childrensCategory) {
+    return categoryLabel
+  }
+  const childLabel =
+    photoFissionChildrensCategoryLabelMap.get(childrensCategory) ??
+    childrensCategory
+  return `${categoryLabel}/${childLabel}`
 }
 
 function buildAnatomySection(): string {
@@ -382,11 +513,15 @@ function buildAnatomySection(): string {
 
 function buildOutputParamsSection(
   category: PhotoFissionCategory,
+  childrensCategory: PhotoFissionChildrensCategory | undefined,
   imageRatio: PhotoFissionImageRatio,
   resolution: PhotoFissionResolution,
   orientation: string,
 ): string {
-  const categoryLabel = photoFissionCategoryLabelMap.get(category) ?? category
+  const categoryLabel = buildPhotoFissionCategoryLabel(
+    category,
+    childrensCategory,
+  )
   return [
     '【输出参数】',
     `画面比例：${imageRatio}（${orientation}）；分辨率档位：${resolution}；品类：${categoryLabel}。`,
@@ -394,12 +529,23 @@ function buildOutputParamsSection(
   ].join('\n')
 }
 
-function buildNegativeSection(): string {
-  return [
+function buildNegativeSection(
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+): string {
+  const lines = [
     '【关键约束】',
     '不改变这套服装的颜色、版型、材质、图案与 logo；不改变人物的脸部特征与发型；保持场景与画面风格一致。',
     '不要生成：文字、水印、品牌印章、多余人物、多宫格拼接，不要变成卡通/插画/动漫/3D 渲染风格。',
-  ].join('\n')
+  ]
+  // 童装二级品类有专属反向提示词时，追加到通用约束之后
+  if (category === 'childrens' && childrensCategory) {
+    const addon = getChildrensCategoryNegativeAddon(childrensCategory)
+    if (addon) {
+      lines.push(addon)
+    }
+  }
+  return lines.join('\n')
 }
 
 export interface RunPhotoFissionPipelineOptions {
@@ -778,6 +924,23 @@ function readPhotoFissionCategory(value: unknown): PhotoFissionCategory {
     return value as PhotoFissionCategory
   }
   throw new Error('服装大片裂变服装品类无效')
+}
+
+function readPhotoFissionChildrensCategory(
+  value: unknown,
+): PhotoFissionChildrensCategory {
+  if (value === undefined || value === null || value === '') {
+    return 'dress'
+  }
+  if (
+    typeof value === 'string' &&
+    photoFissionChildrensCategoryIds.has(
+      value as PhotoFissionChildrensCategory,
+    )
+  ) {
+    return value as PhotoFissionChildrensCategory
+  }
+  throw new Error('服装大片裂变童装品类无效')
 }
 
 function readPhotoFissionImageRatio(value: unknown): PhotoFissionImageRatio {
