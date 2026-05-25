@@ -41,6 +41,7 @@ import {
   PHOTO_FISSION_RATIOS_EXTRA,
   PHOTO_FISSION_RATIOS_MAIN,
   PHOTO_FISSION_RESOLUTIONS,
+  PHOTO_FISSION_RESULT_COUNTS,
   POSE_TEMPLATES,
   POSE_IMAGE_RATIOS,
   POSE_RESOLUTIONS,
@@ -57,12 +58,13 @@ import {
   type FeatureType,
   type GenerateCount,
   type ImageRatio,
-  type PhotoFissionCategory,
   type PhotoFissionChildrensCategory,
+  type PhotoFissionCategory,
   type PhotoFissionCase,
   type PhotoFissionImageRatio,
   type PhotoFissionParams,
   type PhotoFissionResolution,
+  type PhotoFissionResultCount,
   type PoseFissionCase,
   type PoseFissionParams,
   type PoseImageRatio,
@@ -143,6 +145,8 @@ export function LeftPanel({
     useState<PhotoFissionImageRatio>("3:4");
   const [photoFissionResolution, setPhotoFissionResolution] =
     useState<PhotoFissionResolution>("2k");
+  const [photoFissionResultCount, setPhotoFissionResultCount] =
+    useState<PhotoFissionResultCount>(9);
   const photoFissionRatioUserOverrideRef = useRef(false);
   const photoFissionResolutionUserOverrideRef = useRef(false);
   const [poseMainImage, setPoseMainImage] = useState<UploadedImage | null>(
@@ -229,6 +233,9 @@ export function LeftPanel({
 
     setPhotoFissionModel(nextModel);
     setPhotoFissionCategory(photoFissionCase.category);
+    setPhotoFissionChildrensCategory(
+      photoFissionCase.childrensCategory ?? "dress",
+    );
     setPhotoFissionImageRatio(photoFissionCase.imageRatio);
     setPhotoFissionResolution(photoFissionCase.resolution);
     photoFissionRatioUserOverrideRef.current = true;
@@ -453,16 +460,13 @@ export function LeftPanel({
       return {
         model: photoFissionModel,
         category: photoFissionCategory,
-        childrensCategory:
-          photoFissionCategory === "childrens"
-            ? photoFissionChildrensCategory
-            : undefined,
+        childrensCategory: photoFissionChildrensCategory,
         hasFrontDetail: Boolean(photoFissionFrontDetail),
         hasBackDetail: Boolean(photoFissionBackDetail),
         imageRatio: photoFissionImageRatio,
         resolution: photoFissionResolution,
         shotPlan: [],
-        resultCount: 9,
+        resultCount: photoFissionResultCount,
       };
     }
 
@@ -490,6 +494,9 @@ export function LeftPanel({
       imageRatio,
     };
   };
+
+  const submitDisabled = isCreating;
+  const submitLabel = isCreating ? "创建任务中..." : "立即生成";
 
   return (
     <aside
@@ -615,6 +622,8 @@ export function LeftPanel({
                   photoFissionResolutionUserOverrideRef.current = true;
                   setPhotoFissionResolution(value);
                 }}
+                resultCount={photoFissionResultCount}
+                onResultCountChange={setPhotoFissionResultCount}
               />
             ) : feature === "element-replace" ? (
               <>
@@ -700,11 +709,11 @@ export function LeftPanel({
         )}
         <button
           onClick={handleCreateTask}
-          disabled={isCreating}
+          disabled={submitDisabled}
           className="w-full h-[40px] bg-primary text-primary-foreground rounded-md text-[13px] font-medium flex items-center justify-center gap-2 transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] hover:bg-primary/90 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
         >
           <Sparkles className="w-4 h-4 opacity-90" />
-          <span>{isCreating ? "创建任务中..." : "立即生成"}</span>
+          <span>{submitLabel}</span>
           {!isPhotoFission && (
             <div className="flex items-center gap-1 ml-1 pl-3 border-l border-primary-foreground/20 opacity-90">
               <Coins className="w-4 h-4" />
@@ -1496,6 +1505,8 @@ function PhotoFissionForm({
   onBackDetailRemove,
   onImageRatioChange,
   onResolutionChange,
+  resultCount,
+  onResultCountChange,
 }: {
   model: FashionModelId;
   category: PhotoFissionCategory;
@@ -1517,6 +1528,8 @@ function PhotoFissionForm({
   onBackDetailRemove: () => void;
   onImageRatioChange: (value: PhotoFissionImageRatio) => void;
   onResolutionChange: (value: PhotoFissionResolution) => void;
+  resultCount: PhotoFissionResultCount;
+  onResultCountChange: (value: PhotoFissionResultCount) => void;
 }) {
   const isExtraRatio = PHOTO_FISSION_RATIOS_EXTRA.some(
     (option) => option.id === imageRatio,
@@ -1557,9 +1570,7 @@ function PhotoFissionForm({
           <Select
             value={childrensCategory}
             onValueChange={(value) =>
-              onChildrensCategoryChange(
-                value as PhotoFissionChildrensCategory,
-              )
+              onChildrensCategoryChange(value as PhotoFissionChildrensCategory)
             }
           >
             <SelectTrigger className="w-full">
@@ -1610,6 +1621,14 @@ function PhotoFissionForm({
         required={false}
         variant="compact"
         optimizeForGeneration
+      />
+
+      <OptionSelector
+        label="出图数量"
+        required
+        options={PHOTO_FISSION_RESULT_COUNTS}
+        value={resultCount}
+        onChange={onResultCountChange}
       />
 
       <div className="space-y-2">

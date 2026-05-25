@@ -3,7 +3,7 @@
  *
  * 职责：
  * 1. 解析 IMAGE_PROVIDERS JSON 或从单渠道 env 降级构造 provider 列表
- * 2. 按加权轮询（Weighted Round-Robin）将 N 个生图任务分发到 M 个渠道
+ * 2. 按唯一凭证优先的加权轮询将 N 个生图任务分发到 M 个渠道
  * 3. 每个 provider 维护独立的健康状态（熔断 / 限流标记）
  * 4. 提供 failover 接口：当某个 provider 单次调用失败且重试耗尽时，
  *    调度层可请求 pool 分配下一个可用 provider 重试
@@ -49,10 +49,15 @@ const globalAny = globalThis as typeof globalThis & {
 
 interface ProviderPool {
   providers: ImageProvider[]
-  /** 加权轮询游标（跨调用递增） */
+  /** 轮询游标（跨调用递增，用于轮转每个批次的起始凭证） */
   cursor: number
   /** per-provider 临时熔断到期时间戳 */
   circuitOpenUntil: Map<string, number>
+}
+
+interface ProviderDispatchLane {
+  provider: ImageProvider
+  weight: number
 }
 
 function getPool(): ProviderPool {
@@ -216,11 +221,23 @@ function isProviderAvailable(pool: ProviderPool, provider: ImageProvider): boole
  */
 export function tripProviderCircuit(providerId: string): void {
   const pool = getPool()
-  pool.circuitOpenUntil.set(providerId, Date.now() + CIRCUIT_OPEN_DURATION_MS)
+  const provider = pool.providers.find((item) => item.id === providerId)
+  const providerIds = provider
+    ? pool.providers
+        .filter(
+          (item) =>
+            getProviderCredentialKey(item) === getProviderCredentialKey(provider),
+        )
+        .map((item) => item.id)
+    : [providerId]
+  const circuitOpenUntil = Date.now() + CIRCUIT_OPEN_DURATION_MS
+  for (const id of providerIds) {
+    pool.circuitOpenUntil.set(id, circuitOpenUntil)
+  }
   logImageEvent(
     'pool.circuit',
     { traceId: 'pool', taskId: '' },
-    { providerId, durationMs: CIRCUIT_OPEN_DURATION_MS },
+    { providerId, providerIds, durationMs: CIRCUIT_OPEN_DURATION_MS },
   )
 }
 
@@ -352,11 +369,13 @@ export function pickNextProvider(): ImageProvider | null {
   if (available.length === 1) return available[0]
 
   const pool = getPool()
-  // 构建加权序列
-  const weighted = buildWeightedList(available)
-  const index = pool.cursor % weighted.length
+  const weighted = buildCredentialInterleavedList(
+    available,
+    undefined,
+    pool.cursor,
+  )
   pool.cursor += 1
-  return weighted[index]
+  return weighted[0] ?? null
 }
 
 /**
@@ -395,11 +414,15 @@ function dispatchItemsWithProviders<T>(
   }
 
   const pool = getPool()
-  const weighted = buildWeightedList(available)
+  const weighted = buildCredentialInterleavedList(
+    available,
+    model,
+    pool.cursor,
+  )
   const groups = new Map<string, { provider: ImageProvider; items: T[] }>()
 
   for (let i = 0; i < items.length; i++) {
-    const providerIndex = (pool.cursor + i) % weighted.length
+    const providerIndex = i % weighted.length
     const provider = weighted[providerIndex]
 
     let group = groups.get(provider.id)
@@ -410,7 +433,7 @@ function dispatchItemsWithProviders<T>(
     group.items.push(items[i])
   }
 
-  pool.cursor += items.length
+  pool.cursor += 1
   return groups
 }
 
@@ -421,44 +444,131 @@ function dispatchItemsWithProviders<T>(
  * 返回 null 表示没有其他可用 provider。
  */
 export function getFailoverProvider(excludeProviderIds: string[]): ImageProvider | null {
-  const excludeSet = new Set(excludeProviderIds)
-  const available = getAvailableProviders().filter((p) => !excludeSet.has(p.id))
-  if (!available.length) return null
-  // 取权重最高的（作为降级首选）
-  return available.reduce((best, curr) =>
-    curr.weight > best.weight ? curr : best,
+  const available = filterProvidersForFailover(
+    getAvailableProviders(),
+    excludeProviderIds,
   )
+  if (!available.length) return null
+  const pool = getPool()
+  const provider =
+    buildCredentialInterleavedList(available, undefined, pool.cursor)[0] ?? null
+  pool.cursor += 1
+  return provider
 }
 
 export function getFailoverProviderForModel(
   excludeProviderIds: string[],
   model: string | undefined,
 ): ImageProvider | null {
-  const excludeSet = new Set(excludeProviderIds)
-  const available = getAvailableProvidersForModel(model).filter(
-    (p) => !excludeSet.has(p.id),
+  const available = filterProvidersForFailover(
+    getAvailableProvidersForModel(model),
+    excludeProviderIds,
   )
   if (!available.length) return null
-  return available.reduce((best, curr) =>
-    curr.weight > best.weight ? curr : best,
-  )
+  const pool = getPool()
+  const provider =
+    buildCredentialInterleavedList(available, model, pool.cursor)[0] ?? null
+  pool.cursor += 1
+  return provider
 }
 
 // ---- 内部工具 ----
 
 /**
- * 构建加权列表：weight=2 的 provider 出现 2 次，weight=1 的出现 1 次。
- * 避免超大 weight 导致内存膨胀，单 provider 最大展开 10 次。
+ * 构建唯一凭证优先的加权列表。
+ *
+ * 同一把七牛 key 下可能配置了多个模型 provider；调度时它们共享同一条
+ * credential lane，避免一个批次先把多个 shot 都压到同一把 key。第一轮
+ * 先覆盖每条 lane，第二轮开始再按 weight 补齐高权重 lane。
  */
-function buildWeightedList(providers: ImageProvider[]): ImageProvider[] {
+function buildCredentialInterleavedList(
+  providers: ImageProvider[],
+  model: string | undefined,
+  startCursor: number,
+): ImageProvider[] {
+  const lanes = buildProviderDispatchLanes(providers, model)
+  if (!lanes.length) return []
+
+  const startIndex = startCursor % lanes.length
+  const rotated = lanes.slice(startIndex).concat(lanes.slice(0, startIndex))
+  const maxWeight = Math.max(...rotated.map((lane) => lane.weight))
   const list: ImageProvider[] = []
-  for (const provider of providers) {
-    const count = Math.min(Math.max(1, Math.floor(provider.weight)), 10)
-    for (let i = 0; i < count; i++) {
-      list.push(provider)
+
+  for (let round = 0; round < maxWeight; round++) {
+    for (const lane of rotated) {
+      if (round < lane.weight) {
+        list.push(lane.provider)
+      }
     }
   }
+
   return list
+}
+
+function buildProviderDispatchLanes(
+  providers: ImageProvider[],
+  model: string | undefined,
+): ProviderDispatchLane[] {
+  const groups = new Map<string, ImageProvider[]>()
+  for (const provider of providers) {
+    const key = getProviderCredentialKey(provider)
+    const group = groups.get(key) ?? []
+    group.push(provider)
+    groups.set(key, group)
+  }
+
+  return Array.from(groups.values()).map((group) => ({
+    provider: pickPreferredProviderForModel(group, model),
+    weight: Math.max(...group.map((provider) => readProviderWeight(provider))),
+  }))
+}
+
+function pickPreferredProviderForModel(
+  providers: ImageProvider[],
+  model: string | undefined,
+): ImageProvider {
+  const normalizedModel = normalizeImageModelId(model)
+  if (!normalizedModel) return providers[0]
+
+  const exactMatch = providers.find(
+    (provider) => normalizeImageModelId(provider.model) === normalizedModel,
+  )
+  return exactMatch ?? providers[0]
+}
+
+function filterProvidersForFailover(
+  providers: ImageProvider[],
+  excludeProviderIds: string[],
+): ImageProvider[] {
+  const excludeSet = new Set(excludeProviderIds)
+  const excludedCredentialKeys = new Set(
+    getAllProviders()
+      .filter((provider) => excludeSet.has(provider.id))
+      .map((provider) => getProviderCredentialKey(provider)),
+  )
+
+  return providers.filter(
+    (provider) =>
+      !excludeSet.has(provider.id) &&
+      !excludedCredentialKeys.has(getProviderCredentialKey(provider)),
+  )
+}
+
+function getProviderCredentialKey(provider: ImageProvider): string {
+  const baseUrl = provider.baseUrl?.replace(/\/+$/, '') ?? ''
+  const credential = provider.apiKey || provider.id
+  return `${provider.type}:${baseUrl}:${credential}`
+}
+
+function normalizeImageModelId(model: string | undefined): string {
+  if (!model) return ''
+  const normalized = model.trim().toLowerCase()
+  if (normalized.startsWith('gpt-image-')) return `openai/${normalized}`
+  return normalized
+}
+
+function readProviderWeight(provider: ImageProvider): number {
+  return Math.min(Math.max(1, Math.floor(provider.weight)), 10)
 }
 
 // ---- 测试工具 ----

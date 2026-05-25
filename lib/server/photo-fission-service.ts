@@ -11,6 +11,7 @@ import {
   type PhotoFissionImageRatio,
   type PhotoFissionParams,
   type PhotoFissionResolution,
+  type PhotoFissionResultCount,
   type PhotoFissionShot,
   type ResultAsset,
 } from '@/lib/types'
@@ -27,10 +28,18 @@ import {
   getChildrensCategoryAngleControl,
   getChildrensCategoryNegativeAddon,
   getChildrensCategoryOutdoorScene,
-  getChildrensCategoryOutdoorShotIndices,
   getChildrensCategoryShotBlueprint,
+  getChildrensCategoryShotBlueprintForCount,
   getChildrensCategoryStyleAnchor,
 } from './prompt-templates/childrens-dress'
+import {
+  getSuitShotBlueprintForCount,
+  SUIT_ACTION_CONTROL,
+  SUIT_CATEGORY_REQUIREMENT,
+  SUIT_NEGATIVE_ADDON,
+  SUIT_OUTDOOR_SCENE,
+  SUIT_STYLE_ANCHOR,
+} from './prompt-templates/suit-planner-system'
 import { buildPlannerRulePlan } from './photo-fission-rule-engine'
 import {
   invokeShotPlanner,
@@ -61,63 +70,41 @@ const photoFissionChildrensCategoryLabelMap = new Map(
   PHOTO_FISSION_CHILDRENS_CATEGORIES.map((option) => [option.id, option.label]),
 )
 
-/**
- * v3（2026-05-18 决议）9 张固定镜头蓝图：受控裂变核心配置。
- * 只变化镜头/距离/姿势/构图，不变化人物身份、服装、场景、光线、风格。
- *
- * label 顺序与 shot_1..shot_9 一一对应，案例库 shotLabels 需保持同序。
- */
-const PHOTO_FISSION_SHOT_BLUEPRINT: ReadonlyArray<{
-  label: string
-  description: string
-}> = [
-  {
-    label: '正面站姿',
-    description: '主体正面站立，自然放松姿态，全身或近全身入镜',
-  },
-  {
-    label: '45度斜侧',
-    description: '主体 45 度斜侧角度，兼顾正面识别度与侧面立体感',
-  },
-  {
-    label: '侧面站姿',
-    description: '主体正侧面站立，展现服装侧身轮廓与版型',
-  },
-  {
-    label: '背面站姿',
-    description: '主体背身站立，突出背部廓形、肩线、裙摆或裤型层次',
-  },
-  {
-    label: '远景全景',
-    description: '远距离全景构图，主体居中，环境与场景氛围完整入镜',
-  },
-  {
-    label: '半身近景',
-    description: '镜头聚焦主体上半身，强化面部状态与上身服装细节',
-  },
-  {
-    label: '坐姿变化',
-    description: '主体坐姿（沙发/椅子/台阶等场景内合理座位），松弛自然',
-  },
-  {
-    label: '行走动态',
-    description: '主体侧身行走或迈步的动态瞬间，步态轻盈自然，展示服装动感',
-  },
-  {
-    label: '局部细节特写',
-    description: '极近距离展示服装关键细节，如领口/袖口/纽扣/面料纹理/图案',
-  },
-]
+const SUIT_ACTION_HISTORY_GENERATIONS = 3
+const recentSuitActionHistoryByKey = new Map<string, string[][]>()
+const DEFAULT_PHOTO_FISSION_CONCURRENCY = 3
+
+type PlannerPromptCard = {
+  role: string
+  imagePrompt: string
+}
+
+const SUIT_LEG_VARIATION_FALLBACKS = [
+  '脚步设计为一前一后轻错开，前脚脚尖轻点地面，膝盖自然放松',
+  '一只脚向侧前方小幅伸出，脚尖微微外点，后脚稳定承重',
+  '双腿在脚踝附近轻微交叉，鞋子和裤脚完整可见',
+  '前脚脚尖微微翘起，后脚落地承重，身体重心自然偏向一侧',
+  '呈轻微走姿，前脚刚落地，后脚脚跟轻抬',
+  '一脚向后半步，脚尖轻向外，双膝自然放松',
+  '一脚斜向前点地，另一脚支撑，裤脚线条清楚',
+  '双脚距离自然错开，身体重心落在一侧，腿部线条更有层次',
+  '一脚脚跟轻轻抬起，脚尖仍贴地，动作小幅真实',
+  '前后脚形成小角度站位，裤长、裤脚和鞋型完整露出',
+] as const
+
+const SUIT_BACK_LEG_VARIATION =
+  '背面展示时一脚向后半步或脚尖轻向外，双膝放松，头部顺着身体方向，不回眸也不回头看镜头'
+
+const SUIT_FACE_QUALITY_GUARD =
+  '表情优先参考童装电商模特的两类自然笑容：元气轻露齿笑可以配合很轻的单眨眼，乖巧闭嘴浅笑要嘴角柔和、眼神清亮；左右嘴角协调放松，嘴型不歪，不做挤笑、夸张咧嘴或僵硬假笑。'
+
+const SUIT_LEG_CUE_PATTERN =
+  /脚尖|脚跟|前脚|后脚|一脚|单脚|双腿[^。；，,]*交叉|脚踝|轻微走姿|错开|点地|微翘|承重|半步|脚[^。；，,]*外/
 
 /**
- * 品类专属保持要求文案（PRD 第 5.5 节）。
+ * 一级品类专属保持要求文案（PRD 第 5.5 节）。
  */
 const categoryRequirementMap: Record<PhotoFissionCategory, string> = {
-  tops: '突出上衣领口、肩线、袖型与下摆轮廓；下装搭配自然但不抢主体',
-  pants: '突出裤型、裤脚、腰线与版型立体感；上身搭配简洁不抢主体',
-  skirts: '突出裙摆层次、长度与版型流动感；保持腰线与裙身比例',
-  suit: '保持上下装色彩、材质、版型的整体协调统一',
-  outerwear: '突出外套廓形、领型、下摆与厚度感；内搭简洁',
   childrens: '保持儿童体型比例、童装版型宽松度与亲和感；避免成人化处理',
 }
 
@@ -126,7 +113,8 @@ const childrensCategoryRequirementMap: Record<
   string
 > = {
   dress:
-    '童装连衣裙品类规则：保持连衣裙结构，有明确上身与裙身连接关系，裙摆轮廓自然可见，不能生成成裤装、瑜伽裤、紧身裤或贴腿包裹的下装。动作常量：正面全身站立、转动裙摆、轻拉裙摆、背面展示、坐姿铺开裙摆；表情常量：开心甜美、自然可爱、表情自然、动作自然优雅。',
+    '童装连衣裙品类规则：这是一张可直接用于淘宝/天猫上架的童装连衣裙商品图，连衣裙是画面第一主体；保持连衣裙结构，有明确上身与裙身连接关系，裙长、腰线、裙摆弧度、下摆层次、自然蓬度和整体廓形清楚可见，不能生成成裤装、瑜伽裤、紧身裤或贴腿包裹的下装。动作常量：正面全身站立、三分之二站姿、轻拉裙摆、轻提裙摆、坐姿铺开裙摆；动作轻柔克制，只服务商品展示。表情常量：自然甜美、可爱亲切、看镜头浅笑，避免夸张表演。',
+  suit: SUIT_CATEGORY_REQUIREMENT,
 }
 
 export function normalizePhotoFissionParams(
@@ -155,6 +143,7 @@ export function normalizePhotoFissionParams(
   )
   const imageRatio = readPhotoFissionImageRatio(params.imageRatio)
   const resolution = readPhotoFissionResolution(params.resolution)
+  const resultCount = readResultCount(params.resultCount)
 
   const expectedAssetCount =
     1 + (hasFrontDetail ? 1 : 0) + (hasBackDetail ? 1 : 0)
@@ -169,6 +158,7 @@ export function normalizePhotoFissionParams(
     resolution,
     hasFrontDetail,
     hasBackDetail,
+    resultCount,
   })
 
   // R6 输入预检：每条 shot.prompt 不应超过 30000 字（v3 实测 1400-1500 字，远低于上限，加 guard）
@@ -189,7 +179,7 @@ export function normalizePhotoFissionParams(
     imageRatio,
     resolution,
     shotPlan,
-    resultCount: 9,
+    resultCount,
   }
 }
 
@@ -200,40 +190,52 @@ export interface PhotoFissionShotPlanInput {
   resolution: PhotoFissionResolution
   hasFrontDetail: boolean
   hasBackDetail: boolean
+  resultCount: PhotoFissionResultCount
 }
 
+type PhotoFissionShotScene = 'reference' | 'outdoor'
+
 /**
- * 构造固定 9 张 shotPlan。
+ * 构造 N 张 shotPlan（N = input.resultCount）。
  *
- * v3（2026-05-18）：每条 shot.prompt 按以下 12 段拼装，强约束 NanoBanana Pro
- * 多镜头一致性的全部 lock 段，翻译成自然语言供 Gemini 3.x 使用。
+ * 场景分布由 blueprint 的 scene 字段控制：
+ * - 2/4 张：全 reference（无外景）
+ * - 9 张：7 reference + 2 outdoor（向后兼容）
+ * - 10 张：8 reference + 2 outdoor
  *
- * v4（2026-05-19 prompt-upgrade）：按友商 5525 条 gemini3pro 案例语料重写
- * 所有 section 文案，从「硬命令式」转向「参考图1锚定式」（见 PRD D1-D5）。
- * section 内部话术变化，外部装配顺序与函数签名保持稳定：
- *   1. 任务声明（受控裂变 + 构图三件套 D2）
- *   2. 参考图说明（动态拼接 1/2/3 张）
- *   3. 人物呈现 IDENTITY（隐式锚定 D1）
- *   4. 服装呈现 WARDROBE（"这套服装"占位 D1）
- *   5. 场景呈现 SCENE
- *   6. 光线呈现 LIGHTING
- *   7. 画面质感 STYLE（电影前缀按场景按需注入 D3）
- *   8. 当前镜头 SHOT（按 label 差异化）
- *   9. 品类呈现重点
- *  10. 人体解剖 ANATOMY
- *  11. 输出参数
- *  12. 关键约束（精简 negative D4）
+ * v5 LLM Planner 对 2 / 4 / 9 / 10 张童装连衣裙路径全部启用（见 applyShotPlannerOverride）。
  */
 export function buildPhotoFissionShotPlan(
   input: PhotoFissionShotPlanInput,
 ): PhotoFissionShot[] {
-  // 童装二级品类（如连衣裙）走专属 9 shot 模板（角度规则 + 动作骨架 + 表情神态）；
-  // 其它品类沿用通用 PHOTO_FISSION_SHOT_BLUEPRINT。
-  const childrensBlueprint =
-    input.category === 'childrens' && input.childrensCategory
-      ? getChildrensCategoryShotBlueprint(input.childrensCategory)
-      : undefined
-  const activeBlueprint = childrensBlueprint ?? PHOTO_FISSION_SHOT_BLUEPRINT
+  let activeBlueprint: ReadonlyArray<{
+    label: string
+    description: string
+    scene?: PhotoFissionShotScene
+  }> | undefined
+
+  if (input.category === 'childrens') {
+    if (!input.childrensCategory) {
+      throw new Error('服装大片裂变童装品类无效')
+    }
+    // 优先使用按数量构建的 blueprint
+    if (input.childrensCategory === 'suit') {
+      activeBlueprint = getSuitShotBlueprintForCount(input.resultCount)
+    } else {
+      const countAwareBlueprint = getChildrensCategoryShotBlueprintForCount(
+        input.childrensCategory,
+        input.resultCount,
+      )
+      const fallbackBlueprint = getChildrensCategoryShotBlueprint(
+        input.childrensCategory,
+      )
+      activeBlueprint = countAwareBlueprint ?? fallbackBlueprint
+    }
+  }
+
+  if (!activeBlueprint) {
+    throw new Error('服装大片裂变服装品类无效')
+  }
 
   return activeBlueprint.map((blueprint, index) => {
     const shotId = `shot_${index + 1}`
@@ -242,6 +244,7 @@ export function buildPhotoFissionShotPlan(
       label: blueprint.label,
       shotDescription: blueprint.description,
       shotIndex: index,
+      shotScene: blueprint.scene,
       category: input.category,
       childrensCategory: input.childrensCategory,
       imageRatio: input.imageRatio,
@@ -263,6 +266,7 @@ interface BuildShotPromptInput {
   label: string
   shotDescription: string
   shotIndex: number
+  shotScene?: PhotoFissionShotScene
   category: PhotoFissionCategory
   childrensCategory?: PhotoFissionChildrensCategory
   imageRatio: PhotoFissionImageRatio
@@ -274,20 +278,33 @@ interface BuildShotPromptInput {
 function buildShotPrompt(input: BuildShotPromptInput): string {
   const orientation = getCompositionOrientation(input.imageRatio)
   const sections: string[] = [
-    buildTaskSection(input.label, orientation),
+    buildTaskSection({
+      label: input.label,
+      orientation,
+      shotScene: input.shotScene,
+      category: input.category,
+      childrensCategory: input.childrensCategory,
+    }),
     '',
-    buildReferenceImagesSection(input.hasFrontDetail, input.hasBackDetail),
+    buildReferenceImagesSection({
+      hasFrontDetail: input.hasFrontDetail,
+      hasBackDetail: input.hasBackDetail,
+      shotScene: input.shotScene,
+      category: input.category,
+      childrensCategory: input.childrensCategory,
+    }),
     '',
     buildIdentityLockSection(),
     '',
     buildWardrobeLockSection(),
     '',
-    buildSceneLockSection(orientation, input.shotIndex, input.category, input.childrensCategory),
+    buildSceneLockSection(orientation, input.shotScene, input.category, input.childrensCategory),
     '',
-    buildLightingLockSection(),
+    buildLightingLockSection(input.shotScene, input.category, input.childrensCategory),
     '',
     buildStyleLockSection(
       input.shotDescription,
+      input.shotScene,
       input.category,
       input.childrensCategory,
     ),
@@ -348,8 +365,8 @@ function getCompositionOrientation(imageRatio: PhotoFissionImageRatio): string {
  * 判断当前 shot 是否适合在 Style section 注入电影前缀。
  * D3：电影前缀（Arricam / IMAX 等）在友商案例里只在 1.5%-2.3% 命中，
  * 且多集中在户外 / 海边 / 古典建筑等需要拉满质感的外景。
- * 当前 9 个 shotDescription 都是棚拍/室内语境的姿势/景别描述，默认不注入电影前缀，
- * 避免对棚拍主图引入不必要的镜头痕迹；shotDescription 若改写为带外景关键词则会自动启用。
+ * 棚拍/室内 shot 默认不注入电影前缀，避免对主图引入不必要的镜头痕迹；
+ * shotDescription 若带外景关键词则会自动启用。
  */
 function shouldUseCinematicPrefix(shotDescription: string): boolean {
   return /户外|街拍|海边|海岸|海滩|帆船|古典建筑|欧洲街角|罗马|沿河/.test(
@@ -357,7 +374,46 @@ function shouldUseCinematicPrefix(shotDescription: string): boolean {
   )
 }
 
-function buildTaskSection(label: string, orientation: string): string {
+function buildTaskSection(input: {
+  label: string
+  orientation: string
+  shotScene?: PhotoFissionShotScene
+  category: PhotoFissionCategory
+  childrensCategory?: PhotoFissionChildrensCategory
+}): string {
+  const { label, orientation, shotScene, category, childrensCategory } = input
+  if (isSuitChildrensOutdoorShot(category, childrensCategory, shotScene)) {
+    return [
+      `本次任务：生成同一个人、同一套童装套装的【${label}】单张镜头。`,
+      `画面是一张写实风格的童装套装电商外景补充图，采用${orientation}，主体人物（参考第一张主图的同一个人，身材比例、肤色、年龄感与发型保持一致）居中或轻微居中，人物和套装是绝对主体。`,
+      '受控裂变：保持人物身份与这套上衣裤装套装统一；当前镜头按童装套装抽卡规则使用晴朗夏日蓝天绿草地真实外景，场景不出现白云，动作、构图与留白都服务于商品上架展示。',
+      '输出单张完整图片，不要多宫格拼接。',
+    ].join('\n')
+  }
+  if (isDressChildrensOutdoorShot(category, childrensCategory, shotScene)) {
+    return [
+      `本次任务：生成同一个人、同一套服装的【${label}】单张镜头。`,
+      `画面是一张写实风格的童装连衣裙电商外景补充图，采用${orientation}，主体人物（参考第一张主图的同一个小女孩，身材比例、肤色与发型保持一致）居中或轻微居中，人物和连衣裙是绝对主体。`,
+      '受控裂变：保持人物身份与这套连衣裙统一；当前镜头按童装连衣裙抽卡规则使用蓝天白云草地外景，动作、构图与留白都服务于商品上架展示。',
+      '输出单张完整图片，不要多宫格拼接。',
+    ].join('\n')
+  }
+  if (category === 'childrens' && childrensCategory === 'dress') {
+    return [
+      `本次任务：生成同一个小女孩、同一套童装连衣裙的【${label}】单张镜头。`,
+      `画面是一张写实风格的童装连衣裙电商上架图，采用${orientation}，主体人物（参考第一张主图的同一个小女孩，身材比例、肤色与发型保持一致）居中或轻微居中，人物和连衣裙是绝对主体。`,
+      '受控裂变：当前镜头来自童装连衣裙商品展示抽卡池；保持人物身份、这套连衣裙、参考拍摄环境基调与光线统一，动作和构图都服务于卖货与测流量。',
+      '输出单张完整图片，不要多宫格拼接。',
+    ].join('\n')
+  }
+  if (isSuitChildrensCategory(category, childrensCategory)) {
+    return [
+      `本次任务：生成同一个人、同一套套装的【${label}】单张镜头。`,
+      `画面是一张写实风格的套装电商上架图，采用${orientation}，主体人物（参考第一张主图的同一个人，身材比例、肤色、年龄感与发型保持一致）居中或轻微居中，人物和套装是绝对主体。`,
+      '受控裂变：只调整镜头角度、景别、姿势、表情与构图；保持人物身份、上衣与裤装的成套关系、原背景、原光线和原画面风格统一。',
+      '输出单张完整图片，不要多宫格拼接。',
+    ].join('\n')
+  }
   return [
     `本次任务：生成同一个人、同一套服装、同一场景的【${label}】单张镜头。`,
     `画面是一张写实风格的电商服装大片摄影作品，采用${orientation}，主体人物（参考第一张主图的同一个人，身材比例、肤色与发型保持一致）位于画面中央，以"三分法"构图原则布局。`,
@@ -366,13 +422,37 @@ function buildTaskSection(label: string, orientation: string): string {
   ].join('\n')
 }
 
-function buildReferenceImagesSection(
-  hasFrontDetail: boolean,
-  hasBackDetail: boolean,
-): string {
+function buildReferenceImagesSection(input: {
+  hasFrontDetail: boolean
+  hasBackDetail: boolean
+  shotScene?: PhotoFissionShotScene
+  category: PhotoFissionCategory
+  childrensCategory?: PhotoFissionChildrensCategory
+}): string {
+  const {
+    hasFrontDetail,
+    hasBackDetail,
+    shotScene,
+    category,
+    childrensCategory,
+  } = input
+  const isDressOutdoorShot = isDressChildrensOutdoorShot(
+    category,
+    childrensCategory,
+    shotScene,
+  )
+  const isSuitOutdoorShot = isSuitChildrensOutdoorShot(
+    category,
+    childrensCategory,
+    shotScene,
+  )
   const lines: string[] = [
     '【参考图说明】',
-    '- 图1：主图基准（这套服装与这位模特的视觉锚点，承载身份、服装、场景、光线的全部细节）',
+    isDressOutdoorShot
+      ? '- 图1：主图基准（这套连衣裙与这位小女孩的视觉锚点，承载人物身份、服装款式、面料质感与商品细节；当前镜头抽中蓝天白云草地外景卡）'
+      : isSuitOutdoorShot
+        ? '- 图1：主图基准（这套童装套装与这位模特的视觉锚点，承载人物身份、上衣裤装成套关系、面料质感与商品细节；当前镜头抽中晴朗夏日蓝天绿草地真实外景补充卡，场景不出现白云）'
+      : '- 图1：主图基准（这套服装与这位模特的视觉锚点，承载身份、服装、场景、光线的全部细节）',
   ]
   let nextIndex = 2
   if (hasFrontDetail) {
@@ -406,19 +486,35 @@ function buildWardrobeLockSection(): string {
 
 function buildSceneLockSection(
   orientation: string,
-  shotIndex: number,
+  shotScene: PhotoFissionShotScene | undefined,
   category: PhotoFissionCategory,
   childrensCategory?: PhotoFissionChildrensCategory,
 ): string {
-  // 童装二级品类有外景白名单时，命中 index 的 shot 替换为外景常量
-  if (category === 'childrens' && childrensCategory) {
-    const outdoorIndices = getChildrensCategoryOutdoorShotIndices(childrensCategory)
-    if (outdoorIndices?.includes(shotIndex)) {
-      const outdoorScene = getChildrensCategoryOutdoorScene(childrensCategory)
-      if (outdoorScene) {
-        return outdoorScene
-      }
+  // 童装抽卡命中 outdoor 场景时使用对应品类的外景补充图。
+  if (isDressChildrensOutdoorShot(category, childrensCategory, shotScene)) {
+    const outdoorScene = getChildrensCategoryOutdoorScene(childrensCategory)
+    if (outdoorScene) {
+      return outdoorScene
     }
+  }
+  if (isSuitChildrensOutdoorShot(category, childrensCategory, shotScene)) {
+    return SUIT_OUTDOOR_SCENE
+  }
+  if (category === 'childrens' && childrensCategory === 'dress') {
+    return [
+      '【场景呈现 SCENE】',
+      `背景沿用图1原本的简洁拍摄环境，光线方向、色温与高光分布与图1保持一致，整体画面保持${orientation}下的童装连衣裙电商上架图调性。`,
+      '如果图1是白底、浅灰白或浅米白棚拍背景，就延续这种干净统一的棚拍货架感；如果图1本身有室内场景，只弱化成低存在感、干净柔和的商品图陪衬。',
+      '背景不能抢走连衣裙主体，不主动新增沙发、绘本、玩具、窗帘、绿植、包包、帽子或其它生活道具；画面要方便美工裁切、排版和上架使用。',
+    ].join('\n')
+  }
+  if (isSuitChildrensCategory(category, childrensCategory)) {
+    return [
+      '【场景呈现 SCENE】',
+      `背景沿用图1原本的拍摄环境、空间关系、色温与画面风格，整体保持${orientation}下干净明确的套装商品图调性。`,
+      '如果图1已有小包、鞋子、花束等道具，只作为低存在感商品搭配保留；如果图1没有，不主动新增。不要新增复杂家具、街景、人群、文字背景或生活故事场景。',
+      '背景不能抢走套装主体，画面要方便美工裁切、排版和上架使用。',
+    ].join('\n')
   }
   return [
     '【场景呈现 SCENE】',
@@ -427,21 +523,99 @@ function buildSceneLockSection(
   ].join('\n')
 }
 
-function buildLightingLockSection(): string {
+function buildLightingLockSection(
+  shotScene: PhotoFissionShotScene | undefined,
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+): string {
+  if (isDressChildrensOutdoorShot(category, childrensCategory, shotScene)) {
+    return [
+      '【光线呈现 LIGHTING】',
+      '光线为明亮柔和的户外自然光，均匀打亮小女孩和连衣裙；天空与草地保持清爽通透，人物面部、裙身细节和脚底接触阴影都清楚自然，无强烈硬阴影。',
+    ].join('\n')
+  }
+  if (isSuitChildrensOutdoorShot(category, childrensCategory, shotScene)) {
+    return [
+      '【光线呈现 LIGHTING】',
+      '光线为柔和自然的户外散射光，均匀打亮模特和童装套装；避免正午硬光、强烈顶光、过锐高反差、过曝皮肤和假亮草地。天空与草地保持真实清爽，人物面部、上衣下摆、裤装轮廓、裤脚、鞋子和脚底接触阴影都清楚自然。',
+    ].join('\n')
+  }
+  if (isSuitChildrensCategory(category, childrensCategory)) {
+    return [
+      '【光线呈现 LIGHTING】',
+      '光线沿用图1的光源方向、色温、阴影走向与高光分布；人物和套装清楚自然，上衣面料、裤装轮廓、裤脚、鞋子和参考图已有道具都保持可见，无新增棚拍光效。',
+    ].join('\n')
+  }
   return [
     '【光线呈现 LIGHTING】',
     '光线为柔和均匀的自然光，沿用图1的光源方向、色温、阴影走向与高光分布；无强烈硬阴影，光线统一、画面亮度通透。',
   ].join('\n')
 }
 
+function isDressChildrensOutdoorShot(
+  category: PhotoFissionCategory,
+  childrensCategory: PhotoFissionChildrensCategory | undefined,
+  shotScene: PhotoFissionShotScene | undefined,
+): childrensCategory is PhotoFissionChildrensCategory {
+  return category === 'childrens' && childrensCategory === 'dress' && shotScene === 'outdoor'
+}
+
+function isSuitChildrensOutdoorShot(
+  category: PhotoFissionCategory,
+  childrensCategory: PhotoFissionChildrensCategory | undefined,
+  shotScene: PhotoFissionShotScene | undefined,
+): childrensCategory is 'suit' {
+  return category === 'childrens' && childrensCategory === 'suit' && shotScene === 'outdoor'
+}
+
+function isSuitChildrensCategory(
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+): childrensCategory is 'suit' {
+  return category === 'childrens' && childrensCategory === 'suit'
+}
+
 function buildStyleLockSection(
   shotDescription: string,
+  shotScene: PhotoFissionShotScene | undefined,
   category: PhotoFissionCategory,
   childrensCategory?: PhotoFissionChildrensCategory,
 ): string {
   const cinematicPrefix = shouldUseCinematicPrefix(shotDescription)
     ? 'Arricam LT, Cooke Panchro, 50mm, f1.4。'
     : ''
+  if (category === 'childrens' && childrensCategory === 'dress') {
+    const styleSummary = isDressChildrensOutdoorShot(
+      category,
+      childrensCategory,
+      shotScene,
+    )
+      ? '专业儿童电商时尚外景摄影，4K 超清质感，自然明亮的户外柔光均匀打亮人物和服装；画面清爽干净，面料质感、商品细节和裙身轮廓清楚，整体像可直接上架的童装连衣裙外景补充素材。'
+      : '专业儿童电商时尚摄影，4K 超清质感，影棚柔和柔光，光线均匀打亮人物和服装；画面干净柔和，面料质感、商品细节和裙身轮廓清楚，整体像可直接上架的童装连衣裙商品素材。'
+    const lines = [
+      '【画面质感 STYLE】',
+      styleSummary,
+    ]
+    const anchor = getChildrensCategoryStyleAnchor(childrensCategory)
+    if (anchor) {
+      lines.push(anchor)
+    }
+    return lines.join('\n')
+  }
+  if (isSuitChildrensCategory(category, childrensCategory)) {
+    const styleSummary = isSuitChildrensOutdoorShot(
+      category,
+      childrensCategory,
+      shotScene,
+    )
+      ? '专业儿童电商套装真实外景摄影，4K 清晰但柔和的质感，自然户外散射光均匀打亮人物和套装；晴朗夏日蓝天和真实绿草地只作为清爽低存在感陪衬，场景不出现白云，草地避免塑料草坪、假草皮、重复贴图和过饱和荧光绿，上衣廓形、下摆、裤长、裤脚、鞋型和成套比例清楚，整体像可直接用于淘宝轮播图或详情页的童装套装外景补充素材。'
+      : '专业电商套装摄影，4K 超清质感，背景、光线和画面风格沿用图1；通过姿态和构图突出上衣廓形、裤装轮廓、裤长裤脚、鞋子和成套比例，整体像可直接上架的套装商品素材。'
+    return [
+      '【画面质感 STYLE】',
+      styleSummary,
+      SUIT_STYLE_ANCHOR,
+    ].join('\n')
+  }
   const lines = [
     '【画面质感 STYLE】',
     `${cinematicPrefix}写实风格摄影，色彩饱和度适中，细节丰富，衣物纹理与面料质感清晰可见，具有电影感的逼真渲染效果，整体氛围接近时尚杂志的经典大片风格。`,
@@ -464,6 +638,9 @@ function buildAngleControlSection(
   category: PhotoFissionCategory,
   childrensCategory?: PhotoFissionChildrensCategory,
 ): string {
+  if (isSuitChildrensCategory(category, childrensCategory)) {
+    return SUIT_ACTION_CONTROL
+  }
   if (category !== 'childrens' || !childrensCategory) {
     return ''
   }
@@ -482,7 +659,7 @@ function buildCategoryLockSection(
   childrensCategory?: PhotoFissionChildrensCategory,
 ): string {
   const lines = ['【品类呈现重点】']
-  // 儿童气质引导语只在选择「童装」时输出，避免污染上衣 / 裤子 / 裙子 / 套装 / 外套 等成人品类。
+  // 当前仅保留童装路径，儿童气质引导语始终输出。
   if (category === 'childrens') {
     lines.push(
       '本功能面向童装商拍，整体保持儿童年龄感、童装亲和感与自然真实的儿童姿态，避免成人化表达。',
@@ -540,11 +717,13 @@ function buildNegativeSection(
 ): string {
   const lines = [
     '【关键约束】',
-    '不改变这套服装的颜色、版型、材质、图案与 logo；不改变人物的脸部特征与发型；保持场景与画面风格一致。',
+    '不改变这套服装的颜色、版型、材质、图案与 logo；不改变人物的脸部特征与发型；画面场景按当前镜头的 SCENE 段执行并保持风格一致。',
     '不要生成：文字、水印、品牌印章、多余人物、多宫格拼接，不要变成卡通/插画/动漫/3D 渲染风格。',
   ]
   // 童装二级品类有专属反向提示词时，追加到通用约束之后
-  if (category === 'childrens' && childrensCategory) {
+  if (isSuitChildrensCategory(category, childrensCategory)) {
+    lines.push(SUIT_NEGATIVE_ADDON)
+  } else if (category === 'childrens' && childrensCategory) {
     const addon = getChildrensCategoryNegativeAddon(childrensCategory)
     if (addon) {
       lines.push(addon)
@@ -614,10 +793,8 @@ export async function runPhotoFissionPipeline(
 
   // ---- v5 LLM Planner 接入 ----
   // 在分发到出图模型之前，先调用文本 LLM 镜头策划器（D15-D18）。
-  // 成功时用衣百风格自然语言段落覆盖 fullPlan 每个 shot 的 prompt；
-  // 任何异常（未实现品类 / 配置缺失 / LLM 故障 / Schema 校验失败）都
-  // 静默回退到 v4 buildShotPrompt 的拼装 prompt（已在 fullPlan 内），
-  // 服务不挂、画面不空。
+  // 当前仅保留童装连衣裙路径；LLM 调用必须成功，否则直接抛错。
+  // 让前端显示"生成失败"——我们不再维护成人品类或 v4 兜底链路，避免双服务。
   await applyShotPlannerOverride(fullPlan, params, taskId)
 
   // 过滤目标 shot：targetShotIds 非空时只跑子集
@@ -807,6 +984,7 @@ interface RunShotGroupOptions {
 /**
  * 在单个 provider 内运行一组 shots，内部使用 worker 并发模型。
  * worker 数量按 PHOTO_FISSION_CONCURRENCY 或 shots 数量取较小值。
+ * 默认保留高并发吞吐；如果 provider 限流严重，可通过 env 下调。
  */
 async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
   const {
@@ -823,11 +1001,13 @@ async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
     allShotResults,
   } = options
 
-  const concurrencyRaw = Number(process.env.PHOTO_FISSION_CONCURRENCY ?? 3)
+  const concurrencyRaw = Number(
+    process.env.PHOTO_FISSION_CONCURRENCY ?? DEFAULT_PHOTO_FISSION_CONCURRENCY,
+  )
   const concurrency =
     Number.isFinite(concurrencyRaw) && concurrencyRaw >= 1
       ? Math.min(Math.floor(concurrencyRaw), shots.length)
-      : Math.min(3, shots.length)
+      : Math.min(DEFAULT_PHOTO_FISSION_CONCURRENCY, shots.length)
 
   let nextIndex = 0
 
@@ -976,6 +1156,16 @@ function readPhotoFissionResolution(value: unknown): PhotoFissionResolution {
   throw new Error('服装大片裂变分辨率无效')
 }
 
+const VALID_RESULT_COUNTS = new Set<number>([2, 4, 9, 10])
+
+function readResultCount(value: unknown): PhotoFissionResultCount {
+  if (value === undefined || value === null) return 9
+  if (typeof value === 'number' && VALID_RESULT_COUNTS.has(value)) {
+    return value as PhotoFissionResultCount
+  }
+  throw new Error('服装大片裂变出图数量无效（合法值：2/4/9/10）')
+}
+
 function readOptionalBoolean(
   value: unknown,
   fallback: boolean,
@@ -990,64 +1180,176 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function getRecentSuitActionHints(params: PhotoFissionParams): string[] {
+  if (!isSuitChildrensCategory(params.category, params.childrensCategory)) {
+    return []
+  }
+  const key = buildSuitActionHistoryKey(params)
+  const generations = recentSuitActionHistoryByKey.get(key) ?? []
+  return [...new Set(generations.flat())]
+}
+
+function rememberSuitActionHints(
+  params: PhotoFissionParams,
+  shots: ReadonlyArray<{ role: string; imagePrompt: string }>,
+): void {
+  if (!isSuitChildrensCategory(params.category, params.childrensCategory)) {
+    return
+  }
+  const nextHints = extractSuitActionHints(shots)
+  if (nextHints.length === 0) {
+    return
+  }
+  const key = buildSuitActionHistoryKey(params)
+  const generations = recentSuitActionHistoryByKey.get(key) ?? []
+  const nextGenerations = [...generations, nextHints].slice(-SUIT_ACTION_HISTORY_GENERATIONS)
+  recentSuitActionHistoryByKey.set(key, nextGenerations)
+}
+
+function buildSuitActionHistoryKey(params: PhotoFissionParams): string {
+  return `${params.category}:${params.childrensCategory ?? 'none'}:${params.resultCount ?? 9}`
+}
+
+function extractSuitActionHints(
+  shots: ReadonlyArray<{ role: string; imagePrompt: string }>,
+): string[] {
+  const hints = new Set<string>()
+  for (const shot of shots) {
+    const text = `${shot.role} ${shot.imagePrompt}`
+    for (const [pattern, hint] of SUIT_ACTION_HINT_PATTERNS) {
+      if (pattern.test(text)) {
+        hints.add(hint)
+      }
+    }
+  }
+  return [...hints].slice(0, 12)
+}
+
+const SUIT_ACTION_HINT_PATTERNS: ReadonlyArray<[RegExp, string]> = [
+  [/嘟|比耶|比\s*V|反着比耶|V\s*手势/i, '嘟嘴/比耶'],
+  [/OK|ok/i, 'OK 手势'],
+  [/单眨眼|眨眼|戳脸颊|脸颊/, '单眨眼/戳脸'],
+  [/挥手|打招呼|加油/, '挥手/打招呼'],
+  [/插兜|口袋/, '插兜/口袋'],
+  [/叉腰|腰侧/, '叉腰/手停腰侧'],
+  [/扶发顶|撩发|耳后|头顶/, '撩发/扶发顶'],
+  [/脚尖|点地|脚微翘|勾脚/, '脚尖点地/单脚微翘'],
+  [/交叉腿|双腿轻交叉|腿.*交叉/, '双腿轻交叉'],
+  [/微低头|低头|看向脚尖|看脚尖/, '低头视线'],
+  [/闭眼|微风/, '闭眼微风'],
+  [/拉链|扣子|外套敞开|打开一边外套|闭合展示/, '外套开合互动'],
+  [/道具|包包|花束|帽檐|帽子|鸭舌帽/, '道具/帽子互动'],
+]
+
+function refineSuitPlannerCard(
+  card: PlannerPromptCard,
+  shotIndex: number,
+): PlannerPromptCard {
+  const role = sanitizeSuitExpressionText(card.role).trim()
+  let imagePrompt = sanitizeSuitExpressionText(card.imagePrompt).trim()
+  imagePrompt = sanitizeSuitLegText(imagePrompt)
+  imagePrompt = appendSuitLegVariation(imagePrompt, shotIndex)
+  imagePrompt = appendSuitFaceQualityGuard(imagePrompt)
+  return { role, imagePrompt }
+}
+
+function sanitizeSuitExpressionText(text: string): string {
+  return text
+    .replace(/嘴角不对称上扬/g, '嘴角自然轻扬')
+    .replace(/嘴角单侧上扬/g, '嘴角自然轻扬')
+    .replace(/单侧嘴角明显上扬/g, '嘴角自然轻扬')
+    .replace(/单侧嘴角上扬/g, '嘴角自然轻扬')
+    .replace(/不对称小弧/g, '自然协调小弧')
+    .replace(/不对称弧/g, '自然协调小弧')
+    .replace(/不对称微笑/g, '自然浅笑')
+    .replace(/不对称笑/g, '自然浅笑')
+    .replace(/歪嘴笑/g, '自然轻抿浅笑')
+    .replace(/坏笑/g, '自然浅笑')
+}
+
+function sanitizeSuitLegText(text: string): string {
+  return text
+    .replace(/双脚平行站立/g, '双脚一前一后小幅错开')
+    .replace(/双脚平行站直/g, '双脚一前一后小幅错开')
+    .replace(/双脚并排站直/g, '双脚自然错开站立')
+    .replace(/双腿笔直并排/g, '双腿自然放松并形成前后小错位')
+    .replace(/双脚并拢/g, '双脚小幅错开')
+    .replace(/双脚稳定落地/g, '双脚一前一后小幅错开并稳定落地')
+    .replace(/稳定站姿/g, '有脚步变化的稳定站姿')
+    .replace(/自然站立/g, '带脚步变化自然站立')
+}
+
+function appendSuitLegVariation(text: string, shotIndex: number): string {
+  const variation = getSuitLegVariation(text, shotIndex)
+  if (text.includes(variation)) return text
+
+  const needsStrongerCue = !SUIT_LEG_CUE_PATTERN.test(text)
+  const sentence = needsStrongerCue
+    ? `腿脚动作明确为：${variation}。`
+    : `本张腿脚变化补充为：${variation}。`
+  return appendSentence(text, sentence)
+}
+
+function getSuitLegVariation(text: string, shotIndex: number): string {
+  if (/背面|背后|侧后/.test(text)) {
+    return SUIT_BACK_LEG_VARIATION
+  }
+  return SUIT_LEG_VARIATION_FALLBACKS[
+    shotIndex % SUIT_LEG_VARIATION_FALLBACKS.length
+  ]
+}
+
+function appendSuitFaceQualityGuard(text: string): string {
+  if (/左右嘴角协调|嘴型不歪|僵硬假笑/.test(text)) return text
+  return appendSentence(text, SUIT_FACE_QUALITY_GUARD)
+}
+
+function appendSentence(text: string, sentence: string): string {
+  const trimmed = text.trim()
+  if (!trimmed) return sentence
+  return /[。！？.!?]$/.test(trimmed)
+    ? `${trimmed}${sentence}`
+    : `${trimmed}。${sentence}`
+}
+
 /**
- * v5 LLM Planner 接入：在 pipeline 入口对 fullPlan 做衣百风格 prompt 覆盖。
+ * v5 Fission Prompt Planner 接入：在 pipeline 入口对 fullPlan 做商品展示 prompt 覆盖。
  *
  * 流程：
- * 1. 调 rule-engine 拿系统提示词（命中品类才有）
- * 2. 未命中品类（如非童装连衣裙）→ 直接返回，保持 v4 fallback
- * 3. 调 LLM Planner（七牛云 kimi-k2.5，纯文本，~1-3s）
- * 4. 按 shotId 写回 fullPlan[i].prompt
- * 5. 任何错误都吞掉、打 warn 日志，让 v4 fallback 接管
+ * 1. 调 rule-engine 拿童装二级品类系统提示词
+ * 2. 调用通用文本 LLM Planner（纯文本，单轮 JSON），失败直接抛错
+ * 3. 按 shotId 写回 fullPlan[i].prompt
  *
- * 透明降级：调用方完全不感知 Planner 是否成功，pipeline 后续逻辑无变化。
+ * 失败策略（无兜底，避免双链路）：
+ * - LLM 401 / 403 / 5xx / 超时 / JSON 解析失败 / Schema 校验失败 都直接抛错
+ * - 错误信息会带上 stage（http / parse / schema / timeout / config）
+ *   与原始消息（含 HTTP 状态码），由上层任务 store 写入 errorMessage，前端显示"生成失败"
  */
 async function applyShotPlannerOverride(
   fullPlan: PhotoFissionShot[],
   params: PhotoFissionParams,
   taskId: string,
 ): Promise<void> {
-  const plan = buildPlannerRulePlan(params.category, params.childrensCategory)
+  const recentActionHints = getRecentSuitActionHints(params)
+  const plan = buildPlannerRulePlan(
+    params.category,
+    params.childrensCategory,
+    params.resultCount,
+    recentActionHints,
+  )
   if (!plan) {
-    // 未命中 v5 路径（非童装连衣裙）→ 直接走 v4
-    return
+    throw new Error('生成失败：当前服装大片裂变仅支持童装连衣裙和套装')
   }
 
   const startedAt = Date.now()
+  let output: Awaited<ReturnType<typeof invokeShotPlanner>>
   try {
-    const output = await invokeShotPlanner({
+    output = await invokeShotPlanner({
       systemPrompt: plan.systemPrompt,
       userPrompt: plan.userPrompt,
+      shotCount: params.resultCount,
       traceId: taskId,
     })
-
-    // 按 shotId 索引覆盖；任何缺失或越界都跳过单条，不影响其它 shot
-    const indexByShotId = new Map<string, number>()
-    fullPlan.forEach((shot, idx) => indexByShotId.set(shot.shotId, idx))
-
-    let overridden = 0
-    for (const card of output.shots) {
-      const idx = indexByShotId.get(card.shotId)
-      if (idx === undefined) continue
-      const next = card.imagePrompt.trim()
-      if (!next) continue
-      fullPlan[idx] = { ...fullPlan[idx], prompt: next }
-      overridden += 1
-    }
-
-    // eslint-disable-next-line no-console
-    console.log(
-      JSON.stringify({
-        lvl: 'info',
-        evt: 'planner.success',
-        ts: new Date().toISOString(),
-        traceId: taskId,
-        taskId,
-        latencyMs: Date.now() - startedAt,
-        overridden,
-        total: fullPlan.length,
-      }),
-    )
   } catch (error) {
     const stage =
       error instanceof ShotPlannerError ? error.stage ?? 'unknown' : 'unknown'
@@ -1055,8 +1357,8 @@ async function applyShotPlannerOverride(
     // eslint-disable-next-line no-console
     console.error(
       JSON.stringify({
-        lvl: 'warn',
-        evt: 'planner.fallback',
+        lvl: 'error',
+        evt: 'planner.failed',
         ts: new Date().toISOString(),
         traceId: taskId,
         taskId,
@@ -1065,6 +1367,63 @@ async function applyShotPlannerOverride(
         reason: message,
       }),
     )
-    // 不抛出，让 v4 fallback prompt 继续走
+    throw new Error(`生成失败：LLM 镜头策划器调用失败（stage=${stage}）：${message}`)
   }
+
+  // 按 shotId 索引覆盖；任何缺失或越界都跳过单条，不影响其它 shot
+  const indexByShotId = new Map<string, number>()
+  fullPlan.forEach((shot, idx) => indexByShotId.set(shot.shotId, idx))
+
+  const isSuitTask = isSuitChildrensCategory(
+    params.category,
+    params.childrensCategory,
+  )
+  const rememberedSuitShots: PlannerPromptCard[] = []
+  let overridden = 0
+  for (const card of output.shots) {
+    const idx = indexByShotId.get(card.shotId)
+    if (idx === undefined) continue
+    const plannerCard = isSuitTask ? refineSuitPlannerCard(card, idx) : card
+    const next = plannerCard.imagePrompt.trim()
+    if (!next) continue
+    const nextLabel = plannerCard.role.trim()
+    fullPlan[idx] = {
+      ...fullPlan[idx],
+      label: nextLabel || fullPlan[idx].label,
+      prompt: next,
+    }
+    if (isSuitTask) {
+      rememberedSuitShots.push({
+        role: nextLabel || fullPlan[idx].label,
+        imagePrompt: next,
+      })
+    }
+    overridden += 1
+  }
+
+  if (overridden === 0) {
+    throw new Error(
+      `生成失败：LLM 镜头策划器返回的 ${params.resultCount} 段提示词无法匹配到任何 shotId`,
+    )
+  }
+  rememberSuitActionHints(
+    params,
+    isSuitTask && rememberedSuitShots.length > 0
+      ? rememberedSuitShots
+      : output.shots,
+  )
+
+  // eslint-disable-next-line no-console
+  console.log(
+    JSON.stringify({
+      lvl: 'info',
+      evt: 'planner.success',
+      ts: new Date().toISOString(),
+      traceId: taskId,
+      taskId,
+      latencyMs: Date.now() - startedAt,
+      overridden,
+      total: fullPlan.length,
+    }),
+  )
 }

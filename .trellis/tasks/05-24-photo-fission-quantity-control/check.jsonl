@@ -1,0 +1,5 @@
+{"file": ".trellis/tasks/05-24-photo-fission-quantity-control/prd.md", "reason": "Verify all acceptance criteria: type definition, normalize validation, planner schema dynamic, prompt parameterization, frontend selector"}
+{"file": ".trellis/spec/backend/fission-prompt-planner.md", "reason": "Verify planner schema change follows existing pattern (Zod validation, error classification)"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Verify OptionSelector usage follows project conventions"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Verify code quality standards for the changes"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify type changes flow correctly from frontend → API → service → planner"}

@@ -5,7 +5,6 @@ import {
 } from './pose-templates-seed'
 import {
   AI_FASHION_DEMO_TASKS as YIBAI_AI_FASHION_DEMO_TASKS,
-  YIBAI_PHOTO_FISSION_CASE_SHIRT_9GRID,
 } from './yibai-demo-cases'
 
 export type FeatureType =
@@ -42,14 +41,8 @@ export type PoseBodyPart = 'full' | 'upper' | 'lower'
 export type PoseResolution = '1k' | '2k' | '4k'
 export type FashionResolution = PoseResolution
 export type ProductCategory = 'tops' | 'bottoms' | 'dress' | 'suit' | 'outerwear'
-export type PhotoFissionCategory =
-  | 'tops'
-  | 'pants'
-  | 'skirts'
-  | 'suit'
-  | 'outerwear'
-  | 'childrens'
-export type PhotoFissionChildrensCategory = 'dress'
+export type PhotoFissionCategory = 'childrens'
+export type PhotoFissionChildrensCategory = 'dress' | 'suit'
 export type PhotoFissionImageRatio =
   | '1:1'
   | '3:2'
@@ -62,6 +55,7 @@ export type PhotoFissionImageRatio =
   | '16:9'
   | '21:9'
 export type PhotoFissionResolution = PoseResolution
+export type PhotoFissionResultCount = 2 | 4 | 9 | 10
 export type ElementReplaceType = 'clothing' | 'environment' | 'person'
 export type FashionReferenceSource = 'model' | 'upload'
 export type FashionPromptMode = 'enhanced' | 'raw'
@@ -165,32 +159,32 @@ export interface PhotoFissionShot {
 }
 
 /**
- * v5 LLM Shot Planner 产物：单个镜头卡片。
+ * 通用 Fission Prompt Planner 产物：单个计划卡片。
  *
- * 由 `lib/server/photo-fission-shot-planner.ts` 调用七牛云文本 LLM
- * （`moonshotai/kimi-k2.5`）生成，9 个一组组成 `ShotPlannerOutput`。
+ * `shotId` 在底座里表示「当前 fission item 的稳定 id」：
+ * - photo-fission 使用 `shot_1` ~ `shot_9`
+ * - pose-fission 未来可使用姿势模板 id
  *
- * - `shotId`：稳定 id（shot_1 ~ shot_9，与系统提示词中的输出契约对齐）
- * - `role`：镜头中文角色名（如「正面全身主图」）
- * - `imagePrompt`：衣百风格自然语言段落，**直接传给出图模型**，
- *   不再走 v4 的 12 段拼装链路
+ * `imagePrompt` 是最终直接传给出图模型的自然语言提示词。
  */
-export interface PhotoFissionShotCard {
+export interface FissionPromptCard {
   shotId: string
   role: string
   imagePrompt: string
 }
 
 /**
- * v5 LLM Shot Planner 完整输出。
- * 严格 9 个 ShotCard，顺序对应 shotIndex 0-8。
+ * 通用 Fission Prompt Planner 输出。具体 feature 可用 Zod schema 约束数量与字段。
  */
-export interface PhotoFissionShotPlannerOutput {
-  shots: PhotoFissionShotCard[]
+export interface FissionPromptPlannerOutput {
+  shots: FissionPromptCard[]
 }
 
+export type PhotoFissionShotCard = FissionPromptCard
+export type PhotoFissionShotPlannerOutput = FissionPromptPlannerOutput
+
 /**
- * v5 LLM Shot Planner 调用入参。
+ * v5 photo-fission LLM Shot Planner 调用入参。
  */
 export interface PhotoFissionShotPlannerInput {
   category: PhotoFissionCategory
@@ -207,7 +201,7 @@ export interface PhotoFissionParams {
   imageRatio: PhotoFissionImageRatio
   resolution: PhotoFissionResolution
   shotPlan: PhotoFissionShot[]
-  resultCount: 9
+  resultCount: PhotoFissionResultCount
 }
 
 export interface BackgroundReplaceParams {
@@ -318,6 +312,7 @@ export interface PhotoFissionCase {
   /** 1-2 句卖点描述 */
   description: string
   category: PhotoFissionCategory
+  childrensCategory?: PhotoFissionChildrensCategory
   /** 输入主图路径（public 下相对路径） */
   mainImageUrl: string
   /** 9 张已生成的套图路径（顺序与 shotLabels 一一对应；文件可能暂未生成） */
@@ -399,16 +394,12 @@ export const PRODUCT_CATEGORIES = [
 ] satisfies { id: ProductCategory; label: string }[]
 
 export const PHOTO_FISSION_CATEGORIES = [
-  { id: 'tops', label: '上衣' },
-  { id: 'pants', label: '裤子' },
-  { id: 'skirts', label: '裙子' },
-  { id: 'suit', label: '套装' },
-  { id: 'outerwear', label: '外套' },
   { id: 'childrens', label: '童装' },
 ] satisfies { id: PhotoFissionCategory; label: string }[]
 
 export const PHOTO_FISSION_CHILDRENS_CATEGORIES = [
   { id: 'dress', label: '连衣裙' },
+  { id: 'suit', label: '套装' },
 ] satisfies { id: PhotoFissionChildrensCategory; label: string }[]
 
 /**
@@ -455,6 +446,13 @@ export const PHOTO_FISSION_RESOLUTIONS = [
   { id: '2k', label: '2k' },
   { id: '4k', label: '4k' },
 ] satisfies { id: PhotoFissionResolution; label: string }[]
+
+export const PHOTO_FISSION_RESULT_COUNTS = [
+  { id: 2, label: '2张' },
+  { id: 4, label: '4张' },
+  { id: 9, label: '9张' },
+  { id: 10, label: '10张' },
+] satisfies { id: PhotoFissionResultCount; label: string }[]
 
 export const ELEMENT_REPLACE_TYPES = [
   { id: 'clothing', label: '服装' },
@@ -645,7 +643,8 @@ export const PHOTO_FISSION_CASES: PhotoFissionCase[] = [
     name: '童装白T 9 宫格',
     description:
       '童装白色T恤+深色半裙的标准电商套图：正面、侧面、背面、近景、远景、特写、45度等 9 个镜头',
-    category: 'tops',
+    category: 'childrens',
+    childrensCategory: 'dress',
     mainImageUrl: '/cases/photo-fission-kid-white-tee.jpg',
     resultImageUrls: [
       '/cases/photo-fission-kid-white-tee-shot-1.jpg',
@@ -673,7 +672,6 @@ export const PHOTO_FISSION_CASES: PhotoFissionCase[] = [
     resolution: '1k',
     modelId: 'gemini-3.1-flash-image-preview',
   },
-  YIBAI_PHOTO_FISSION_CASE_SHIRT_9GRID,
 ]
 
 /**

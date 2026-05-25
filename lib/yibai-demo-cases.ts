@@ -1,11 +1,11 @@
 // 共 26 条 demo task (6 原批 + 20 二批)
-import type { GenerationTask, PhotoFissionCase } from './types'
+import type { GenerationTask } from './types'
 
 /**
  * yibaiaigc.com 演示数据（仅 MVP 阶段不上线、不商用）。
  *
- * 这些图片和 prompt 用于让"AI 服装大片"案例库 Tab、"服装大片裂变"案例库
- * 在没有真实生成历史时就能展示丰富内容，方便老板演示。
+ * 这些图片和 prompt 用于让"AI 服装大片"案例库 Tab 在没有真实生成历史时
+ * 就能展示丰富内容，方便老板演示。
  *
  * 图片资源全部走 yibaiaigc 阿里云 OSS 公开直链，不下载到本仓库，
  * 避免 git 仓库被 ~150MB 大图污染。OSS 链已实测可直接外链访问。
@@ -1446,45 +1446,3 @@ export const AI_FASHION_DEMO_TASKS: GenerationTask[] = [
     creditsUsed: 0,
   },
 ]
-
-/**
- * 服装大片裂变演示 case：友商「上衣 9 宫格 16:9」原始套图。
- * 9 张套图来自 yibaiaigc ai-cloth-virality API 同一张参考图（白色 T 恤）+ promptId 12-20。
- * shotLabels 是本小姐根据成片视觉效果人工命名（实际 9 张 prompt 内容未在本地资料导出）。
- *
- * 图片资源走 yibaiaigc 阿里云 OSS 公开直链。
- */
-export const YIBAI_PHOTO_FISSION_CASE_SHIRT_9GRID: PhotoFissionCase = {
-  id: 'yibai-shirt-16-9-grid',
-  featureType: 'photo-fission',
-  name: '白T9宫格 16:9 户外',
-  description:
-    '友商演示案例：白色短袖 T 恤 + 9 个不同户外/室内场景，覆盖运动、街拍、棚拍等高频电商投流场景。',
-  category: 'tops',
-  mainImageUrl: 'https://yb-ai.oss-accelerate.aliyuncs.com/67377048-9eb7-4a06-b354-adfd87194c56.jpeg',
-  resultImageUrls: [
-    'https://yb-ai.oss-cn-hangzhou.aliyuncs.com/20260226/90dd1c7a-b1f7-4591-8498-4300d464eb33.png',
-    'https://yb-ai.oss-cn-hangzhou.aliyuncs.com/20260226/08cf8a90-5038-4e33-a740-ec3762710ee7.png',
-    'https://yb-ai.oss-cn-hangzhou.aliyuncs.com/20260226/7110f0cb-398d-4f24-8fe8-1f7bbb467b4f.png',
-    'https://yb-ai.oss-cn-hangzhou.aliyuncs.com/20260226/8e008832-963c-4821-9c57-9a2ab66f0171.png',
-    'https://yb-ai.oss-cn-hangzhou.aliyuncs.com/20260226/8053789e-7f92-4d24-a8b1-db0233c670f8.png',
-    'https://yb-ai.oss-cn-hangzhou.aliyuncs.com/20260226/36c96753-3644-4f17-9a51-34e8ac36af1b.png',
-    'https://yb-ai.oss-cn-hangzhou.aliyuncs.com/20260226/e21063a4-55dd-4346-9a5c-ee39d4deeaa1.png',
-    'https://yb-ai.oss-cn-hangzhou.aliyuncs.com/20260226/268243e2-e19f-4c5d-89de-91cb3992fe05.png',
-    'https://yb-ai.oss-cn-hangzhou.aliyuncs.com/20260226/8c978061-66aa-485c-8a25-905489618e02.png',
-  ],
-  shotLabels: [
-    '场景一',
-    '场景二',
-    '场景三',
-    '场景四',
-    '场景五',
-    '场景六',
-    '场景七',
-    '场景八',
-    '场景九',
-  ],
-  imageRatio: '16:9',
-  resolution: '2k',
-  modelId: 'gemini-3-pro-image-preview',
-}

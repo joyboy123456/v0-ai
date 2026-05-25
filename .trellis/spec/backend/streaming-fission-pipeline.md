@@ -173,7 +173,7 @@ task-store.runTask  or  task-store.retryXxxFissionShots
 runXxxFissionPipeline({ taskId, inputImages, params, apiKey, timeoutMs, onShotResult, targetIds? })
    ├─ 0. 校验 inputImages.length / shotPlan 或 poseTemplateSnapshots 非空
    ├─ 1. targetIds 非空 → filter 子集；空数组 → throw（不许"空跑全部"）
-   ├─ 2. dispatchItemsForModel(items, params.model) 按模型兼容性 + provider.weight 分组（未配 IMAGE_PROVIDERS 且模型为 gemini-* 时退回单 Google provider）
+   ├─ 2. dispatchItemsForModel(items, params.model) 按模型兼容性 + 唯一凭证 lane + provider.weight 分组（同一 apiKey 的多个 provider 只占一条并发 lane；未配 IMAGE_PROVIDERS 且模型为 gemini-* 时退回单 Google provider）
    ├─ 3. 每个 provider group 独立 worker pool：
    │     ├─ concurrency = clamp(env, 1, groupItems.length)
    │     ├─ 每个 worker 循环 `while (currentIndex < groupItems.length)`
@@ -182,7 +182,7 @@ runXxxFissionPipeline({ taskId, inputImages, params, apiKey, timeoutMs, onShotRe
    │     ├─ await onShotResult(enriched)（如果有）；回调抛错 → 该 item 标 error
    │     └─ 异常 → 标 error，**继续 worker，不抛**
    ├─ 4. 所有 provider group settle 后，逐个失败 item 做 failover
-   │     ├─ 只排除该 item 刚失败过的 providerId
+   │     ├─ 排除该 item 刚失败过的 providerId 及同一 apiKey lane
    │     ├─ getFailoverProviderForModel(excludeProviderIds, params.model) 选下一个兼容渠道
    │     └─ 按 failover provider 重新分组跑子集
    └─ 5. 全部 item 都 error → throw（让 runTask 标 failed）；至少 1 张成功 → return successResults
@@ -211,14 +211,18 @@ runXxxFissionPipeline({ taskId, inputImages, params, apiKey, timeoutMs, onShotRe
 
 | key | 默认 | 含义 |
 |---|---|---|
-| `PHOTO_FISSION_CONCURRENCY` | `3` | photo-fission 9 shot 的并发上限 |
+| `PHOTO_FISSION_CONCURRENCY` | `3` | photo-fission 9/10 shot 的 per-provider 并发上限 |
 | `POSE_FISSION_CONCURRENCY` | `2` | pose-fission 1-9 pose 的并发上限 |
 
-**为什么 pose-fission 默认 2**：pose-fission 比 photo-fission 多一段「锚定主图人物身份 + 改姿势」的语义约束，Google 端单调用时间更长，保守起见低 1 档以减少 IPM 抢占。
+**为什么 pose-fission 默认 2**：pose-fission 以用户显式选择的姿势模板为单位调度，默认 2 兼顾速度与稳定性；如果 provider 出现限流或空返回，优先通过 env 下调。
+
+**为什么 photo-fission 默认 3**：服装大片裂变要在一次任务中快速产出 9/10 张图，默认保持高并发吞吐；如果特定 provider 出现限流、空返回或 partial 增多，可通过 env 临时下调。
 
 **强约束**：`concurrency = clamp(env, 1, items.length)`，即「不超过实际镜头数」。原因：worker pool 多余的 worker 会立刻 return，没意义但也无害；负数 / NaN 必须 fallback。
 
 多渠道时并发度是 **per provider group** 的上限，不是整任务全局上限。例如 2 个 provider + `PHOTO_FISSION_CONCURRENCY=3`，最多同时 6 个 in-flight（各渠道最多 3 个），但每次真实 fetch 仍必须经过 provider 级 `maxIpm/maxRpm` 令牌桶。
+
+调度层必须优先铺满 **唯一凭证 lane**：七牛同一把 `apiKey` 下配置多个模型 provider 时，只算一条 lane；Google 仍按 `gemini-*` 模型兼容性参与。9 shot + 4 把七牛 key + 1 个 Google 的典型分布应先并发启动 5 条 lane，再按权重把剩余 shot 补给高权重 lane。
 
 ### 3.4 retry 函数前置校验矩阵
 
@@ -353,8 +357,9 @@ pose-fission 1 个姿势 / providers=[google-1, qiniu-1]
   - 非 fission feature → 必定 success
 - 多渠道分组：
   - 2 provider + 1 item，首个 provider 失败后必须能 failover 到另一个 provider
-  - failover 只排除该 item 失败过的 `providerId`，不能排除全部初始 providers
-  - `auth_failed` provider 被 `tripProviderCircuit` 后，不再被 `getFailoverProvider` 选中
+  - 4 把七牛 key + 1 个 Google + 9 item，应至少分出 5 个 provider group，先铺满每条唯一凭证 lane
+  - failover 只排除该 item 失败过的 `providerId` 及同一 apiKey lane，不能排除全部初始 providers
+  - `auth_failed` provider 被 `tripProviderCircuit` 后，同一 apiKey lane 的 sibling providers 也不再被 `getFailoverProvider` 选中
 
 ### 6.2 集成 / 手测
 

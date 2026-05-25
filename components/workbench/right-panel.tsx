@@ -99,6 +99,10 @@ export function RightPanel({
   const [photoFissionCases, setPhotoFissionCases] =
     useState<PhotoFissionCase[]>(PHOTO_FISSION_CASES);
   const [sameStyleTaskId, setSameStyleTaskId] = useState<string | null>(null);
+  const [batchSelectMode, setBatchSelectMode] = useState(false);
+  const [selectedAssets, setSelectedAssets] = useState<
+    Map<string, { url: string; downloadUrl: string }>
+  >(new Map());
 
   useEffect(() => {
     try {
@@ -360,6 +364,51 @@ export function RightPanel({
     );
   };
 
+  const toggleBatchSelectMode = () => {
+    setBatchSelectMode((current) => {
+      if (current) setSelectedAssets(new Map());
+      return !current;
+    });
+  };
+
+  const toggleImageSelection = (
+    assetId: string,
+    url: string,
+    downloadUrl: string,
+  ) => {
+    setSelectedAssets((current) => {
+      const next = new Map(current);
+      if (next.has(assetId)) {
+        next.delete(assetId);
+      } else {
+        next.set(assetId, { url, downloadUrl });
+      }
+      return next;
+    });
+  };
+
+  const downloadSelectedImages = async () => {
+    const entries = Array.from(selectedAssets.entries());
+    if (!entries.length) return;
+    for (const [assetId, { downloadUrl }] of entries) {
+      try {
+        const response = await fetch(downloadUrl);
+        const blob = await response.blob();
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `${assetId}.png`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+      } catch {
+        window.open(downloadUrl, "_blank");
+      }
+    }
+    setBatchSelectMode(false);
+    setSelectedAssets(new Map());
+  };
+
   if (activeTab === "my-model-library") {
     const referencedModelIds = new Set(
       fashionReferences
@@ -473,6 +522,21 @@ export function RightPanel({
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
+
+          {activeTab === "history" && (
+            <button
+              onClick={toggleBatchSelectMode}
+              className={cn(
+                "h-8 px-3 rounded-md border text-[12px] font-medium flex items-center gap-1.5 transition-colors",
+                batchSelectMode
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-transparent text-muted-foreground hover:text-foreground hover:bg-white/[0.04]",
+              )}
+            >
+              <Download className="w-3.5 h-3.5" />
+              {batchSelectMode ? "取消选择" : "批量下载"}
+            </button>
+          )}
         </div>
       </header>
 
@@ -493,6 +557,8 @@ export function RightPanel({
           tasks={currentFeatureTasks}
           activeTaskId={activeTask?.taskId}
           favorites={favorites}
+          batchSelectMode={batchSelectMode}
+          selectedAssetIds={selectedAssets}
           onSelectTask={onSelectTask}
           onToggleFavorite={(assetId) => {
             setFavorites((current) => {
@@ -506,6 +572,9 @@ export function RightPanel({
             });
           }}
           onPreviewImage={(image, task) => setPreviewResult({ image, task })}
+          onToggleImageSelection={(assetId, url, downloadUrl) =>
+            toggleImageSelection(assetId, url, downloadUrl)
+          }
         />
       ) : isAiFashionPhoto ? (
         <AiFashionMasonryGallery
@@ -560,11 +629,6 @@ export function RightPanel({
                           alt=""
                           className="w-full h-auto block bg-secondary"
                         />
-                        {image.label && (
-                          <span className="pointer-events-none absolute left-2 top-2 rounded-md bg-background/85 px-2 py-0.5 text-[10px] font-medium text-foreground">
-                            {image.label}
-                          </span>
-                        )}
                         <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-2 p-3 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
                           <button
                             onClick={(event) => {
@@ -650,6 +714,29 @@ export function RightPanel({
           )}
         </DialogContent>
       </Dialog>
+
+      {batchSelectMode && selectedAssets.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-full border border-border bg-card px-5 py-3 shadow-lg">
+          <span className="text-sm text-foreground">
+            已选 <span className="font-semibold text-primary">{selectedAssets.size}</span> 张
+          </span>
+          <button
+            onClick={downloadSelectedImages}
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            <Download className="w-4 h-4" />
+            下载选中
+          </button>
+          <button
+            onClick={() => {
+              setSelectedAssets(new Map());
+            }}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            清空选择
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -1071,11 +1158,6 @@ function GenerationDetailDialog({
                   alt=""
                   className="h-full w-full object-cover"
                 />
-                {resultImage.label && (
-                  <span className="pointer-events-none absolute inset-x-1 bottom-1 truncate rounded bg-background/85 px-1.5 py-0.5 text-center text-[10px] font-medium text-foreground">
-                    {resultImage.label}
-                  </span>
-                )}
               </button>
             );
           })}
@@ -1982,16 +2064,22 @@ function TaskHistory({
   tasks,
   activeTaskId,
   favorites,
+  batchSelectMode,
+  selectedAssetIds,
   onSelectTask,
   onToggleFavorite,
   onPreviewImage,
+  onToggleImageSelection,
 }: {
   tasks: GenerationTask[];
   activeTaskId?: string;
   favorites: Set<string>;
+  batchSelectMode: boolean;
+  selectedAssetIds: Map<string, { url: string; downloadUrl: string }>;
   onSelectTask: (taskId: string) => void;
   onToggleFavorite: (assetId: string) => void;
   onPreviewImage: (image: ResultAsset, task: GenerationTask) => void;
+  onToggleImageSelection: (assetId: string, url: string, downloadUrl: string) => void;
 }) {
   if (!tasks.length) {
     return (
@@ -2010,9 +2098,12 @@ function TaskHistory({
             task={task}
             isActive={activeTaskId === task.taskId}
             favorites={favorites}
+            batchSelectMode={batchSelectMode}
+            selectedAssetIds={selectedAssetIds}
             onSelectTask={onSelectTask}
             onToggleFavorite={onToggleFavorite}
             onPreviewImage={onPreviewImage}
+            onToggleImageSelection={onToggleImageSelection}
           />
         ))}
       </div>
@@ -2024,16 +2115,22 @@ function TaskHistoryCard({
   task,
   isActive,
   favorites,
+  batchSelectMode,
+  selectedAssetIds,
   onSelectTask,
   onToggleFavorite,
   onPreviewImage,
+  onToggleImageSelection,
 }: {
   task: GenerationTask;
   isActive: boolean;
   favorites: Set<string>;
+  batchSelectMode: boolean;
+  selectedAssetIds: Map<string, { url: string; downloadUrl: string }>;
   onSelectTask: (taskId: string) => void;
   onToggleFavorite: (assetId: string) => void;
   onPreviewImage: (image: ResultAsset, task: GenerationTask) => void;
+  onToggleImageSelection: (assetId: string, url: string, downloadUrl: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [showFinalPrompt, setShowFinalPrompt] = useState(false);
@@ -2155,6 +2252,7 @@ function TaskHistoryCard({
         <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
           {task.results.map((image) => {
             const isFavorite = favorites.has(image.assetId);
+            const isSelected = selectedAssetIds.has(image.assetId);
 
             return (
               <div
@@ -2163,27 +2261,47 @@ function TaskHistoryCard({
                 tabIndex={0}
                 onClick={(event) => {
                   event.stopPropagation();
-                  onPreviewImage(image, task);
+                  if (batchSelectMode) {
+                    onToggleImageSelection(image.assetId, image.url, image.downloadUrl);
+                  } else {
+                    onPreviewImage(image, task);
+                  }
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     event.stopPropagation();
-                    onPreviewImage(image, task);
+                    if (batchSelectMode) {
+                      onToggleImageSelection(image.assetId, image.url, image.downloadUrl);
+                    } else {
+                      onPreviewImage(image, task);
+                    }
                   }
                 }}
-                className="group relative aspect-[3/4] overflow-hidden rounded border border-border bg-card cursor-pointer hover:border-primary/60"
+                className={cn(
+                  "group relative aspect-[3/4] overflow-hidden rounded border bg-card cursor-pointer transition-colors",
+                  batchSelectMode && isSelected
+                    ? "border-primary ring-2 ring-primary/40"
+                    : "border-border hover:border-primary/60",
+                )}
               >
                 <img
                   src={image.url}
                   alt=""
                   className="h-full w-full object-cover"
                 />
-                {image.label && (
-                  <span className="pointer-events-none absolute left-1.5 top-1.5 rounded bg-background/85 px-1.5 py-0.5 text-[10px] font-medium text-foreground">
-                    {image.label}
-                  </span>
+
+                {batchSelectMode && (
+                  <div className={cn(
+                    "absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border-2 transition-colors",
+                    isSelected
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-white/80 bg-black/40",
+                  )}>
+                    {isSelected && <Check className="h-3 w-3" />}
+                  </div>
                 )}
+                {!batchSelectMode && (
                 <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 bg-gradient-to-t from-black/70 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
                   <button
                     type="button"
@@ -2215,6 +2333,7 @@ function TaskHistoryCard({
                     <Download className="h-3.5 w-3.5 text-muted-foreground" />
                   </button>
                 </div>
+                )}
               </div>
             );
           })}
