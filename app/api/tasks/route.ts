@@ -31,7 +31,12 @@ export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as CreateTaskBody
 
-    if (!body.featureType || !body.inputAssetIds?.length || !body.params) {
+    const requiresInputAssets = body.featureType !== 'video-generation'
+    if (
+      !body.featureType ||
+      (requiresInputAssets && !body.inputAssetIds?.length) ||
+      !body.params
+    ) {
       return NextResponse.json(
         { error: '缺少 featureType、inputAssetIds 或 params' },
         { status: 400 },
@@ -44,7 +49,7 @@ export async function POST(request: NextRequest) {
 
     const task = await createTask({
       featureType: body.featureType as FeatureType,
-      inputAssetIds: body.inputAssetIds,
+      inputAssetIds: body.inputAssetIds ?? [],
       params: body.params,
       userId,
     })

@@ -10,6 +10,7 @@ import {
   normalizePhotoFissionParams,
   runPhotoFissionPipeline,
 } from '@/lib/server/photo-fission-service'
+import { runVideoGenerationPipeline } from '@/lib/server/video-service'
 import { isLocalSuperAdminEnabled } from '@/lib/server/auth/local-auth-mode'
 import {
   getLocalImageForPublicUrl,
@@ -27,6 +28,7 @@ import {
   type PoseFissionParams,
   type ResultAsset,
   type TaskParams,
+  type VideoGenerationParams,
 } from '@/lib/types'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -208,6 +210,8 @@ async function storeResultFromResultAsset(
   if (!response.ok) {
     throw new Error(`生成图归档失败：HTTP ${response.status}（${result.url}）`)
   }
+  // 视频与图片走同一条 fetch 路径；mimeType 由响应头决定，扩展名由 getExtension 推断。
+  // OSS 视频默认 video/mp4；OSS 图片默认 image/jpeg；fallback 走 image/jpeg 兼容历史 path。
   const mimeType = response.headers.get('content-type') ?? 'image/jpeg'
   const buffer = Buffer.from(await response.arrayBuffer())
   const persisted = await storage().putImage({
@@ -401,7 +405,36 @@ function normalizeTaskParams(
     return normalizePhotoFissionParams(params, inputAssetCount)
   }
 
+  if (featureType === 'video-generation') {
+    return normalizeVideoGenerationParams(params)
+  }
+
   return params
+}
+
+function normalizeVideoGenerationParams(
+  params: TaskParams,
+): VideoGenerationParams {
+  const p = params as Partial<VideoGenerationParams>
+  if (!p.prompt || typeof p.prompt !== 'string' || !p.prompt.trim()) {
+    throw new Error('请输入视频描述提示词')
+  }
+  if (!p.model || typeof p.model !== 'string') {
+    throw new Error('请选择一个视频模型')
+  }
+  const isImage2Video = /-(i2v|r2v|s2v|video-edit)$/i.test(p.model)
+  if (isImage2Video && (!p.imageUrl || typeof p.imageUrl !== 'string')) {
+    throw new Error('图生视频 / 视频编辑模型必须提供参考素材 URL（imageUrl）')
+  }
+  return {
+    prompt: p.prompt.trim(),
+    model: p.model,
+    size: p.size,
+    duration: p.duration,
+    imageUrl: p.imageUrl,
+    resultCount: 1,
+    creditsCost: 35,
+  }
 }
 
 function hydrateTaskInputAssets(task: GenerationTask): GenerationTask {
@@ -453,10 +486,11 @@ async function runTask(taskId: string) {
 
     const isPhotoFission = task.featureType === 'photo-fission'
     const isPoseFission = task.featureType === 'pose-fission'
+    const isVideoGeneration = task.featureType === 'video-generation'
     // photo-fission / pose-fission 都走流式持久化：每个 shot/pose 成功立即写盘 + 更新 store，
     // 即使后续 shot 卡死整个 pipeline，已成功的图也不会丢。
     // 其他 feature 保持原 saveResults(results) 批量持久化路径不变。
-    const useStreamingPersist = isPhotoFission || isPoseFission
+    const useStreamingPersist = isPhotoFission || isPoseFission || isVideoGeneration
 
     const persistedResults: ResultAsset[] = []
     const onShotResult = useStreamingPersist
@@ -467,7 +501,37 @@ async function runTask(taskId: string) {
       : undefined
 
     let results: ResultAsset[]
-    if (isPoseFission) {
+    if (task.featureType === 'video-generation') {
+      updateTask(taskId, {
+        progress: 50,
+        message: '正在提交视频生成任务',
+      })
+      results = await runVideoGenerationPipeline({
+        taskId,
+        params: task.params as VideoGenerationParams,
+        onProgress: ({ status, elapsedMs }) => {
+          // 视频生成主要时间花在轮询里：把 status 映射到 [50, 90] 区间，
+          // 让前端进度条平滑推进，而不是 50% 卡死直到完成。
+          const seconds = Math.round(elapsedMs / 1000)
+          const progress =
+            status === 'PENDING'
+              ? 55
+              : status === 'RUNNING'
+                ? Math.min(90, 60 + Math.floor(seconds / 6))
+                : 50
+          updateTask(taskId, {
+            progress,
+            message: `视频生成中（${status}，已等待 ${seconds}s）`,
+          })
+        },
+      })
+      // 视频只返回 1 个结果，手动走流式持久化路径（归档 OSS URL → 本地/R2）。
+      if (onShotResult) {
+        for (const result of results) {
+          await onShotResult(result)
+        }
+      }
+    } else if (isPoseFission) {
       // pose-fission 直接调 runPoseFissionPipeline，跳过 runThirdPartyWorkflow，
       // 避免双重 Google 调用与 demo 路径分叉（demo 模式仍在 runThirdPartyWorkflow 内处理 photo-fission，
       // pose-fission demo 退化为占位 case 输出由后续 PR 处理；此 PR 关注真实生产路径）。
@@ -534,17 +598,21 @@ async function persistOneResult(
   // PR3：通过 storage-adapter 写「生成结果图」。local 模式落本地图片目录，
   // cloud 模式落 R2 `users/{userId}/results/`。
   // PR4：把 ownerUserId 透传给 adapter，cloud 模式下 R2 路径按用户隔离。
+  // Video PR：对 mediaType='video' 的 ResultAsset 走 mp4 持久化路径。
+  //   ModelRouter 返回的 OSS 签名 URL 有效期约 24h，必须立即归档否则次日 403。
+  //   storeResultFromResultAsset 已按 response Content-Type 推断扩展名（getExtension 支持 mp4）。
   const persisted = await storeResultFromResultAsset(result, ownerUserId)
   result.url = persisted.url
   result.downloadUrl = persisted.url
 
+  const isVideo = result.mediaType === 'video'
   const asset: AssetRecord = {
     assetId: result.assetId,
     userId: ownerUserId,
     projectId: defaultProjectId,
-    fileName: `${result.assetId}.jpg`,
+    fileName: `${result.assetId}.${isVideo ? 'mp4' : 'jpg'}`,
     fileUrl: persisted.url,
-    fileType: 'image/jpeg',
+    fileType: isVideo ? 'video/mp4' : 'image/jpeg',
     width: result.width,
     height: result.height,
     createdAt: new Date().toISOString(),
@@ -657,15 +725,17 @@ async function saveResults(
   for (const result of results) {
     // PR3：通过 storage-adapter 写图。失败抛出由 runTask 外层 catch 接住标 failed。
     // PR4：透传 ownerUserId，cloud 模式 R2 路径按用户隔离。
+    // Video PR：mediaType='video' 时以 mp4 落盘（getExtension 已支持 video/* MIME）。
     const persistedResult = await storeResultFromResultAsset(result, ownerUserId)
     const resultUrl = persistedResult.url
+    const isVideo = result.mediaType === 'video'
     const asset: AssetRecord = {
       assetId: result.assetId,
       userId: ownerUserId,
       projectId: defaultProjectId,
-      fileName: `${result.assetId}.jpg`,
+      fileName: `${result.assetId}.${isVideo ? 'mp4' : 'jpg'}`,
       fileUrl: resultUrl,
-      fileType: 'image/jpeg',
+      fileType: isVideo ? 'video/mp4' : 'image/jpeg',
       width: result.width,
       height: result.height,
       createdAt: new Date().toISOString(),
@@ -833,6 +903,9 @@ function getExtension(mimeType: string) {
   if (mimeType.includes('jpeg') || mimeType.includes('jpg')) return 'jpg'
   if (mimeType.includes('webp')) return 'webp'
   if (mimeType.includes('gif')) return 'gif'
+  if (mimeType.includes('mp4')) return 'mp4'
+  if (mimeType.includes('webm')) return 'webm'
+  if (mimeType.includes('quicktime')) return 'mov'
   return 'png'
 }
 

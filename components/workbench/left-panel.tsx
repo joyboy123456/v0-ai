@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/select";
 import {
   DEFAULT_FASHION_MODEL,
+  DEFAULT_VIDEO_MODEL,
   ELEMENT_REPLACE_TYPES,
   FEATURE_LABELS,
   FASHION_IMAGE_RATIOS,
@@ -46,6 +47,10 @@ import {
   POSE_IMAGE_RATIOS,
   POSE_RESOLUTIONS,
   SELECTABLE_FASHION_MODELS,
+  SELECTABLE_VIDEO_MODELS,
+  VIDEO_DURATIONS,
+  VIDEO_RESOLUTIONS,
+  resolveVideoSize,
   type BackgroundReplaceParams,
   type CompanyModel,
   type ElementReplaceType,
@@ -72,6 +77,9 @@ import {
   type AiFashionPhotoParams,
   type PoseTemplate,
   type UploadedImage,
+  type VideoDuration,
+  type VideoGenerationParams,
+  type VideoResolution,
 } from "@/lib/types";
 
 interface LeftPanelProps {
@@ -166,6 +174,14 @@ export function LeftPanel({
   const [elementType, setElementType] =
     useState<ElementReplaceType>("clothing");
   const [prompt, setPrompt] = useState("");
+  const [videoPrompt, setVideoPrompt] = useState("");
+  const [videoModel, setVideoModel] = useState<string>(DEFAULT_VIDEO_MODEL);
+  const [videoResolution, setVideoResolution] =
+    useState<VideoResolution>("720p");
+  const [videoDuration, setVideoDuration] = useState<VideoDuration>("5");
+  const [videoOrientation, setVideoOrientation] = useState<
+    "landscape" | "portrait"
+  >("landscape");
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState("");
 
@@ -178,8 +194,13 @@ export function LeftPanel({
   const isPoseFission = feature === "pose-fission";
   const isAiFashionPhoto = feature === "ai-fashion-photo";
   const isPhotoFission = feature === "photo-fission";
+  const isVideoGeneration = feature === "video-generation";
   const credits =
-    isPoseFission || isAiFashionPhoto ? 35 : isPhotoFission ? 0 : generateCount;
+    isPoseFission || isAiFashionPhoto || isVideoGeneration
+      ? 35
+      : isPhotoFission
+        ? 0
+        : generateCount;
 
   useEffect(() => {
     if (!fashionRemixRequest) return;
@@ -348,7 +369,7 @@ export function LeftPanel({
         setError("请先上传参考图");
         return;
       }
-    } else if (!activeImage) {
+    } else if (!isVideoGeneration && !activeImage) {
       setError("请先上传图片");
       return;
     }
@@ -369,6 +390,17 @@ export function LeftPanel({
     ) {
       setError("姿势模板最多选 9 个");
       return;
+    }
+
+    if (feature === "video-generation") {
+      if (!videoPrompt.trim()) {
+        setError("请输入视频提示词");
+        return;
+      }
+      if (!videoModel) {
+        setError("请选择视频模型");
+        return;
+      }
     }
 
     setError("");
@@ -403,6 +435,10 @@ export function LeftPanel({
   };
 
   const getInputAssetIds = () => {
+    if (feature === "video-generation") {
+      return [];
+    }
+
     if (feature === "ai-fashion-photo") {
       return fashionReferences.map((reference) => reference.assetId);
     }
@@ -437,7 +473,19 @@ export function LeftPanel({
     | AiFashionPhotoParams
     | PhotoFissionParams
     | BackgroundReplaceParams
-    | PoseFissionParams => {
+    | PoseFissionParams
+    | VideoGenerationParams => {
+    if (feature === "video-generation") {
+      return {
+        prompt: videoPrompt.trim(),
+        model: videoModel,
+        size: resolveVideoSize(videoResolution, videoOrientation),
+        duration: videoDuration,
+        resultCount: 1,
+        creditsCost: 35,
+      } satisfies VideoGenerationParams;
+    }
+
     if (feature === "ai-fashion-photo") {
       const trimmedPrompt = fashionPrompt.trim();
       // finalPrompt 由后端 composer 重新计算并落库；这里给一个占位以满足类型，后端会覆盖。
@@ -651,6 +699,19 @@ export function LeftPanel({
                   />
                 </div>
               </>
+            ) : feature === "video-generation" ? (
+              <VideoGenerationForm
+                prompt={videoPrompt}
+                model={videoModel}
+                resolution={videoResolution}
+                duration={videoDuration}
+                orientation={videoOrientation}
+                onPromptChange={setVideoPrompt}
+                onModelChange={setVideoModel}
+                onResolutionChange={setVideoResolution}
+                onDurationChange={setVideoDuration}
+                onOrientationChange={setVideoOrientation}
+              />
             ) : feature === "photo-fission" ? null : (
               <UploadBox
                 label="服装大片"
@@ -1819,4 +1880,141 @@ function inferPhotoFissionResolution(
   if (maxSide >= 3000) return "4k";
   if (maxSide >= 1500) return "2k";
   return "1k";
+}
+
+function VideoGenerationForm({
+  prompt,
+  model,
+  resolution,
+  duration,
+  orientation,
+  onPromptChange,
+  onModelChange,
+  onResolutionChange,
+  onDurationChange,
+  onOrientationChange,
+}: {
+  prompt: string;
+  model: string;
+  resolution: VideoResolution;
+  duration: VideoDuration;
+  orientation: "landscape" | "portrait";
+  onPromptChange: (value: string) => void;
+  onModelChange: (value: string) => void;
+  onResolutionChange: (value: VideoResolution) => void;
+  onDurationChange: (value: VideoDuration) => void;
+  onOrientationChange: (value: "landscape" | "portrait") => void;
+}) {
+  const selectedModel = SELECTABLE_VIDEO_MODELS.find((m) => m.id === model);
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <RequiredLabel label="视频模型" />
+        <Select value={model} onValueChange={onModelChange}>
+          <SelectTrigger className="w-full">
+            <SelectValue placeholder="选择视频模型" />
+          </SelectTrigger>
+          <SelectContent>
+            {SELECTABLE_VIDEO_MODELS.map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {selectedModel && (
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {selectedModel.description}
+          </p>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <RequiredLabel label="分辨率" />
+          <Select
+            value={resolution}
+            onValueChange={(v) => onResolutionChange(v as VideoResolution)}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {VIDEO_RESOLUTIONS.map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2">
+          <RequiredLabel label="时长" />
+          <Select
+            value={duration}
+            onValueChange={(v) => onDurationChange(v as VideoDuration)}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {VIDEO_DURATIONS.map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <RequiredLabel label="画面方向" />
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => onOrientationChange("landscape")}
+            className={cn(
+              "rounded-md border px-3 py-2 text-sm transition-colors",
+              orientation === "landscape"
+                ? "border-primary bg-primary/10 text-foreground"
+                : "border-border text-muted-foreground hover:border-primary/40",
+            )}
+          >
+            横屏 16:9
+          </button>
+          <button
+            type="button"
+            onClick={() => onOrientationChange("portrait")}
+            className={cn(
+              "rounded-md border px-3 py-2 text-sm transition-colors",
+              orientation === "portrait"
+                ? "border-primary bg-primary/10 text-foreground"
+                : "border-border text-muted-foreground hover:border-primary/40",
+            )}
+          >
+            竖屏 9:16
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <RequiredLabel label="提示词" />
+        <div className="relative">
+          <textarea
+            value={prompt}
+            onChange={(event) => onPromptChange(event.target.value)}
+            placeholder="例如：一位亚洲女性模特穿着白色连衣裙在花园中漫步，电商展示风格"
+            maxLength={500}
+            className="h-[132px] w-full resize-none rounded-md border border-border bg-black p-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <span className="absolute bottom-2 right-2 text-xs text-muted-foreground">
+            {prompt.length}/500
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }

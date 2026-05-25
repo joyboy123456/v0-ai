@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Camera, Layers2, LogOut, PersonStanding, Repeat2 } from "lucide-react";
+import { Camera, Layers2, LogOut, PersonStanding, Repeat2, Video } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import type { AuthUser } from "@/hooks/use-auth";
@@ -21,6 +21,7 @@ const featureIcons = {
   "element-replace": Layers2,
   "photo-fission": Repeat2,
   "pose-fission": PersonStanding,
+  "video-generation": Video,
 } satisfies Record<FeatureType, typeof Camera>;
 
 export function FeatureSidebar({

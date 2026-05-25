@@ -12,6 +12,7 @@ export type FeatureType =
   | 'element-replace'
   | 'photo-fission'
   | 'pose-fission'
+  | 'video-generation'
 
 export type TaskStatus = 'pending' | 'running' | 'success' | 'failed' | 'partial'
 
@@ -104,6 +105,7 @@ export interface ResultAsset {
   label?: string
   shotId?: string
   finalPrompt?: string
+  mediaType?: 'image' | 'video'
 }
 
 export interface GenerationTask {
@@ -232,11 +234,42 @@ export interface PoseFissionParams {
   creditsCost: 0
 }
 
+/**
+ * 视频生成参数。对接 ModelRouter `/v1/videos/generations`。
+ *
+ * `size` 与 `duration` 都按 ModelRouter 文档传入字符串；服务端可按需透传。
+ * `size` 形如 "1920*1080" / "1280*720" / "832*480"，前端会按比例 + 分辨率推断。
+ * `duration` 是视频时长（秒），常见 "3" / "5" / "10"。
+ *
+ * `imageUrl` 仅 i2v 模型（id 含 `-i2v` / `-r2v`）使用，必须是公网可访问的 URL；
+ * 本地素材在 MVP 阶段不支持图生视频（避免 base64 直接打到上游导致 413）。
+ */
+export type VideoResolution = '480p' | '720p' | '1080p'
+export type VideoDuration = '3' | '5' | '10'
+export type VideoSize =
+  | '832*480'
+  | '480*832'
+  | '1280*720'
+  | '720*1280'
+  | '1920*1080'
+  | '1080*1920'
+
+export interface VideoGenerationParams {
+  prompt: string
+  model: string
+  size?: VideoSize
+  duration?: VideoDuration
+  imageUrl?: string
+  resultCount: 1
+  creditsCost: 35
+}
+
 export type TaskParams =
   | AiFashionPhotoParams
   | PhotoFissionParams
   | BackgroundReplaceParams
   | PoseFissionParams
+  | VideoGenerationParams
 
 export interface UploadedImage {
   assetId: string
@@ -351,6 +384,13 @@ export const FEATURES: Feature[] = [
     name: '姿势裂变',
     description: '选择姿势案例，保持服装细节生成同款多姿势素材',
     credits: 1,
+    status: 'available',
+  },
+  {
+    id: 'video-generation',
+    name: 'AI视频生成',
+    description: '输入文本描述，AI生成电商服装展示视频',
+    credits: 35,
     status: 'available',
   },
 ]
@@ -600,6 +640,207 @@ export const SELECTABLE_FASHION_MODELS: FashionModelOption[] =
 
 export const DEFAULT_FASHION_MODEL: FashionModelId = 'gemini-3.1-flash-image-preview'
 
+export interface VideoModelOption {
+  id: string
+  label: string
+  description: string
+  /**
+   * 模型形态：
+   * - `t2v`：纯文本生视频，仅需要 prompt
+   * - `i2v`：图生视频，必须传入 imageUrl（公网可访问的 HTTP URL，MVP 阶段不支持本地图）
+   * - `r2v`：参考视频生视频（保留）
+   * - `video-edit`：视频编辑（MVP 不上线）
+   */
+  kind: 't2v' | 'i2v' | 'r2v' | 'video-edit'
+  /** MVP 是否可用；i2v / video-edit 默认 false */
+  available: boolean
+}
+
+/**
+ * ModelRouter 平台 18 个视频模型按文档对齐。
+ *
+ * MVP 仅放行 t2v（available=true），i2v / video-edit 暂时灰显，
+ * 等本地素材有公网 URL 后再放行（参考 VideoGenerationParams.imageUrl 注释）。
+ *
+ * 文档来源：ModelRouter API 完整文档（v1 endpoint = model-router.edu-aliyun.com/v1）。
+ * 字段命名空间统一是 `qwen/`，由 ModelRouter 内部转发到 DashScope。
+ */
+export const VIDEO_MODELS: VideoModelOption[] = [
+  // ---- 文本生视频（5 个，全部 MVP 可用）----
+  {
+    id: 'qwen/happyhorse-1.0-t2v',
+    label: '快乐马 1.0（文生视频）',
+    description: '阿里 15B 多模态视频大模型，原生 1080p、音画同步，电商展示首选',
+    kind: 't2v',
+    available: true,
+  },
+  {
+    id: 'qwen/wan2.7-t2v',
+    label: '通义万相 2.7（文生视频）',
+    description: '通义最新文生视频，速度快、可控性强，适合广告短片',
+    kind: 't2v',
+    available: true,
+  },
+  {
+    id: 'qwen/wan2.6-t2v',
+    label: '通义万相 2.6（文生视频）',
+    description: '稳定版文生视频，质量与速度均衡',
+    kind: 't2v',
+    available: true,
+  },
+  {
+    id: 'qwen/wan2.5-t2v-preview',
+    label: '通义万相 2.5 Preview（文生视频）',
+    description: '老版文生视频，作为兜底渠道',
+    kind: 't2v',
+    available: true,
+  },
+  {
+    id: 'qwen/wan2.2-t2v-plus',
+    label: '通义万相 2.2 Plus（文生视频）',
+    description: '通义 2.2 高级版文生视频',
+    kind: 't2v',
+    available: true,
+  },
+  // ---- 图生视频（10 个，MVP 暂未放行 —— 需要公网 imageUrl）----
+  {
+    id: 'qwen/happyhorse-1.0-i2v',
+    label: '快乐马 1.0（图生视频）',
+    description: '快乐马图生视频，需要参考图 URL（公网可访问）',
+    kind: 'i2v',
+    available: false,
+  },
+  {
+    id: 'qwen/wan2.7-i2v',
+    label: '通义万相 2.7（图生视频）',
+    description: '通义最新图生视频，需要参考图 URL',
+    kind: 'i2v',
+    available: false,
+  },
+  {
+    id: 'qwen/wan2.7-r2v',
+    label: '通义万相 2.7（参考生视频）',
+    description: '基于参考视频片段再生视频',
+    kind: 'r2v',
+    available: false,
+  },
+  {
+    id: 'qwen/wan2.6-i2v',
+    label: '通义万相 2.6（图生视频）',
+    description: '通义 2.6 图生视频',
+    kind: 'i2v',
+    available: false,
+  },
+  {
+    id: 'qwen/wan2.6-i2v-flash',
+    label: '通义万相 2.6 Flash（图生视频）',
+    description: '通义 2.6 快速版图生视频',
+    kind: 'i2v',
+    available: false,
+  },
+  {
+    id: 'qwen/wan2.5-i2v-preview',
+    label: '通义万相 2.5 Preview（图生视频）',
+    description: '老版图生视频，作为兜底渠道',
+    kind: 'i2v',
+    available: false,
+  },
+  {
+    id: 'qwen/wan2.2-i2v-plus',
+    label: '通义万相 2.2 Plus（图生视频）',
+    description: '通义 2.2 高级版图生视频',
+    kind: 'i2v',
+    available: false,
+  },
+  {
+    id: 'qwen/wan2.2-i2v-flash',
+    label: '通义万相 2.2 Flash（图生视频）',
+    description: '通义 2.2 快速版图生视频',
+    kind: 'i2v',
+    available: false,
+  },
+  {
+    id: 'qwen/wan2.2-s2v',
+    label: '通义万相 2.2 S2V（图生视频）',
+    description: '通义 2.2 单图生视频',
+    kind: 'i2v',
+    available: false,
+  },
+  {
+    id: 'qwen/wanx2.1-i2v-turbo',
+    label: '通义万相 2.1 Turbo（图生视频）',
+    description: '通义 2.1 极速版图生视频',
+    kind: 'i2v',
+    available: false,
+  },
+  // ---- 视频转视频（1 个）----
+  {
+    id: 'qwen/happyhorse-1.0-r2v',
+    label: '快乐马 1.0（视频生视频）',
+    description: '基于参考视频再生新视频',
+    kind: 'r2v',
+    available: false,
+  },
+  // ---- 视频编辑（2 个，MVP 不上线）----
+  {
+    id: 'qwen/wan2.7-videoedit',
+    label: '通义万相 2.7（视频编辑）',
+    description: '通义视频编辑（MVP 不上线）',
+    kind: 'video-edit',
+    available: false,
+  },
+  {
+    id: 'qwen/happyhorse-1.0-video-edit',
+    label: '快乐马 1.0（视频编辑）',
+    description: '快乐马视频编辑（MVP 不上线）',
+    kind: 'video-edit',
+    available: false,
+  },
+]
+
+/**
+ * MVP 阶段可在前端下拉里展示的视频模型（仅 t2v + available=true）。
+ */
+export const SELECTABLE_VIDEO_MODELS: VideoModelOption[] = VIDEO_MODELS.filter(
+  (option) => option.available,
+)
+
+export const DEFAULT_VIDEO_MODEL = SELECTABLE_VIDEO_MODELS[0]?.id ?? 'qwen/happyhorse-1.0-t2v'
+
+/**
+ * 视频分辨率配置：在 UI 显示为「480p / 720p / 1080p」，
+ * 落到 ModelRouter 时根据比例换算成具体的 size 字符串（见 left-panel 的 selector）。
+ */
+export const VIDEO_RESOLUTIONS: { id: VideoResolution; label: string }[] = [
+  { id: '480p', label: '480p（流量友好）' },
+  { id: '720p', label: '720p（标准电商）' },
+  { id: '1080p', label: '1080p（高清旗舰）' },
+]
+
+export const VIDEO_DURATIONS: { id: VideoDuration; label: string }[] = [
+  { id: '3', label: '3 秒' },
+  { id: '5', label: '5 秒（推荐）' },
+  { id: '10', label: '10 秒' },
+]
+
+/**
+ * 把「分辨率 + 横竖屏」换算为 ModelRouter `size` 字符串。
+ * 横屏：1920*1080 / 1280*720 / 832*480
+ * 竖屏：1080*1920 / 720*1280 / 480*832
+ */
+export function resolveVideoSize(
+  resolution: VideoResolution,
+  orientation: 'landscape' | 'portrait',
+): VideoSize {
+  if (resolution === '1080p') {
+    return orientation === 'portrait' ? '1080*1920' : '1920*1080'
+  }
+  if (resolution === '480p') {
+    return orientation === 'portrait' ? '480*832' : '832*480'
+  }
+  return orientation === 'portrait' ? '720*1280' : '1280*720'
+}
+
 /**
  * 姿势裂变（pose-fission）案例库。
  * MVP 阶段含 1 个 case：现有 6 张 pose-*.jpg 归为一组「黑色蕾丝裙 6 姿势套图」。
@@ -686,6 +927,7 @@ export const FEATURE_WORKFLOWS: Record<FeatureType, string> = {
   'element-replace': 'element_replace_v1',
   'photo-fission': 'photo_fission_v1',
   'pose-fission': 'pose_fission_v1',
+  'video-generation': 'video_generation_v1',
 }
 
 export const FEATURE_LABELS: Record<FeatureType, string> = {
@@ -693,6 +935,7 @@ export const FEATURE_LABELS: Record<FeatureType, string> = {
   'element-replace': '服装大片-元素替换',
   'photo-fission': '服装大片裂变',
   'pose-fission': '姿势裂变',
+  'video-generation': 'AI视频生成',
 }
 
 /**

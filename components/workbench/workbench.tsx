@@ -150,16 +150,17 @@ export function Workbench() {
     })
   }, [redirectToLogin])
 
-  useEffect(() => {
-    if (!isAuthLoading && !user) {
-      redirectToLogin()
-    }
-  }, [isAuthLoading, redirectToLogin, user])
+  // 本地模式不跳登录页：auth 加载完没 user 时用默认本地用户直接进工作台
+  // useEffect(() => {
+  //   if (!isAuthLoading && !user) {
+  //     redirectToLogin()
+  //   }
+  // }, [isAuthLoading, redirectToLogin, user])
 
   useEffect(() => {
-    if (!user) return
+    if (isAuthLoading) return
     void loadTasks()
-  }, [loadTasks, user])
+  }, [isAuthLoading, loadTasks])
 
   useEffect(() => {
     try {
@@ -309,7 +310,7 @@ export function Workbench() {
   // PR4：PoseFissionCaseLibrary 不再做单选高亮，case 卡片直接点「做同款」派发 request。
   // PR1/PR3 阶段的 selectedPoseFissionCaseId 兜底已可移除。
 
-  if (isAuthLoading || redirectingToLogin || !user) {
+  if (isAuthLoading) {
     return (
       <main className="flex h-screen items-center justify-center bg-background px-4 text-foreground">
         <div className="w-full max-w-sm rounded-md border border-border bg-card p-5">

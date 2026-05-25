@@ -971,11 +971,22 @@ function GenerationDetailDialog({
     <div className="grid h-[100dvh] min-h-0 grid-cols-[minmax(0,1fr)_360px_72px] bg-background text-foreground">
       <div className="relative min-h-0 overflow-hidden bg-[#111315]">
         <div className="flex h-full items-center justify-center px-8 py-10">
-          <img
-            src={image.url}
-            alt=""
-            className="max-h-[calc(100dvh-104px)] max-w-full rounded-sm object-contain"
-          />
+          {image.mediaType === 'video' ? (
+            <video
+              src={image.url}
+              className="max-h-[calc(100dvh-104px)] max-w-full rounded-sm object-contain"
+              controls
+              autoPlay
+              muted
+              playsInline
+            />
+          ) : (
+            <img
+              src={image.url}
+              alt=""
+              className="max-h-[calc(100dvh-104px)] max-w-full rounded-sm object-contain"
+            />
+          )}
         </div>
         <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center bg-gradient-to-t from-background/80 to-transparent px-6 py-5">
           <span className="rounded-full bg-black/50 px-3 py-1 text-sm text-white/80">
@@ -1151,13 +1162,22 @@ function GenerationDetailDialog({
                     ? "border-primary shadow-[0_0_0_1px_var(--primary)]"
                     : "border-border hover:border-primary/60",
                 )}
-                aria-label="查看这张结果图"
+                aria-label={resultImage.mediaType === 'video' ? '播放视频' : '查看这张结果图'}
               >
-                <img
-                  src={resultImage.url}
-                  alt=""
-                  className="h-full w-full object-cover"
-                />
+                {resultImage.mediaType === 'video' ? (
+                  <video
+                    src={resultImage.url}
+                    className="h-full w-full object-cover"
+                    muted
+                    playsInline
+                  />
+                ) : (
+                  <img
+                    src={resultImage.url}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                )}
               </button>
             );
           })}
@@ -2285,11 +2305,20 @@ function TaskHistoryCard({
                     : "border-border hover:border-primary/60",
                 )}
               >
-                <img
-                  src={image.url}
-                  alt=""
-                  className="h-full w-full object-cover"
-                />
+                {image.mediaType === 'video' ? (
+                  <video
+                    src={image.url}
+                    className="h-full w-full object-cover"
+                    muted
+                    playsInline
+                  />
+                ) : (
+                  <img
+                    src={image.url}
+                    alt=""
+                    className="h-full w-full object-cover"
+                  />
+                )}
 
                 {batchSelectMode && (
                   <div className={cn(
