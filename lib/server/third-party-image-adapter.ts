@@ -224,6 +224,7 @@ function getGenerateCount(params: TaskParams) {
   return 'generateCount' in params ? params.generateCount : 4
 }
 
+
 function createElementReplaceReferenceSheet(originalImage: string, replacementImage: string) {
   const svg = [
     '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">',
