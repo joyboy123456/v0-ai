@@ -1,7 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { usePathname, useRouter } from 'next/navigation'
 import { FeatureSidebar } from './feature-sidebar'
 import { LeftPanel } from './left-panel'
 import { RightPanel } from './right-panel'
@@ -23,11 +23,19 @@ const maxFashionReferences = 10
 
 export function Workbench() {
   const router = useRouter()
-  const { user, isLoading: isAuthLoading, error: authError, logout } = useAuth()
+  const pathname = usePathname()
+  const { user, isLoading: isAuthLoading, error: authError, logout, refresh: refreshAuth } = useAuth()
   const [redirectingToLogin, setRedirectingToLogin] = useState(false)
+  // 公网客户曾反复反馈「正在前往登录页」一直挂着不动 —— root cause 是 useAuth fetch
+  // 短暂时网络抖动 / 等待 /api/auth/me 时，下方守卫把 !user 当成「准备跳转」状态展示，
+  // 加上 useEffect 死命 router.replace('/login') 没做防抖，一卡就出不来。
+  // 这里加一个「加载过久」标志位，6 秒兜底给客户一个明确的重试入口，避免无限等待。
+  const [authStalled, setAuthStalled] = useState(false)
+  const redirectFiredRef = useRef(false)
   const [currentFeature, setCurrentFeature] = useState<FeatureType>('ai-fashion-photo')
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [tasks, setTasks] = useState<GenerationTask[]>([])
+  const [tasksLoading, setTasksLoading] = useState(false)
   // PR3：升级为「已选姿势模板数组」，告别 PR1 阶段 selectedPoseFissionCase 兜底单选。
   const [selectedPoseTemplates, setSelectedPoseTemplates] = useState<PoseTemplate[]>([])
   const [poseTemplates, setPoseTemplates] = useState<PoseTemplate[]>([])
@@ -67,10 +75,14 @@ export function Workbench() {
   }, [])
 
   const redirectToLogin = useCallback(() => {
+    // 防抖：避免重复 router.replace 把客户钉在 loading 文案上
+    if (redirectFiredRef.current) return
+    if (pathname === '/login') return
+    redirectFiredRef.current = true
     setRedirectingToLogin(true)
     router.replace('/login')
     router.refresh()
-  }, [router])
+  }, [pathname, router])
 
   const loadTasks = useCallback(async () => {
     const response = await fetch('/api/tasks', { cache: 'no-store' })
@@ -151,10 +163,25 @@ export function Workbench() {
   }, [redirectToLogin])
 
   useEffect(() => {
-    if (!isAuthLoading && !user) {
-      redirectToLogin()
+    // 只有「已经确认未登录」（loading 结束 + 没拿到 user + 没有 error）才真的跳走。
+    // 任何一项 loading 期间，下面的守卫视图会显示「正在加载工作台…」而不是误导性的
+    // 「正在前往登录页」。
+    if (isAuthLoading) return
+    if (authError) return
+    if (user) return
+    redirectToLogin()
+  }, [authError, isAuthLoading, redirectToLogin, user])
+
+  // 加载兜底：如果 6 秒后还没拿到 user 也没出 error，就把客户从「未知 loading」里拉出来，
+  // 给一个明确的「重试 / 去登录」入口。这条直接根治公网客户反复反馈「卡在正在前往登录页」。
+  useEffect(() => {
+    if (!isAuthLoading) {
+      setAuthStalled(false)
+      return
     }
-  }, [isAuthLoading, redirectToLogin, user])
+    const timer = window.setTimeout(() => setAuthStalled(true), 6000)
+    return () => window.clearTimeout(timer)
+  }, [isAuthLoading])
 
   useEffect(() => {
     if (!user) return
@@ -309,23 +336,63 @@ export function Workbench() {
   // PR4：PoseFissionCaseLibrary 不再做单选高亮，case 卡片直接点「做同款」派发 request。
   // PR1/PR3 阶段的 selectedPoseFissionCaseId 兜底已可移除。
 
-  if (isAuthLoading || redirectingToLogin || !user) {
+  if (isAuthLoading || redirectingToLogin || !user || authError) {
+    // 三态视图（彻底解决「文案误导客户」的顽疾）：
+    //   1) authError —— 后端真的失败：显示错误 + 重试 / 去登录两个出口，绝不自动死循环
+    //   2) redirectingToLogin —— 已确认未登录、router 已开始跳：显示「正在前往登录页」
+    //   3) 其它（默认）—— 还在拉 /api/auth/me：显示「正在加载工作台…」
+    // 6 秒后仍卡住 → authStalled = true，额外给客户「重试 / 去登录」两个手动出口。
+    let title = '正在加载工作台…'
+    let description = '请稍候，正在确认登录状态'
+    if (authError) {
+      title = '加载登录状态失败'
+      description = authError
+    } else if (redirectingToLogin) {
+      title = '正在前往登录页'
+      description = '请稍候…'
+    } else if (authStalled) {
+      title = '加载较慢，可手动重试'
+      description = '网络可能不稳定，已为你准备了重试入口'
+    }
+
+    const showActions = Boolean(authError) || authStalled
+
     return (
       <main className="flex h-screen items-center justify-center bg-background px-4 text-foreground">
         <div className="w-full max-w-sm rounded-md border border-border bg-card p-5">
-          <p className="text-sm font-medium">
-            {redirectingToLogin || !user ? '正在前往登录页' : '正在检查登录状态'}
-          </p>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {authError ? '登录态读取失败，请重新登录。' : '请稍候…'}
-          </p>
+          <p className="text-sm font-medium">{title}</p>
+          <p className="mt-2 text-sm text-muted-foreground">{description}</p>
+          {showActions && (
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthStalled(false)
+                  void refreshAuth()
+                }}
+                className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-secondary px-3 text-xs font-medium hover:bg-secondary/80"
+              >
+                重试
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  redirectFiredRef.current = false
+                  redirectToLogin()
+                }}
+                className="inline-flex h-8 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                去登录
+              </button>
+            </div>
+          )}
         </div>
       </main>
     )
   }
 
   return (
-    <main className="flex h-screen overflow-hidden bg-background">
+    <main className="flex h-screen overflow-hidden bg-ice-blue-gradient">
       <FeatureSidebar
         activeFeature={currentFeature}
         onFeatureChange={setCurrentFeature}
@@ -355,6 +422,7 @@ export function Workbench() {
         feature={currentFeature}
         activeTask={activeTask}
         tasks={tasks}
+        tasksLoading={tasksLoading}
         companyModels={companyModels}
         fashionReferences={fashionReferences}
         companyModelLibraryRequestKey={companyModelLibraryRequestKey}

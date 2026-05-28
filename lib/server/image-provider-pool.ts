@@ -15,7 +15,7 @@
 
 import { logImageEvent } from './log'
 
-export type ImageProviderType = 'google' | 'qiniu'
+export type ImageProviderType = 'google' | 'qiniu' | 'jimeng'
 
 export interface ImageProvider {
   /** 唯一标识，用于日志、节流桶隔离和配置引用 */
@@ -146,6 +146,8 @@ function stripEnvWrappingQuotes(value: string): string {
 function buildDefaultProviders(): ImageProvider[] {
   const providers = [buildDefaultGoogleProvider()]
   const qiniuProvider = buildDefaultQiniuProvider()
+  const jimengProvider = buildDefaultJimengProvider()
+  if (jimengProvider) providers.push(jimengProvider)
   if (qiniuProvider) providers.push(qiniuProvider)
   return providers
 }
@@ -179,6 +181,24 @@ function buildDefaultQiniuProvider(): ImageProvider | null {
     weight: 1,
     enabled: true,
     timeoutMs: readPositiveInt(process.env.QINIU_IMAGE_TIMEOUT_MS, 600000),
+  }
+}
+
+function buildDefaultJimengProvider(): ImageProvider | null {
+  const accessKey = process.env.JIMENG_ACCESS_KEY?.trim() ?? ''
+  const secretKey = process.env.JIMENG_SECRET_KEY?.trim() ?? ''
+  if (!accessKey || !secretKey) return null
+
+  return {
+    id: 'jimeng-default',
+    type: 'jimeng',
+    apiKey: accessKey + ':' + secretKey,
+    model: process.env.JIMENG_IMAGE_MODEL ?? 'jimeng_seedream46_cvtob',
+    maxIpm: readPositiveInt(process.env.JIMENG_IMAGE_IPM, 10),
+    maxRpm: readPositiveInt(process.env.JIMENG_IMAGE_RPM, 150),
+    weight: 5,
+    enabled: true,
+    timeoutMs: readPositiveInt(process.env.JIMENG_IMAGE_TIMEOUT_MS, 600000),
   }
 }
 
@@ -312,6 +332,12 @@ export function isQiniuImageModel(model: string | undefined): boolean {
   )
 }
 
+export function isJimengImageModel(model: string | undefined): boolean {
+  if (!model) return true
+  const lower = model.trim().toLowerCase()
+  return lower.startsWith("jimeng")
+}
+
 export function isImageProviderModelCompatible(
   provider: ImageProvider,
   model: string | undefined,
@@ -319,6 +345,7 @@ export function isImageProviderModelCompatible(
   const candidate = model || provider.model
   if (provider.type === 'google') return isGoogleImageModel(candidate)
   if (provider.type === 'qiniu') return isQiniuImageModel(candidate)
+  if (provider.type === 'jimeng') return isJimengImageModel(candidate)
   return false
 }
 
@@ -347,7 +374,7 @@ export function getNoAvailableProviderMessage(model: string | undefined): string
 
     return [
       `没有可用的生图渠道支持模型 ${model}`,
-      'GPT Image 2 只走七牛云 qiniu 渠道，不走 Raycast，也不能落到 Google 官方 adapter',
+      'GPT Image 2 只走七牛云 qiniu 渠道，也不能落到 Google 官方 adapter',
       '请确认 IMAGE_PROVIDERS 中至少有一个 type="qiniu" 且 apiKey 不为空的 provider，或配置 QINIU_IMAGE_API_KEY',
       `当前已加载 qiniu provider ${qiniuProviders.length} 个，可用 ${availableQiniuProviders.length} 个`,
       '如果刚修改过 .env.local，请重启 pnpm dev 让 Next.js 重新读取环境变量',

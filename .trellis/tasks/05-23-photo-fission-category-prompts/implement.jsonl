@@ -1,5 +1,0 @@
-{"file": ".trellis/spec/backend/streaming-fission-pipeline.md", "reason": "pipeline 编排契约：worker pool + onShotResult 流式持久化 + targetShotIds 子集重跑；prompt 拼装改造不得破坏 shot.prompt.length 上限与 shotPlan 编排"}
-{"file": ".trellis/spec/backend/index.md", "reason": "后端 spec 索引：定位关联 spec 与写新 spec 的规矩，保证 prompt 模板模块符合 backend 工程契约"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "新增 prompt-templates 目录前先检查是否已有可复用模板/工具；避免与 PHOTO_FISSION_SHOT_BLUEPRINT 重复实现"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层数据流（types.ts ⇄ photo-fission-service.ts ⇄ childrens-dress 模板）需符合层级隔离与签名稳定原则"}
-{"file": ".trellis/tasks/05-23-photo-fission-category-prompts/extracted-category-prompts.md", "reason": "客户连衣裙.rtf 提炼出的常量/变量分类稿，9 shot 模板字段直接对应此提炼"}

@@ -77,7 +77,7 @@ export function buildPlannerRulePlan(
     }
     return {
       systemPrompt,
-      userPrompt: buildChildrensDressPlannerUserPrompt(resultCount),
+      userPrompt: buildChildrensDressPlannerUserPrompt(resultCount, recentActionHints),
       slots,
     }
   }

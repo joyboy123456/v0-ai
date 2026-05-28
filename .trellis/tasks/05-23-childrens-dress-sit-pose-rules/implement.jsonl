@@ -1,7 +1,0 @@
-{"file": ".trellis/spec/backend/streaming-fission-pipeline.md", "reason": "pipeline 编排契约：worker pool + onShotResult 流式持久化 + targetShotIds 子集重跑；shot_8/9 外景常量注入 + shot 描述重写不得破坏 shot.prompt.length 上限与 shotPlan 编排长度 9"}
-{"file": ".trellis/spec/backend/index.md", "reason": "后端 spec 索引：定位关联 spec 与写新 spec 的规矩，保证 prompt 模板模块与外景注入符合 backend 工程契约"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "新增 OUTDOOR_SCENE / OUTDOOR_SHOT_INDICES / VARIETY_ANCHOR 常量前先检查是否已有可复用模板/工具；外景常量注入逻辑要复用 buildShotPrompt 现有 section 拼装能力，避免另起 if-else 分支墙"}
-{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨层数据流（types.ts ⇄ photo-fission-service.ts ⇄ childrens-dress 模板）需符合层级隔离与签名稳定原则；新增 outdoor getter 走相同分层模式"}
-{"file": ".trellis/tasks/05-23-photo-fission-category-prompts/extracted-category-prompts.md", "reason": "上游任务客户连衣裙.rtf 提炼出的常量/变量分类稿，v3 终稿继续沿用变量交参考图、常量写 prompt 的分离原则"}
-{"file": ".trellis/tasks/05-23-childrens-dress-sit-pose-rules/research/outdoor-grassland-scene-preset.md", "reason": "用户提供的完整蓝天草地外景 JSON 预设转中文 prompt 模板，shot_8/9 外景常量措辞直接抄录此文件"}
-{"file": ".trellis/tasks/05-23-childrens-dress-sit-pose-rules/prd.md", "reason": "本任务 v3 终稿：9 shot 完全随机化 + 2 张外景 + shot_7 椅子规则三大决策与 Acceptance Criteria"}

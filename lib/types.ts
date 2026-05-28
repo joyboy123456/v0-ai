@@ -9,7 +9,6 @@ import {
 
 export type FeatureType =
   | 'ai-fashion-photo'
-  | 'element-replace'
   | 'photo-fission'
   | 'pose-fission'
 
@@ -63,6 +62,7 @@ export type FashionModelId =
   | 'gemini-3.1-flash-image-preview'
   | 'gemini-3-pro-image-preview'
   | 'gpt-image-2'
+  | 'jimeng-seedream-4.6'
 
 export interface Feature {
   id: FeatureType
@@ -202,6 +202,11 @@ export interface PhotoFissionParams {
   resolution: PhotoFissionResolution
   shotPlan: PhotoFissionShot[]
   resultCount: PhotoFissionResultCount
+  /**
+   * 后端根据输入素材 assetId 生成的同一组参考图标识。
+   * 用于连衣裙第二次生图避开第一次姿势动作表情；前端不需要传。
+   */
+  referenceAssetKey?: string
 }
 
 export interface BackgroundReplaceParams {
@@ -330,13 +335,6 @@ export const FEATURES: Feature[] = [
     name: 'AI服装大片',
     description: '上传参考图并选择我的模特，生成高级服装商拍大片',
     credits: 35,
-    status: 'available',
-  },
-  {
-    id: 'element-replace',
-    name: '服装大片-元素替换',
-    description: '上传原图和替换元素，替换服装、环境或人像元素',
-    credits: 1,
     status: 'available',
   },
   {
@@ -593,6 +591,14 @@ export const FASHION_MODELS: FashionModelOption[] = [
     maxInputImages: 14,
     maxResolutionLabel: '4K',
   },
+  {
+    id: 'jimeng-seedream-4.6',
+    label: '即梦 Seedream 4.6',
+    alias: '即梦 AI 4.6',
+    description: '字节跳动火山引擎图片生成，高质量中文场景理解，支持 4K 出图',
+    maxInputImages: 5,
+    maxResolutionLabel: '4K',
+  },
 ]
 
 export const SELECTABLE_FASHION_MODELS: FashionModelOption[] =
@@ -683,14 +689,12 @@ export const AI_FASHION_DEMO_TASKS = YIBAI_AI_FASHION_DEMO_TASKS
 
 export const FEATURE_WORKFLOWS: Record<FeatureType, string> = {
   'ai-fashion-photo': 'ai_fashion_photo_v1',
-  'element-replace': 'element_replace_v1',
   'photo-fission': 'photo_fission_v1',
   'pose-fission': 'pose_fission_v1',
 }
 
 export const FEATURE_LABELS: Record<FeatureType, string> = {
   'ai-fashion-photo': 'AI服装大片',
-  'element-replace': '服装大片-元素替换',
   'photo-fission': '服装大片裂变',
   'pose-fission': '姿势裂变',
 }

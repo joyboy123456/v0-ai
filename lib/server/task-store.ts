@@ -342,6 +342,7 @@ export async function createTask(input: {
     input.featureType,
     input.params,
     input.inputAssetIds.length,
+    input.inputAssetIds,
   )
 
   const missingAsset = input.inputAssetIds.find(
@@ -388,6 +389,7 @@ function normalizeTaskParams(
   featureType: FeatureType,
   params: TaskParams,
   inputAssetCount: number,
+  inputAssetIds: string[],
 ): TaskParams {
   if (featureType === 'pose-fission') {
     return normalizePoseFissionParams(params, inputAssetCount)
@@ -398,7 +400,7 @@ function normalizeTaskParams(
   }
 
   if (featureType === 'photo-fission') {
-    return normalizePhotoFissionParams(params, inputAssetCount)
+    return normalizePhotoFissionParams(params, inputAssetCount, inputAssetIds)
   }
 
   return params

@@ -26,7 +26,7 @@
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-import { isCloud, isLocal } from '@/lib/server/storage-mode'
+import { isCloud, isLocal, isOss, type StorageMode } from '@/lib/server/storage-mode'
 
 import {
   buildR2PublicUrl,
@@ -34,6 +34,14 @@ import {
   r2Get,
   r2Put,
 } from './r2-client'
+
+import {
+  assertOssConfigured,
+  buildOssPublicUrl,
+  ossDelete,
+  ossGet,
+  ossPut,
+} from './oss-client'
 
 export type StorageBucket = 'uploads' | 'generated' | 'results' | 'assets'
 
@@ -349,19 +357,98 @@ const cloudAdapter: StorageAdapter = {
   },
 }
 
+
+// -----------------------------------------------------------------------------
+// OSS 实现
+// -----------------------------------------------------------------------------
+
+function requireOssUserId(userId: string | null | undefined): string {
+  if (isAnonymousUser(userId)) {
+    throw new Error(
+      'storage-adapter: oss 模式不允许匿名写入，必须传入有效 userId',
+    )
+  }
+  return userId as string
+}
+
+function buildOssKey(
+  userId: string,
+  bucket: StorageBucket,
+  filename: string,
+): string {
+  const safeUser = sanitizeUserSegment(userId)
+  return `yibai/${safeUser}/${bucket}/${filename}`
+}
+
+const ossAdapter: StorageAdapter = {
+  async putImage(input) {
+    assertOssConfigured()
+    const userId = requireOssUserId(input.userId)
+    const key = buildOssKey(userId, sanitizeBucket(input.bucket), input.filename)
+    const result = await ossPut({
+      key,
+      body: input.body,
+      contentType: input.contentType,
+    })
+    return {
+      key: result.key,
+      publicUrl: result.publicUrl,
+      bytes: result.bytes,
+    }
+  },
+
+  async putImageFromDataUrl(input) {
+    const parsed = parseDataUrl(input.dataUrl)
+    if (!parsed) {
+      throw new Error(`无法解析 dataURL（filename=\${input.filename}）`)
+    }
+    const result = await this.putImage({
+      userId: input.userId,
+      bucket: input.bucket,
+      filename: input.filename,
+      body: parsed.buffer,
+      contentType: parsed.mime,
+    })
+    return { ...result, mime: parsed.mime }
+  },
+
+  async getImage(key) {
+    try {
+      const { body, contentType } = await ossGet(key)
+      return { body, contentType }
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: string }).code === 'NOT_FOUND'
+      ) {
+        return null
+      }
+      throw error
+    }
+  },
+
+  async deleteImage(key) {
+    await ossDelete(key)
+  },
+}
+
 // -----------------------------------------------------------------------------
 // 工厂
 // -----------------------------------------------------------------------------
 
 let cachedAdapter: StorageAdapter | null = null
-let cachedMode: 'local' | 'cloud' | null = null
+let cachedMode: StorageMode | null = null
 
 export function getStorageAdapter(): StorageAdapter {
-  const mode: 'local' | 'cloud' = isCloud() ? 'cloud' : 'local'
+  const mode: StorageMode = isOss() ? 'oss' : isCloud() ? 'cloud' : 'local'
   if (cachedAdapter && cachedMode === mode) {
     return cachedAdapter
   }
-  cachedAdapter = mode === 'cloud' ? cloudAdapter : localAdapter
+  if (mode === 'oss') cachedAdapter = ossAdapter
+  else if (mode === 'cloud') cachedAdapter = cloudAdapter
+  else cachedAdapter = localAdapter
   cachedMode = mode
   return cachedAdapter
 }
@@ -381,6 +468,9 @@ export function __resetStorageAdapterForTests(): void {
 export function buildPublicUrlForKey(key: string): string {
   if (isLocal()) {
     return key.startsWith('/') ? key : `/${key}`
+  }
+  if (isOss()) {
+    return buildOssPublicUrl(key)
   }
   return buildR2PublicUrl(key)
 }

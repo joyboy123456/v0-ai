@@ -129,7 +129,7 @@ export function PoseLibraryDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] w-[min(960px,95vw)] flex-col gap-0 overflow-hidden bg-card p-0 sm:max-w-none">
+      <DialogContent className="flex max-h-[85vh] w-[min(960px,95vw)] flex-col gap-0 overflow-hidden bg-popover/90 backdrop-blur-md border border-border/80 shadow-2xl p-0 sm:max-w-none">
         <DialogHeader className="border-b border-border px-6 py-4">
           <div className="flex items-center justify-between gap-4">
             <DialogTitle className="text-base font-semibold">
@@ -227,12 +227,12 @@ export function PoseLibraryDialog({
                     }}
                     disabled={isDisabled}
                     className={cn(
-                      "group relative overflow-hidden rounded-md border bg-background text-left transition-colors",
+                      "group relative overflow-hidden rounded-md border bg-background text-left transition-all",
                       isSelected
-                        ? "border-primary ring-2 ring-primary/40"
+                        ? "border-primary ring-2 ring-primary/40 shadow-[0_0_12px_rgba(47,123,255,0.2)] bg-primary/5"
                         : isDisabled
                           ? "border-border opacity-40 cursor-not-allowed"
-                          : "border-border hover:border-primary/60",
+                          : "border-border hover:border-primary/60 hover:shadow-[0_0_12px_rgba(47,123,255,0.12)]",
                     )}
                     title={
                       isDisabled
@@ -345,9 +345,9 @@ function FilterButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "rounded-md border px-3 py-1.5 text-xs transition-colors",
+        "rounded-md border px-3 py-1.5 text-xs transition-all",
         active
-          ? "border-primary bg-primary/10 text-primary"
+          ? "border-primary bg-primary/20 text-accent-foreground shadow-[0_0_8px_rgba(0,163,255,0.25)] font-medium"
           : "border-border bg-secondary text-muted-foreground hover:border-primary/40 hover:text-foreground",
       )}
     >

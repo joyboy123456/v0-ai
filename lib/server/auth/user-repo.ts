@@ -12,7 +12,7 @@
 import bcrypt from 'bcryptjs'
 
 import { executeD1Query } from '@/lib/server/cloudflare'
-import { isLocal } from '@/lib/server/storage-mode'
+import { isLocal, isOss } from '@/lib/server/storage-mode'
 import type { User } from '@/lib/types'
 
 interface UserRow {
@@ -62,7 +62,7 @@ export async function findUserByUsername(
   const normalized = username.trim().toLowerCase()
   if (!normalized) return null
 
-  if (isLocal()) {
+  if (isLocal() || isOss()) {
     return LOCAL_USERS.get(normalized) ?? null
   }
 
@@ -77,7 +77,7 @@ export async function findUserByUsername(
 export async function findUserById(userId: string): Promise<User | null> {
   if (!userId) return null
 
-  if (isLocal()) {
+  if (isLocal() || isOss()) {
     for (const user of LOCAL_USERS.values()) {
       if (user.id === userId) return user
     }

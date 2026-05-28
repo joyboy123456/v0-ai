@@ -27,3 +27,11 @@ public/generated/
 
 # 研究参考资料（121M 浅克隆，仅供 implement 参考，不入版本控制）
 .trellis/tasks/*/research/yibaiaigc/
+# Runtime logs
+logs/
+
+# Env backups (contain secrets)
+.env.local.bak*
+
+# Claude Code local settings
+.claude/settings.local.json

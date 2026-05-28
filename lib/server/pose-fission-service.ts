@@ -23,6 +23,7 @@ import {
   isGoogleImageModel,
   type ImageProvider,
 } from './image-provider-pool'
+import { appendFlatDetailReferenceLock } from './fission-flat-detail-lock'
 import { logImageEvent } from './log'
 import { runImageEditViaProvider } from './provider-image-router'
 
@@ -116,24 +117,30 @@ export function buildPoseFissionPrompt(
   params: PoseFissionParams,
   template: PoseTemplate,
 ): string {
-  return [
+  const basePrompt = [
     '基于上传的服装模特成片进行姿势裂变。',
     '第一张图是需要保持人物、服装和画面质感的主图，中间图片若存在则是产品正面或背面细节参考，最后一张图是目标姿势模板图。',
-    '目标姿势模板图只用于参考人体姿势、肢体角度、朝向和构图；不要复制模板图的人物身份、脸、发型、服装、背景或道具。',
+    '目标姿势模板图只用于参考人体姿势、肢体角度、朝向和构图；不要复制模板图的人物身份、脸、发型、服装、背景或道具；不要从平铺细节图学习姿势、动作或表情。',
     `目标姿势：${template.name}。`,
     template.prompt ? `姿势要求：${template.prompt}。` : '',
     params.hasFrontDetail
-      ? '已提供产品正面细节图，请保持领口、面料、logo、图案等正面细节一致。'
+      ? '已提供产品正面平铺细节图，请保持正面服装主色、拼色关系、印花颜色、刺绣线色、领口、面料纹理、棉麻肌理、纱层、刺绣文字、数字、logo、图案印花、袖口、下摆、拼接和装饰位置一致。'
       : '',
     params.hasBackDetail
-      ? '已提供产品背面细节图，请在背面或侧后角度中保持背部结构一致。'
+      ? '已提供产品背面平铺细节图，请在背面或侧后角度中保持背面服装主色、拼色关系、印花颜色、刺绣线色、肩线、后片剪裁、背部结构、面料纹理、棉麻肌理、纱层、刺绣文字、数字、图案印花和装饰位置一致。'
       : '',
     `画面比例：${params.imageRatio}。`,
     `分辨率档位：${params.resolution}。`,
-    '要求：保持原图人物身份、脸部特征、发型、身材比例、服装颜色、版型、材质、图案和关键细节；只改变人物姿势和必要构图；生成电商主图质感，背景干净，主体清晰；避免手部畸形、服装扭曲、肢体异常、脸部崩坏、文字乱码和多余人物。',
+    '要求：保持原图人物身份、脸部特征、发型、身材比例、服装颜色、版型、材质、图案和关键细节；只改变人物姿势、动作、表情和必要构图；生成电商主图质感，背景干净，主体清晰；避免手部畸形、服装扭曲、肢体异常、脸部崩坏、文字乱码和多余人物。',
   ]
     .filter(Boolean)
     .join('\n')
+
+  return appendFlatDetailReferenceLock(
+    basePrompt,
+    params,
+    `${template.name} ${template.prompt}`,
+  )
 }
 
 function readFashionModel(value: unknown): FashionModelId {

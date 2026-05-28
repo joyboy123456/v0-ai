@@ -1,4 +1,0 @@
-{"file": ".trellis/tasks/05-17-photo-fission/prd.md", "reason": "本任务的验收标准、不动清单、文件清单，check 阶段需对照核查"}
-{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "代码质量标准，check 的首要参考"}
-{"file": ".trellis/spec/frontend/type-safety.md", "reason": "类型安全约定，确保 ResultAsset 扩展兼容旧任务"}
-{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "组件规范，确保 left-panel / right-panel 改动合规"}

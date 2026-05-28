@@ -10,6 +10,7 @@ import { runGoogleImageEdit } from './google-genai-adapter'
 import { tripProviderCircuit, type ImageProvider } from './image-provider-pool'
 import { GoogleImageError } from './google-image-retry'
 import { runQiniuImageEdit } from './qiniu-image-adapter'
+import { runJimengImageEdit } from './jimeng-image-adapter'
 
 export interface ProviderImageEditInput {
   taskId: string
@@ -44,6 +45,24 @@ export async function runImageEditViaProvider(
           taskId: input.taskId,
           apiKey,
           baseUrl: provider.baseUrl,
+          model: input.model || provider.model || '',
+          timeoutMs,
+          prompt: input.prompt,
+          inputImages: input.inputImages,
+          count: input.count,
+          aspectRatio: input.aspectRatio,
+          imageSize: input.imageSize,
+          traceId: input.traceId,
+          shotId: input.shotId,
+          providerId: provider.id,
+          maxIpm: provider.maxIpm,
+          maxRpm: provider.maxRpm,
+        })
+
+      case 'jimeng':
+        return await runJimengImageEdit({
+          taskId: input.taskId,
+          apiKey,
           model: input.model || provider.model || '',
           timeoutMs,
           prompt: input.prompt,

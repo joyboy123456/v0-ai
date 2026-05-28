@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { kvDelete, kvGet, kvPut } from '@/lib/server/cloudflare'
-import { isLocal } from '@/lib/server/storage-mode'
+import { isLocal, isOss } from '@/lib/server/storage-mode'
 
 export interface SessionRecord {
   userId: string
@@ -39,7 +39,7 @@ export async function createSession(userId: string): Promise<CreatedSession> {
   const expiresAt = Date.now() + SESSION_TTL_SECONDS * 1000
   const record: SessionRecord = { userId, expiresAt }
 
-  if (isLocal()) {
+  if (isLocal() || isOss()) {
     LOCAL_SESSIONS.set(sessionId, record)
   } else {
     await kvPut(sessionId, JSON.stringify(record), SESSION_TTL_SECONDS)
@@ -53,7 +53,7 @@ export async function getSession(
 ): Promise<SessionRecord | null> {
   if (!sessionId) return null
 
-  if (isLocal()) {
+  if (isLocal() || isOss()) {
     const record = LOCAL_SESSIONS.get(sessionId)
     if (!record) return null
     if (record.expiresAt <= Date.now()) {
@@ -81,7 +81,7 @@ export async function getSession(
 
 export async function destroySession(sessionId: string): Promise<void> {
   if (!sessionId) return
-  if (isLocal()) {
+  if (isLocal() || isOss()) {
     LOCAL_SESSIONS.delete(sessionId)
     return
   }

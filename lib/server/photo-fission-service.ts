@@ -40,6 +40,7 @@ import {
   SUIT_OUTDOOR_SCENE,
   SUIT_STYLE_ANCHOR,
 } from './prompt-templates/suit-planner-system'
+import { appendFlatDetailReferenceLock } from './fission-flat-detail-lock'
 import { buildPlannerRulePlan } from './photo-fission-rule-engine'
 import {
   invokeShotPlanner,
@@ -72,6 +73,10 @@ const photoFissionChildrensCategoryLabelMap = new Map(
 
 const SUIT_ACTION_HISTORY_GENERATIONS = 3
 const recentSuitActionHistoryByKey = new Map<string, string[][]>()
+const recentDressActionHistoryByKey = new Map<
+  string,
+  { generationCount: number; hints: string[] }
+>()
 const DEFAULT_PHOTO_FISSION_CONCURRENCY = 3
 
 type PlannerPromptCard = {
@@ -96,7 +101,10 @@ const SUIT_BACK_LEG_VARIATION =
   '背面展示时一脚向后半步或脚尖轻向外，双膝放松，头部顺着身体方向，不回眸也不回头看镜头'
 
 const SUIT_FACE_QUALITY_GUARD =
-  '表情优先参考童装电商模特的两类自然笑容：元气轻露齿笑可以配合很轻的单眨眼，乖巧闭嘴浅笑要嘴角柔和、眼神清亮；左右嘴角协调放松，嘴型不歪，不做挤笑、夸张咧嘴或僵硬假笑。'
+  '表情优先参考童装电商模特的自然笑容：元气轻露齿笑必须牙齿完整、自然、数量正常，乖巧闭嘴浅笑要嘴角柔和、眼神清亮；单眨眼允许但必须自然可爱，一只眼自然完整轻闭、另一只眼清亮睁开，眼周放松不挤眉，脸型五官不变，禁止半闭眼、失败 wink 和大小眼。不确定牙齿状态时优先闭嘴浅笑、轻抿笑或小惊喜口型，绝不能生成缺牙、乱牙、黑洞牙、多牙、歪嘴或僵硬假笑。'
+
+const DRESS_POSE_FACE_QUALITY_GUARD =
+  '连衣裙姿势与表情补充要求：不管生成几张图，都不能出现手插兜、双手一起比 OK、一批图多张重复 OK、反关节、脖子过度扭转或不符合正常人的姿势；单手自然 OK 可以少量出现但不能遮挡服装，头部转动只保留自然生理范围内的小幅角度。若图1主图里已有手拿小包、单肩包、草帽、眼镜、咖啡杯 / 饮品杯、花束或发饰，必须作为原始穿搭搭配低存在感保留，可移到身体侧边、手部低位或画面边缘避免遮挡连衣裙，但不能让这些参考图已有配饰消失。若露齿，牙齿必须完整自然、数量正常、排列整齐好看；不确定时优先闭嘴浅笑、轻抿笑或小惊喜口型。'
 
 const SUIT_LEG_CUE_PATTERN =
   /脚尖|脚跟|前脚|后脚|一脚|单脚|双腿[^。；，,]*交叉|脚踝|轻微走姿|错开|点地|微翘|承重|半步|脚[^。；，,]*外/
@@ -113,13 +121,14 @@ const childrensCategoryRequirementMap: Record<
   string
 > = {
   dress:
-    '童装连衣裙品类规则：这是一张可直接用于淘宝/天猫上架的童装连衣裙商品图，连衣裙是画面第一主体；保持连衣裙结构，有明确上身与裙身连接关系，裙长、腰线、裙摆弧度、下摆层次、自然蓬度和整体廓形清楚可见，不能生成成裤装、瑜伽裤、紧身裤或贴腿包裹的下装。动作常量：正面全身站立、三分之二站姿、轻拉裙摆、轻提裙摆、坐姿铺开裙摆；动作轻柔克制，只服务商品展示。表情常量：自然甜美、可爱亲切、看镜头浅笑，避免夸张表演。',
+    '童装连衣裙品类规则：这是一张可直接用于淘宝/天猫上架的童装连衣裙商品图，连衣裙是画面第一主体；保持连衣裙结构，有明确上身与裙身连接关系，裙长、腰线、裙摆弧度、下摆层次、自然蓬度和整体廓形清楚可见，不能生成成裤装、瑜伽裤、紧身裤或贴腿包裹的下装。动作常量：正面全身站立、三分之二站姿、轻拉裙摆、轻提裙摆、坐姿铺开裙摆；动作轻柔克制，只服务商品展示。人物手臂、头发、腿脚、道具和任何参考图已有配饰都不能遮挡连衣裙主体，不能挡住领口、腰线、版型结构、裙摆弧度、下摆层次和面料细节；图1已有手拿小包、单肩包、草帽、眼镜、咖啡杯 / 饮品杯、花束或发饰时，作为原始穿搭搭配保留并放低存在感，不能凭空消失。表情常量：自然甜美、可爱亲切、看镜头浅笑，避免夸张表演。',
   suit: SUIT_CATEGORY_REQUIREMENT,
 }
 
 export function normalizePhotoFissionParams(
   params: unknown,
   inputAssetCount: number,
+  inputAssetIds: readonly string[] = [],
 ): PhotoFissionParams {
   if (!isRecord(params)) {
     throw new Error('服装大片裂变参数格式错误')
@@ -180,6 +189,7 @@ export function normalizePhotoFissionParams(
     resolution,
     shotPlan,
     resultCount,
+    referenceAssetKey: buildPhotoFissionReferenceAssetKey(inputAssetIds),
   }
 }
 
@@ -394,7 +404,7 @@ function buildTaskSection(input: {
     return [
       `本次任务：生成同一个人、同一套服装的【${label}】单张镜头。`,
       `画面是一张写实风格的童装连衣裙电商外景补充图，采用${orientation}，主体人物（参考第一张主图的同一个小女孩，身材比例、肤色与发型保持一致）居中或轻微居中，人物和连衣裙是绝对主体。`,
-      '受控裂变：保持人物身份与这套连衣裙统一；当前镜头按童装连衣裙抽卡规则使用蓝天白云草地外景，动作、构图与留白都服务于商品上架展示。',
+      '受控裂变：保持人物身份与这套连衣裙统一；当前镜头按童装连衣裙抽卡规则使用无云蓝天草地外景，场景不能出现云，动作、构图与留白都服务于商品上架展示。',
       '输出单张完整图片，不要多宫格拼接。',
     ].join('\n')
   }
@@ -449,7 +459,7 @@ function buildReferenceImagesSection(input: {
   const lines: string[] = [
     '【参考图说明】',
     isDressOutdoorShot
-      ? '- 图1：主图基准（这套连衣裙与这位小女孩的视觉锚点，承载人物身份、服装款式、面料质感与商品细节；当前镜头抽中蓝天白云草地外景卡）'
+      ? '- 图1：主图基准（这套连衣裙与这位小女孩的视觉锚点，承载人物身份、服装款式、面料质感与商品细节；当前镜头抽中无云蓝天草地外景卡，场景不能出现云）'
       : isSuitOutdoorShot
         ? '- 图1：主图基准（这套童装套装与这位模特的视觉锚点，承载人物身份、上衣裤装成套关系、面料质感与商品细节；当前镜头抽中晴朗夏日蓝天绿草地真实外景补充卡，场景不出现白云）'
       : '- 图1：主图基准（这套服装与这位模特的视觉锚点，承载身份、服装、场景、光线的全部细节）',
@@ -481,6 +491,7 @@ function buildWardrobeLockSection(): string {
     '【服装呈现 WARDROBE】',
     '人物穿着这套服装（图1为主图基准），完整延续这套服装的颜色、版型、材质、图案、logo、纽扣、口袋、领口、袖口与下摆细节。',
     '衣物纹理、面料质感、印花与配饰清晰可见，不增加、不减少、不替换任何服装元素。',
+    '如果图1主图里已有手拿小包、单肩包、草帽、眼镜、咖啡杯 / 饮品杯、花束、发饰等随身配饰或小道具，必须作为原始穿搭搭配保留，延续参考图中的佩戴/拿取关系；可为避免遮挡服装而放到身体侧边、手部低位或画面边缘，但不能让这些已有配饰消失。',
   ].join('\n')
 }
 
@@ -505,7 +516,7 @@ function buildSceneLockSection(
       '【场景呈现 SCENE】',
       `背景沿用图1原本的简洁拍摄环境，光线方向、色温与高光分布与图1保持一致，整体画面保持${orientation}下的童装连衣裙电商上架图调性。`,
       '如果图1是白底、浅灰白或浅米白棚拍背景，就延续这种干净统一的棚拍货架感；如果图1本身有室内场景，只弱化成低存在感、干净柔和的商品图陪衬。',
-      '背景不能抢走连衣裙主体，不主动新增沙发、绘本、玩具、窗帘、绿植、包包、帽子或其它生活道具；画面要方便美工裁切、排版和上架使用。',
+      '背景不能抢走连衣裙主体，不主动新增沙发、绘本、玩具、窗帘、绿植、包包、帽子或其它生活道具；但图1已有的手拿小包、单肩包、草帽、眼镜、咖啡杯 / 饮品杯、花束或发饰要作为低存在感商品搭配保留，不遮挡裙子主体。画面要方便美工裁切、排版和上架使用。',
     ].join('\n')
   }
   if (isSuitChildrensCategory(category, childrensCategory)) {
@@ -531,7 +542,7 @@ function buildLightingLockSection(
   if (isDressChildrensOutdoorShot(category, childrensCategory, shotScene)) {
     return [
       '【光线呈现 LIGHTING】',
-      '光线为明亮柔和的户外自然光，均匀打亮小女孩和连衣裙；天空与草地保持清爽通透，人物面部、裙身细节和脚底接触阴影都清楚自然，无强烈硬阴影。',
+      '光线为明亮柔和的户外自然光，均匀打亮小女孩和连衣裙；无云蓝天与草地保持清爽通透，人物面部、裙身细节和脚底接触阴影都清楚自然，无强烈硬阴影。',
     ].join('\n')
   }
   if (isSuitChildrensOutdoorShot(category, childrensCategory, shotScene)) {
@@ -573,6 +584,13 @@ function isSuitChildrensCategory(
   childrensCategory?: PhotoFissionChildrensCategory,
 ): childrensCategory is 'suit' {
   return category === 'childrens' && childrensCategory === 'suit'
+}
+
+function isDressChildrensCategory(
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+): childrensCategory is 'dress' {
+  return category === 'childrens' && childrensCategory === 'dress'
 }
 
 function buildStyleLockSection(
@@ -1176,6 +1194,11 @@ function readOptionalBoolean(
   throw new Error(errorMessage)
 }
 
+function buildPhotoFissionReferenceAssetKey(inputAssetIds: readonly string[]): string | undefined {
+  if (inputAssetIds.length === 0) return undefined
+  return inputAssetIds.join('|')
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -1187,6 +1210,17 @@ function getRecentSuitActionHints(params: PhotoFissionParams): string[] {
   const key = buildSuitActionHistoryKey(params)
   const generations = recentSuitActionHistoryByKey.get(key) ?? []
   return [...new Set(generations.flat())]
+}
+
+function getSecondDressGenerationAvoidHints(params: PhotoFissionParams): string[] {
+  if (!isDressChildrensCategory(params.category, params.childrensCategory)) {
+    return []
+  }
+  const history = recentDressActionHistoryByKey.get(buildDressActionHistoryKey(params))
+  if (!history || history.generationCount !== 1) {
+    return []
+  }
+  return history.hints
 }
 
 function rememberSuitActionHints(
@@ -1206,8 +1240,34 @@ function rememberSuitActionHints(
   recentSuitActionHistoryByKey.set(key, nextGenerations)
 }
 
+function rememberDressActionHints(
+  params: PhotoFissionParams,
+  shots: ReadonlyArray<{ role: string; imagePrompt: string }>,
+): void {
+  if (!isDressChildrensCategory(params.category, params.childrensCategory)) {
+    return
+  }
+  const nextHints = extractDressActionHints(shots)
+  const key = buildDressActionHistoryKey(params)
+  const previous = recentDressActionHistoryByKey.get(key)
+  recentDressActionHistoryByKey.set(key, {
+    generationCount: (previous?.generationCount ?? 0) + 1,
+    hints: nextHints,
+  })
+}
+
 function buildSuitActionHistoryKey(params: PhotoFissionParams): string {
   return `${params.category}:${params.childrensCategory ?? 'none'}:${params.resultCount ?? 9}`
+}
+
+function buildDressActionHistoryKey(params: PhotoFissionParams): string {
+  return [
+    params.category,
+    params.childrensCategory ?? 'none',
+    params.resultCount ?? 9,
+    params.imageRatio,
+    params.referenceAssetKey ?? 'unknown-reference',
+  ].join(':')
 }
 
 function extractSuitActionHints(
@@ -1225,10 +1285,44 @@ function extractSuitActionHints(
   return [...hints].slice(0, 12)
 }
 
+function extractDressActionHints(
+  shots: ReadonlyArray<{ role: string; imagePrompt: string }>,
+): string[] {
+  const hints = new Set<string>()
+  for (const shot of shots) {
+    const text = `${shot.role} ${shot.imagePrompt}`
+    for (const [pattern, hint] of DRESS_ACTION_HINT_PATTERNS) {
+      if (pattern.test(text)) {
+        hints.add(hint)
+      }
+    }
+  }
+  return [...hints].slice(0, 14)
+}
+
+const DRESS_ACTION_HINT_PATTERNS: ReadonlyArray<[RegExp, string]> = [
+  [/比耶|比\s*V|V\s*字|剪刀手/i, '比耶 / V 字手势'],
+  [/托腮|托脸|戳脸颊|脸颊/, '托腮 / 戳脸颊'],
+  [/捂嘴|遮嘴/, '单手捂嘴笑'],
+  [/挥手|打招呼/, '轻挥手 / 打招呼'],
+  [/叉腰|腰侧|胯侧/, '手停腰侧 / 胯侧'],
+  [/提裙|轻提|拉起裙摆|展裙|展开裙摆|裙摆.*花/, '提裙 / 展裙'],
+  [/低头|垂眸|看裙摆|看脚尖|看向抬起/, '低头看裙摆 / 脚尖'],
+  [/闭眼|迎光|微仰|仰头/, '闭眼微仰 / 迎光'],
+  [/迈步|走动|行走|前行|脚跟轻抬|脚尖点地|单脚/, '迈步 / 脚尖点地'],
+  [/转身|旋转|裙摆扬起/, '小幅转身 / 裙摆扬起'],
+  [/回眸|回头/, '回眸 / 回头'],
+  [/背手|身后交握/, '背手 / 身后交握'],
+  [/撩发|拢发|发丝|耳后/, '轻拢发丝'],
+  [/透明小椅子|透明椅|小椅子|地面坐姿|背面站姿|背面展示|侧后方铺裙/, '背面展示变化位'],
+  [/金属椅|金属折叠椅|白色金属/, '金属椅坐姿铺裙'],
+  [/侧看|看远方|不看镜头|高冷|冷酷/, '不看镜头侧看'],
+]
+
 const SUIT_ACTION_HINT_PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [/嘟|比耶|比\s*V|反着比耶|V\s*手势/i, '嘟嘴/比耶'],
   [/OK|ok/i, 'OK 手势'],
-  [/单眨眼|眨眼|戳脸颊|脸颊/, '单眨眼/戳脸'],
+  [/单眨眼|眨眼|戳脸颊|脸颊/, '轻戳脸颊/眼睛微弯'],
   [/挥手|打招呼|加油/, '挥手/打招呼'],
   [/插兜|口袋/, '插兜/口袋'],
   [/叉腰|腰侧/, '叉腰/手停腰侧'],
@@ -1238,7 +1332,9 @@ const SUIT_ACTION_HINT_PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [/微低头|低头|看向脚尖|看脚尖/, '低头视线'],
   [/闭眼|微风/, '闭眼微风'],
   [/拉链|扣子|外套敞开|打开一边外套|闭合展示/, '外套开合互动'],
-  [/道具|包包|花束|帽檐|帽子|鸭舌帽/, '道具/帽子互动'],
+  [/微张嘴|小惊喜|惊讶/, '小惊喜/微张嘴'],
+  [/迈步|走姿|踮脚|脚跟轻抬/, '迈步/踮脚抓拍'],
+  [/道具|包包|花束|帽檐|帽子|鸭舌帽|手提袋|帆布袋|肩带|瑜伽垫|墨镜/, '道具/帽子互动'],
 ]
 
 function refineSuitPlannerCard(
@@ -1253,8 +1349,39 @@ function refineSuitPlannerCard(
   return { role, imagePrompt }
 }
 
+function refineDressPlannerCard(card: PlannerPromptCard): PlannerPromptCard {
+  const role = sanitizeDressPoseText(card.role).trim()
+  const imagePrompt = appendDressPoseFaceQualityGuard(
+    sanitizeDressPoseText(card.imagePrompt).trim(),
+  )
+  return { role, imagePrompt }
+}
+
+function sanitizeDressPoseText(text: string): string {
+  return text
+    .replace(/双手(?:同时|一起)?\s*(?:比|做|摆出)?\s*OK\s*手势/gi, '双手自然轻搭裙摆两侧')
+    .replace(/双手(?:同时|一起)?\s*比\s*OK/gi, '双手自然轻搭裙摆两侧')
+    .replace(/手插兜/g, '手自然垂落或轻搭裙摆')
+    .replace(/插兜/g, '手自然垂落或轻搭裙摆')
+    .replace(/双手放进口袋/g, '双手自然垂落或轻触裙摆')
+    .replace(/手放进口袋/g, '手自然垂落或轻触裙摆')
+    .replace(/蓝天白云草地/g, '无云蓝天草地')
+    .replace(/蓝天、白云和草地/g, '无云蓝天和草地')
+    .replace(/蓝天、白云、草地/g, '无云蓝天、草地')
+}
+
+function appendDressPoseFaceQualityGuard(text: string): string {
+  if (/原始穿搭搭配低存在感保留|参考图已有配饰消失|手拿小包、单肩包/.test(text)) return text
+  return appendSentence(text, DRESS_POSE_FACE_QUALITY_GUARD)
+}
+
 function sanitizeSuitExpressionText(text: string): string {
   return text
+    .replace(/半闭合眼睛/g, '双眼自然睁开并微弯')
+    .replace(/半闭眼/g, '双眼自然睁开并微弯')
+    .replace(/一边眼睛明显变小/g, '眼周放松、脸型五官保持一致')
+    .replace(/大小眼/g, '双眼比例自然协调')
+    .replace(/失败\s*wink/gi, '自然可爱的单眨眼')
     .replace(/嘴角不对称上扬/g, '嘴角自然轻扬')
     .replace(/嘴角单侧上扬/g, '嘴角自然轻扬')
     .replace(/单侧嘴角明显上扬/g, '嘴角自然轻扬')
@@ -1330,7 +1457,12 @@ async function applyShotPlannerOverride(
   params: PhotoFissionParams,
   taskId: string,
 ): Promise<void> {
-  const recentActionHints = getRecentSuitActionHints(params)
+  const recentActionHints = isSuitChildrensCategory(
+    params.category,
+    params.childrensCategory,
+  )
+    ? getRecentSuitActionHints(params)
+    : getSecondDressGenerationAvoidHints(params)
   const plan = buildPlannerRulePlan(
     params.category,
     params.childrensCategory,
@@ -1354,7 +1486,6 @@ async function applyShotPlannerOverride(
     const stage =
       error instanceof ShotPlannerError ? error.stage ?? 'unknown' : 'unknown'
     const message = error instanceof Error ? error.message : String(error)
-    // eslint-disable-next-line no-console
     console.error(
       JSON.stringify({
         lvl: 'error',
@@ -1378,13 +1509,26 @@ async function applyShotPlannerOverride(
     params.category,
     params.childrensCategory,
   )
+  const isDressTask = isDressChildrensCategory(
+    params.category,
+    params.childrensCategory,
+  )
   const rememberedSuitShots: PlannerPromptCard[] = []
+  const rememberedDressShots: PlannerPromptCard[] = []
   let overridden = 0
   for (const card of output.shots) {
     const idx = indexByShotId.get(card.shotId)
     if (idx === undefined) continue
-    const plannerCard = isSuitTask ? refineSuitPlannerCard(card, idx) : card
-    const next = plannerCard.imagePrompt.trim()
+    const plannerCard = isSuitTask
+      ? refineSuitPlannerCard(card, idx)
+      : isDressTask
+        ? refineDressPlannerCard(card)
+        : card
+    const next = appendFlatDetailReferenceLock(
+      plannerCard.imagePrompt,
+      params,
+      `${plannerCard.role} ${plannerCard.imagePrompt}`,
+    ).trim()
     if (!next) continue
     const nextLabel = plannerCard.role.trim()
     fullPlan[idx] = {
@@ -1394,6 +1538,12 @@ async function applyShotPlannerOverride(
     }
     if (isSuitTask) {
       rememberedSuitShots.push({
+        role: nextLabel || fullPlan[idx].label,
+        imagePrompt: next,
+      })
+    }
+    if (isDressTask) {
+      rememberedDressShots.push({
         role: nextLabel || fullPlan[idx].label,
         imagePrompt: next,
       })
@@ -1412,8 +1562,13 @@ async function applyShotPlannerOverride(
       ? rememberedSuitShots
       : output.shots,
   )
+  rememberDressActionHints(
+    params,
+    isDressTask && rememberedDressShots.length > 0
+      ? rememberedDressShots
+      : output.shots,
+  )
 
-  // eslint-disable-next-line no-console
   console.log(
     JSON.stringify({
       lvl: 'info',

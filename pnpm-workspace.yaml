@@ -1,0 +1,6 @@
+allowBuilds:
+  protobufjs: set this to true or false
+  sharp: set this to true or false
+onlyBuiltDependencies:
+  - sharp
+  - '@img/sharp-libvips-linux-x64'

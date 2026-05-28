@@ -1,6 +1,0 @@
-{"file": ".trellis/tasks/05-24-photo-fission-quantity-control/prd.md", "reason": "PRD with all decisions: resultCount type, scene distribution rules (2/4 all reference, 9=7+2, 10=8+2), files to change"}
-{"file": ".trellis/spec/backend/fission-prompt-planner.md", "reason": "LLM Planner architecture: Zod schema pattern, error handling, how photo-fission-shot-planner wraps the generic planner"}
-{"file": ".trellis/spec/backend/streaming-fission-pipeline.md", "reason": "Pipeline execution flow: how shotPlan flows from normalize → planner override → multi-provider dispatch"}
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for discovering related patterns"}
-{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "OptionSelector pattern for quantity selector UI"}
-{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Type safety guidelines for new PhotoFissionResultCount type"}
