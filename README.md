@@ -45,6 +45,9 @@ pnpm dev
 
 打开 [http://localhost:3000](http://localhost:3000) 即可使用。
 
+> 🖥️ **Mac mini 生产环境运维**：本项目部署在 Mac mini 上，公网入口 `http://47.96.71.237:3000`。**生产环境跑的是 `next start`（不是 next dev），不会热加载** —— 每次改代码必须 `pnpm build` + `pm2 restart yibai-fission --update-env`。完整的更新流程、登录配置、自愈机制、排查手册请看 👉 [`docs/mac-mini-operations.md`](docs/mac-mini-operations.md)。
+>
+
 ### Demo 模式
 
 如果暂时没有可用的图像 API，把 `.env.local` 中的 `IMAGE_API_DEMO` 设为 `1`，工作台会回放本地占位图，便于演示和 UI 调试：

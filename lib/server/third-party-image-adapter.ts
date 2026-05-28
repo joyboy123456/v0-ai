@@ -70,12 +70,6 @@ const demoResults: Partial<Record<RunnableFeature, string[]>> = {
     'https://images.unsplash.com/photo-1475180098004-ca77a66827be?w=900&h=1200&fit=crop',
     'https://images.unsplash.com/photo-1483985988355-763728e1935b?w=900&h=1200&fit=crop',
   ],
-  'element-replace': [
-    'https://images.unsplash.com/photo-1558769132-cb1aea458c5e?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1529139574466-a303027c1d8b?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?w=900&h=1200&fit=crop',
-    'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=900&h=1200&fit=crop',
-  ],
   'photo-fission': [
     'https://images.unsplash.com/photo-1485230895905-ec40ba36b9bc?w=900&h=1200&fit=crop',
     'https://images.unsplash.com/photo-1495385794356-15371f348c31?w=900&h=1200&fit=crop',
@@ -99,10 +93,6 @@ export async function runThirdPartyWorkflow(
 
   if (input.featureType === 'ai-fashion-photo' && input.inputImages.length < 1) {
     throw new Error('AI服装大片需要至少上传一张参考图')
-  }
-
-  if (input.featureType === 'element-replace' && input.inputImages.length < 2) {
-    throw new Error('元素替换需要同时上传原图和替换元素')
   }
 
   if (input.featureType === 'photo-fission') {
@@ -386,10 +376,6 @@ function getInputImagePayload(input: ThirdPartyWorkflowInput): string | string[]
     // Per multi-image edits guide v1.1.0, send images as an array directly.
     // The model treats each entry as Image 1 / Image 2 / ... matching the prompt.
     return input.inputImages
-  }
-
-  if (input.featureType === 'element-replace') {
-    return createElementReplaceReferenceSheet(input.inputImages[0], input.inputImages[1])
   }
 
   // pose-fission 不进入 runRaycastImageEdits，无需在此处理多图拼板。

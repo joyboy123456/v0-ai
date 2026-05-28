@@ -289,17 +289,17 @@ export function UploadBox({
           type="button"
           onClick={() => inputRef.current?.click()}
           className={cn(
-            "group relative w-full min-h-[120px] rounded-md border border-border bg-transparent",
-            "flex items-center gap-3 overflow-hidden p-3 text-left transition-colors",
-            "hover:bg-white/[0.02] hover:border-muted-foreground",
-            image && "border-primary/40 bg-primary/[0.02]",
+            "group relative w-full min-h-[120px] rounded-xl border border-dashed border-sky-200 bg-white/60",
+            "flex items-center gap-3 overflow-hidden p-3 text-left transition-all duration-300 cursor-pointer",
+            "hover:bg-[#EAF8FF]/40 hover:border-sky-400 hover:shadow-soft",
+            image && "border-solid border-sky-300 bg-[#EAF8FF]/20 shadow-card",
           )}
         >
           <div className="flex flex-1 flex-col items-center justify-center gap-2 px-2">
             {isUploading ? (
               <Loader2 className="w-5 h-5 text-primary animate-spin" />
             ) : (
-              <div className="w-8 h-8 rounded-md bg-white/[0.04] border border-border flex items-center justify-center text-muted-foreground transition-colors group-hover:text-foreground group-hover:bg-white/[0.08]">
+              <div className="w-8 h-8 rounded-md bg-surface-soft border border-border flex items-center justify-center text-muted-foreground transition-all group-hover:text-primary group-hover:bg-primary/10">
                 <Upload className="w-4 h-4" />
               </div>
             )}
@@ -349,10 +349,10 @@ export function UploadBox({
           type="button"
           onClick={() => inputRef.current?.click()}
           className={cn(
-            "group relative w-full min-h-[140px] rounded-md border border-dashed border-border bg-transparent",
-            "flex flex-col items-center justify-center gap-3 overflow-hidden transition-colors",
-            "hover:border-muted-foreground hover:bg-white/[0.02]",
-            image && "border-solid border-primary/40 bg-primary/[0.02]",
+            "group relative w-full min-h-[140px] rounded-xl border border-dashed border-sky-200 bg-white/60",
+            "flex flex-col items-center justify-center gap-3 overflow-hidden transition-all duration-300 cursor-pointer",
+            "hover:border-sky-400 hover:bg-[#EAF8FF]/40 hover:shadow-soft",
+            image && "border-solid border-sky-300 bg-[#EAF8FF]/20 shadow-card",
           )}
         >
           {image ? (
@@ -389,7 +389,7 @@ export function UploadBox({
               {isUploading ? (
                 <Loader2 className="h-6 w-6 text-primary animate-spin" />
               ) : (
-                <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white/[0.02] text-muted-foreground transition-colors group-hover:bg-white/[0.06] group-hover:text-foreground">
+                <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-surface-soft text-muted-foreground transition-all group-hover:bg-primary/10 group-hover:text-primary">
                   <Upload className="h-5 w-5" />
                 </div>
               )}

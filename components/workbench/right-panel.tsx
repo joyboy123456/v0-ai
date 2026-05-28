@@ -447,16 +447,16 @@ export function RightPanel({
   }
 
   return (
-    <section className="flex-1 min-h-screen bg-background flex flex-col">
+    <section className="flex-1 min-h-screen bg-transparent flex flex-col">
       <header className="flex items-center justify-between gap-4 p-5 border-b border-border">
         <div className="flex items-center gap-3">
-          <div className="flex items-center bg-white/[0.04] rounded-md p-1 border border-border">
+          <div className="flex items-center bg-secondary rounded-md p-1 border border-border">
             <button
               onClick={() => setActiveTab("history")}
               className={cn(
-                "px-4 py-1 text-[12px] font-medium rounded-sm transition-colors",
+                "px-4 py-1 text-[12px] font-medium rounded-sm transition-all border border-transparent",
                 activeTab === "history"
-                  ? "bg-white/[0.08] text-foreground shadow-sm"
+                  ? "bg-primary/20 text-accent-foreground shadow-[0_0_8px_rgba(0,163,255,0.2)] border-primary/30"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -466,9 +466,9 @@ export function RightPanel({
               <button
                 onClick={() => setActiveTab("current")}
                 className={cn(
-                  "px-4 py-1 text-[12px] font-medium rounded-sm transition-colors",
+                  "px-4 py-1 text-[12px] font-medium rounded-sm transition-all border border-transparent",
                   activeTab === "current"
-                    ? "bg-white/[0.08] text-foreground shadow-sm"
+                    ? "bg-primary/20 text-accent-foreground shadow-[0_0_8px_rgba(0,163,255,0.2)] border-primary/30"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
@@ -479,9 +479,9 @@ export function RightPanel({
               <button
                 onClick={() => setActiveTab("cases")}
                 className={cn(
-                  "px-4 py-1 text-[12px] font-medium rounded-sm transition-colors",
+                  "px-4 py-1 text-[12px] font-medium rounded-sm transition-all border border-transparent",
                   activeTab === "cases"
-                    ? "bg-white/[0.08] text-foreground shadow-sm"
+                    ? "bg-primary/20 text-accent-foreground shadow-[0_0_8px_rgba(0,163,255,0.2)] border-primary/30"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
@@ -517,7 +517,7 @@ export function RightPanel({
 
           <button
             onClick={onRefreshTasks}
-            className="w-8 h-8 rounded-md border border-border bg-transparent flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-white/[0.04] transition-colors"
+            className="w-8 h-8 rounded-md border border-border bg-transparent flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface-soft transition-colors"
             aria-label="刷新任务"
           >
             <RefreshCw className="w-3.5 h-3.5" />
@@ -530,7 +530,7 @@ export function RightPanel({
                 "h-8 px-3 rounded-md border text-[12px] font-medium flex items-center gap-1.5 transition-colors",
                 batchSelectMode
                   ? "border-primary bg-primary/10 text-primary"
-                  : "border-border bg-transparent text-muted-foreground hover:text-foreground hover:bg-white/[0.04]",
+                  : "border-border bg-transparent text-muted-foreground hover:text-foreground hover:bg-surface-soft",
               )}
             >
               <Download className="w-3.5 h-3.5" />
@@ -619,7 +619,7 @@ export function RightPanel({
                     return (
                       <div
                         key={image.assetId}
-                        className="group relative overflow-hidden rounded-xl border border-border bg-card cursor-pointer hover:border-primary/60 break-inside-avoid mb-2 inline-block w-full"
+                        className="group relative overflow-hidden glass-card glass-card-hover break-inside-avoid mb-2 inline-block w-full cursor-pointer"
                         onClick={() =>
                           setPreviewResult({ image, task: visibleTask })
                         }
@@ -643,7 +643,7 @@ export function RightPanel({
                                 return next;
                               });
                             }}
-                            className="w-8 h-8 rounded-full bg-background/85 flex items-center justify-center"
+                            className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center"
                             aria-label="收藏"
                           >
                             <Star
@@ -660,7 +660,7 @@ export function RightPanel({
                               event.stopPropagation();
                               window.open(image.downloadUrl, "_blank");
                             }}
-                            className="w-8 h-8 rounded-full bg-background/85 flex items-center justify-center"
+                            className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center"
                             aria-label="下载"
                           >
                             <Download className="w-4 h-4 text-muted-foreground" />
@@ -795,7 +795,7 @@ function AiFashionMasonryGallery({
                       onPreviewImage(image, task);
                     }
                   }}
-                  className="group relative overflow-hidden rounded-xl bg-card text-left shadow-sm transition-colors cursor-pointer border border-border hover:border-primary/60 break-inside-avoid mb-2 inline-block w-full"
+                  className="group relative overflow-hidden glass-card glass-card-hover break-inside-avoid mb-2 inline-block w-full text-left"
                 >
                   <img
                     src={image.url}
@@ -803,8 +803,8 @@ function AiFashionMasonryGallery({
                     className="w-full h-auto block bg-secondary"
                   />
 
-                  <span className="pointer-events-none absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 text-[10px] text-white">
-                    <ImageIcon className="h-3 w-3" />
+                  <span className="pointer-events-none absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-lg bg-white/85 backdrop-blur-md border border-sky-100/80 px-2 py-0.5 text-[10px] font-semibold text-sky-700 shadow-xs z-10">
+                    <ImageIcon className="h-3 w-3 text-sky-500" />
                     AI服装大片
                   </span>
 

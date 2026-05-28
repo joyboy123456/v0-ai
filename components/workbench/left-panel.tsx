@@ -2,14 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Coins,
   Loader2,
   Sparkles,
   Upload,
   X,
   Zap,
 } from "lucide-react";
-import { OptionSelector, RatioSelector } from "./option-selectors";
+import { OptionSelector } from "./option-selectors";
 import {
   prepareImageForGenerationUpload,
   UploadBox,
@@ -29,13 +28,10 @@ import {
 } from "@/components/ui/select";
 import {
   DEFAULT_FASHION_MODEL,
-  ELEMENT_REPLACE_TYPES,
   FEATURE_LABELS,
   FASHION_IMAGE_RATIOS,
   FASHION_PROMPT_MODES,
   FASHION_RESOLUTIONS,
-  GENERATE_COUNTS,
-  IMAGE_RATIOS,
   PHOTO_FISSION_CHILDRENS_CATEGORIES,
   PHOTO_FISSION_CATEGORIES,
   PHOTO_FISSION_RATIOS_EXTRA,
@@ -46,9 +42,7 @@ import {
   POSE_IMAGE_RATIOS,
   POSE_RESOLUTIONS,
   SELECTABLE_FASHION_MODELS,
-  type BackgroundReplaceParams,
   type CompanyModel,
-  type ElementReplaceType,
   type FashionImageRatio,
   type FashionModelId,
   type FashionPromptMode,
@@ -56,8 +50,6 @@ import {
   type FashionRemixRequest,
   type FashionResolution,
   type FeatureType,
-  type GenerateCount,
-  type ImageRatio,
   type PhotoFissionChildrensCategory,
   type PhotoFissionCategory,
   type PhotoFissionCase,
@@ -126,8 +118,6 @@ export function LeftPanel({
   const [fashionResolution, setFashionResolution] =
     useState<FashionResolution>("4k");
   const [fashionImage, setFashionImage] = useState<UploadedImage | null>(null);
-  const [replacementImage, setReplacementImage] =
-    useState<UploadedImage | null>(null);
   const [photoFissionModel, setPhotoFissionModel] = useState<FashionModelId>(
     DEFAULT_FASHION_MODEL,
   );
@@ -159,13 +149,8 @@ export function LeftPanel({
   const [poseFissionModel, setPoseFissionModel] = useState<FashionModelId>(
     DEFAULT_FASHION_MODEL,
   );
-  const [generateCount, setGenerateCount] = useState<GenerateCount>(4);
-  const [imageRatio, setImageRatio] = useState<ImageRatio>("3:4");
   const [poseImageRatio, setPoseImageRatio] = useState<PoseImageRatio>("3:4");
   const [poseResolution, setPoseResolution] = useState<PoseResolution>("4k");
-  const [elementType, setElementType] =
-    useState<ElementReplaceType>("clothing");
-  const [prompt, setPrompt] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState("");
 
@@ -177,9 +162,6 @@ export function LeftPanel({
         : fashionImage;
   const isPoseFission = feature === "pose-fission";
   const isAiFashionPhoto = feature === "ai-fashion-photo";
-  const isPhotoFission = feature === "photo-fission";
-  const credits =
-    isPoseFission || isAiFashionPhoto ? 35 : isPhotoFission ? 0 : generateCount;
 
   useEffect(() => {
     if (!fashionRemixRequest) return;
@@ -327,7 +309,6 @@ export function LeftPanel({
 
   const helperText = useMemo(() => {
     if (feature === "ai-fashion-photo") return "上传服装、姿势或场景参考图";
-    if (feature === "element-replace") return "上传需要修改的服装大片原图";
     if (feature === "photo-fission") return "上传一张已满意的服装大片作为参考";
     return "请上传需要姿势裂变的清晰主图";
   }, [feature]);
@@ -350,11 +331,6 @@ export function LeftPanel({
       }
     } else if (!activeImage) {
       setError("请先上传图片");
-      return;
-    }
-
-    if (feature === "element-replace" && !replacementImage) {
-      setError("请上传替换元素");
       return;
     }
 
@@ -418,10 +394,6 @@ export function LeftPanel({
 
     if (!activeImage) return [];
 
-    if (feature === "element-replace" && replacementImage) {
-      return [activeImage.assetId, replacementImage.assetId];
-    }
-
     if (feature === "pose-fission") {
       return [
         activeImage.assetId,
@@ -436,7 +408,6 @@ export function LeftPanel({
   const getParams = ():
     | AiFashionPhotoParams
     | PhotoFissionParams
-    | BackgroundReplaceParams
     | PoseFissionParams => {
     if (feature === "ai-fashion-photo") {
       const trimmedPrompt = fashionPrompt.trim();
@@ -487,12 +458,7 @@ export function LeftPanel({
       };
     }
 
-    return {
-      elementType,
-      prompt,
-      generateCount,
-      imageRatio,
-    };
+    throw new Error(`Unknown feature: ${feature}`);
   };
 
   const submitDisabled = isCreating;
@@ -625,78 +591,7 @@ export function LeftPanel({
                 resultCount={photoFissionResultCount}
                 onResultCountChange={setPhotoFissionResultCount}
               />
-            ) : feature === "element-replace" ? (
-              <>
-                <UploadBox
-                  label="上传原图"
-                  helper={helperText}
-                  image={fashionImage}
-                  onUploaded={setFashionImage}
-                  onRemove={() => setFashionImage(null)}
-                />
-                <div className="space-y-3">
-                  <OptionSelector
-                    label="替换类型"
-                    required
-                    options={ELEMENT_REPLACE_TYPES}
-                    value={elementType}
-                    onChange={setElementType}
-                  />
-                  <UploadBox
-                    label="上传替换元素"
-                    helper="上传要替换进去的服装、环境参考或人像元素"
-                    image={replacementImage}
-                    onUploaded={setReplacementImage}
-                    onRemove={() => setReplacementImage(null)}
-                  />
-                </div>
-              </>
-            ) : feature === "photo-fission" ? null : (
-              <UploadBox
-                label="服装大片"
-                helper={helperText}
-                image={fashionImage}
-                onUploaded={setFashionImage}
-                onRemove={() => setFashionImage(null)}
-              />
-            )}
-
-            {feature === "element-replace" && (
-              <div className="space-y-2">
-                <span className="text-sm text-foreground">提示词</span>
-                <div className="relative">
-                  <textarea
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                    placeholder="请输入提示词，例如：将原图背景替换为室内高级商拍场景，保持人物和服装不变"
-                    maxLength={800}
-                    className="w-full h-24 resize-none rounded-lg border border-border bg-black p-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                  <span className="absolute bottom-2 right-2 text-xs text-muted-foreground">
-                    {prompt.length}/800
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {feature === "element-replace" && (
-              <>
-                <OptionSelector
-                  label="生成数量"
-                  required
-                  options={GENERATE_COUNTS}
-                  value={generateCount}
-                  onChange={setGenerateCount}
-                />
-                <RatioSelector
-                  label="图片比例"
-                  required
-                  options={IMAGE_RATIOS}
-                  value={imageRatio}
-                  onChange={setImageRatio}
-                />
-              </>
-            )}
+            ) : null}
           </>
         )}
       </div>
@@ -714,18 +609,7 @@ export function LeftPanel({
         >
           <Sparkles className="w-4 h-4 opacity-90" />
           <span>{submitLabel}</span>
-          {!isPhotoFission && (
-            <div className="flex items-center gap-1 ml-1 pl-3 border-l border-primary-foreground/20 opacity-90">
-              <Coins className="w-4 h-4" />
-              <span>{credits}</span>
-            </div>
-          )}
         </button>
-        {!isPoseFission && !isAiFashionPhoto && !isPhotoFission && (
-          <p className="text-[11px] text-muted-foreground text-center">
-            MVP 当前按每生成 1 张消耗 1 点额度计算。
-          </p>
-        )}
       </div>
     </aside>
   );

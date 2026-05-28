@@ -36,10 +36,15 @@ export function useAuth(): UseAuthResult {
   const fetchMe = useCallback(async () => {
     setIsLoading(true)
     setError(null)
+    // 8 秒超时兜底：公网客户反复反馈「正在前往登录页」卡住，部分场景是 /api/auth/me
+    // fetch 长时间没返回。这里用 AbortController 强制断开，避免 isLoading 永远挂住。
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 8000)
     try {
       const res = await fetch('/api/auth/me', {
         credentials: 'include',
         cache: 'no-store',
+        signal: controller.signal,
       })
       if (res.status === 401) {
         setUser(null)
@@ -57,9 +62,14 @@ export function useAuth(): UseAuthResult {
         setUser(null)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '获取登录态失败')
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setError('网络较慢，请检查网络或重试')
+      } else {
+        setError(err instanceof Error ? err.message : '获取登录态失败')
+      }
       setUser(null)
     } finally {
+      clearTimeout(timeoutId)
       setIsLoading(false)
     }
   }, [])
