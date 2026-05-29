@@ -33,12 +33,11 @@ interface ThirdPartyWorkflowInput {
 
 const demoMode = process.env.IMAGE_API_DEMO === '1'
 
-// 默认主链路：全部走 Provider Pool（七牛优先、即梦/Google 按模型兼容兜底）。
-const googleApiKey = process.env.GOOGLE_API_KEY ?? ''
-const googleImageModel = process.env.GOOGLE_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview'
+// 默认主链路：全部走 Provider Pool（七牛优先、即梦按模型兼容兜底）。
+const defaultImageModel = process.env.GOOGLE_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview'
 // 3 系列 + 2K/4K + 多图最坏情况下单图响应可达 5-8 分钟，默认 600s 留足缓冲。
 // 任何短于 480s 的配置都极可能在 2K 以上画质 + 多图场景下超时。
-const googleImageTimeoutMs = Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000)
+const defaultImageTimeoutMs = Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000)
 
 const demoResults: Partial<Record<RunnableFeature, string[]>> = {
   'ai-fashion-photo': [
@@ -77,9 +76,16 @@ export async function runThirdPartyWorkflow(
   }
 
   if (input.featureType === 'photo-fission') {
+    const params = input.params as PhotoFissionParams
+    const hasFaceId = Boolean(params.faceIdModelId)
+    const maxImages = hasFaceId ? 4 : 3
     const count = input.inputImages.length
-    if (count < 1 || count > 3) {
-      throw new Error('服装大片裂变最多上传 1 张主图 + 正面/背面细节图共 3 张')
+    if (count < 1 || count > maxImages) {
+      throw new Error(
+        hasFaceId
+          ? '服装大片裂变最多上传 1 张主图 + 正面/背面细节图 + 人像小卡共 4 张'
+          : '服装大片裂变最多上传 1 张主图 + 正面/背面细节图共 3 张',
+      )
     }
   }
 
@@ -100,8 +106,8 @@ export async function runThirdPartyWorkflow(
       taskId: input.taskId,
       inputImages: input.inputImages,
       params: input.params as PhotoFissionParams,
-      apiKey: googleApiKey,
-      timeoutMs: googleImageTimeoutMs,
+      apiKey: '',
+      timeoutMs: defaultImageTimeoutMs,
       onShotResult: input.onShotResult,
     })
   }
@@ -119,9 +125,9 @@ async function runGoogleProviderEdits(input: ThirdPartyWorkflowInput) {
       ? (input.params as AiFashionPhotoParams).model
       : undefined
 
-  // v6：单图/元素类任务固定走「七牛优先，Google 官方兜底」。
+  // 单图/元素类任务固定走 Provider Pool（七牛优先）。
   // fission 类任务仍由各自 pipeline 做多 provider 分发和 per-shot failover。
-  const modelToUse = taskModel ?? googleImageModel
+  const modelToUse = taskModel ?? defaultImageModel
   const providerChain = buildSingleImageProviderChain(modelToUse)
   if (!providerChain.length) {
     throw new Error(getNoAvailableProviderMessage(modelToUse))
@@ -132,7 +138,7 @@ async function runGoogleProviderEdits(input: ThirdPartyWorkflowInput) {
     { traceId: input.taskId, taskId: input.taskId },
     {
       stage: input.featureType,
-      strategy: 'qiniu-first-google-fallback',
+      strategy: 'provider-pool-chain',
       providers: providerChain.map((item) => item.id),
     },
   )
@@ -144,7 +150,7 @@ async function runGoogleProviderEdits(input: ThirdPartyWorkflowInput) {
       return await runImageEditViaProvider({
         taskId: input.taskId,
         provider: candidate,
-        fallbackApiKey: googleApiKey,
+        fallbackApiKey: candidate.apiKey,
         model: modelToUse,
         prompt,
         inputImages: input.inputImages,

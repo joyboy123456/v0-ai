@@ -28,7 +28,7 @@ type ServiceStatus = 'ok' | 'skipped' | string
 
 interface HealthResponse {
   ok: boolean
-  storageMode: 'local' | 'cloud'
+  storageMode: 'local' | 'cloud' | 'oss'
   services: {
     d1: ServiceStatus
     kv: ServiceStatus

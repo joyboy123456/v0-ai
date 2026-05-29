@@ -56,9 +56,16 @@ interface RightPanelProps {
   companyModels: CompanyModel[];
   fashionReferences: FashionReferenceImage[];
   companyModelLibraryRequestKey: number;
+  faceIdModels: CompanyModel[];
+  faceIdLibraryRequestKey: number;
+  selectedFaceIdModel: CompanyModel | null;
   onAddCompanyModel: (model: CompanyModel) => void;
   onDeleteCompanyModel: (assetId: string) => void;
   onRenameCompanyModel: (assetId: string, name: string) => void;
+  onAddFaceIdModel: (model: CompanyModel) => void;
+  onDeleteFaceIdModel: (assetId: string) => void;
+  onRenameFaceIdModel: (assetId: string, name: string) => void;
+  onSelectFaceIdModel: (model: CompanyModel | null) => void;
   onAddFashionReference: (reference: FashionReferenceImage) => void;
   onUseTaskAsFashionReference: (task: GenerationTask) => void;
   onSelectPoseFissionCase: (poseFissionCase: PoseFissionCase) => void;
@@ -76,9 +83,16 @@ export function RightPanel({
   companyModels,
   fashionReferences,
   companyModelLibraryRequestKey,
+  faceIdModels,
+  faceIdLibraryRequestKey,
+  selectedFaceIdModel,
   onAddCompanyModel,
   onDeleteCompanyModel,
   onRenameCompanyModel,
+  onAddFaceIdModel,
+  onDeleteFaceIdModel,
+  onRenameFaceIdModel,
+  onSelectFaceIdModel,
   onAddFashionReference,
   onUseTaskAsFashionReference,
   onSelectPoseFissionCase,
@@ -88,7 +102,7 @@ export function RightPanel({
   onDeleteTaskResult,
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<
-    "current" | "history" | "cases" | "my-model-library"
+    "current" | "history" | "cases" | "my-model-library" | "my-id-photo-library"
   >("current");
   const [previewResult, setPreviewResult] = useState<ResultPreview | null>(
     null,
@@ -193,6 +207,12 @@ export function RightPanel({
       setActiveTab("my-model-library");
     }
   }, [companyModelLibraryRequestKey, feature]);
+
+  useEffect(() => {
+    if (feature === "photo-fission" && faceIdLibraryRequestKey > 0) {
+      setActiveTab("my-id-photo-library");
+    }
+  }, [faceIdLibraryRequestKey, feature]);
 
   useEffect(() => {
     if (!isPoseFission) return;
@@ -442,6 +462,25 @@ export function RightPanel({
               });
             }
             setActiveTab("current");
+          }}
+        />
+      </section>
+    );
+  }
+
+  if (activeTab === "my-id-photo-library") {
+    return (
+      <section className="flex min-h-screen flex-1 flex-col bg-background">
+        <MyFaceIdLibraryPanel
+          models={faceIdModels}
+          selectedModelId={selectedFaceIdModel?.assetId ?? null}
+          onAddModel={onAddFaceIdModel}
+          onDeleteModel={onDeleteFaceIdModel}
+          onRenameModel={onRenameFaceIdModel}
+          onClose={() => setActiveTab("history")}
+          onConfirm={(model) => {
+            onSelectFaceIdModel(model);
+            setActiveTab("history");
           }}
         />
       </section>
@@ -2497,4 +2536,176 @@ function buildPhotoFissionPromptBundle(task: GenerationTask): string | null {
  */
 function readLegacyString(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function MyFaceIdLibraryPanel({
+  models,
+  selectedModelId,
+  onAddModel,
+  onDeleteModel,
+  onRenameModel,
+  onClose,
+  onConfirm,
+}: {
+  models: CompanyModel[];
+  selectedModelId: string | null;
+  onAddModel: (model: CompanyModel) => void;
+  onDeleteModel: (assetId: string) => void;
+  onRenameModel: (assetId: string, name: string) => void;
+  onClose: () => void;
+  onConfirm: (model: CompanyModel | null) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [draftSelectedId, setDraftSelectedId] = useState<string | null>(
+    selectedModelId,
+  );
+  const [isUploading, setIsUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  const toggleSelected = (assetId: string) => {
+    setDraftSelectedId((current) => (current === assetId ? null : assetId));
+  };
+
+  const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const sizeError = validateUploadSize(file);
+    if (sizeError) {
+      setError(sizeError);
+      return;
+    }
+
+    setError("");
+    setIsUploading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/assets/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const data = (await response.json()) as { error?: string };
+        throw new Error(data.error || "上传失败");
+      }
+
+      const data = (await response.json()) as {
+        assetId: string;
+        url: string;
+        fileName: string;
+        width: number;
+        height: number;
+      };
+      const model: CompanyModel = {
+        assetId: data.assetId,
+        preview: data.url,
+        name: data.fileName,
+        width: data.width,
+        height: data.height,
+        createdAt: new Date().toISOString(),
+      };
+
+      onAddModel(model);
+      setDraftSelectedId(model.assetId);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "上传失败");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const selectedModel = models.find((m) => m.assetId === draftSelectedId) || null;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-[#101010] text-foreground">
+      <div className="flex items-center justify-between border-b border-border px-5 py-3 bg-[#101010]">
+        <div className="flex rounded-full bg-secondary p-1">
+          <span className="rounded-full bg-card px-5 py-2 text-sm font-medium text-foreground">
+            我的人像小卡
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground"
+          aria-label="关闭人像小卡"
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-5 bg-[#101010]">
+        <p className="mb-4 text-xs text-muted-foreground">
+          单击人像小卡图片选中（胸口以上，大头照效果最佳），点「确定」锁定五官特征。双击可以直接选择并返回。
+        </p>
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-6">
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className="aspect-[3/4] rounded-md border border-dashed border-border bg-secondary text-muted-foreground transition-colors hover:border-primary/60 hover:text-foreground flex flex-col items-center justify-center"
+          >
+            <span className="flex flex-col items-center justify-center gap-3">
+              {isUploading ? (
+                <Upload className="h-7 w-7 animate-pulse text-primary" />
+              ) : (
+                <Plus className="h-7 w-7" />
+              )}
+              <span className="text-sm">
+                {isUploading ? "上传中..." : "上传人像小卡"}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                jpg/png/webp
+              </span>
+            </span>
+          </button>
+
+          {models.map((model) => (
+            <ModelCard
+              key={model.assetId}
+              model={model}
+              selected={draftSelectedId === model.assetId}
+              referenced={false}
+              canSelect={true}
+              onToggleSelect={() => toggleSelected(model.assetId)}
+              onQuickAdd={() => onConfirm(model)}
+              onDelete={() => onDeleteModel(model.assetId)}
+              onRename={(name) => onRenameModel(model.assetId, name)}
+            />
+          ))}
+        </div>
+
+        {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={handleUpload}
+        />
+      </div>
+
+      <div className="flex justify-end gap-3 border-t border-border px-5 py-4 bg-[#101010]">
+        <button
+          type="button"
+          onClick={() => onConfirm(null)}
+          className="rounded-full border border-border px-8 py-3 text-sm text-foreground hover:border-primary/60"
+        >
+          清除选择
+        </button>
+        <button
+          type="button"
+          onClick={() => onConfirm(selectedModel)}
+          className="rounded-full border border-primary bg-primary/10 px-8 py-3 text-sm text-primary hover:bg-primary hover:text-primary-foreground"
+        >
+          确定
+        </button>
+      </div>
+    </div>
+  );
 }

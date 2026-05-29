@@ -207,6 +207,7 @@ export interface PhotoFissionParams {
    * 用于连衣裙第二次生图避开第一次姿势动作表情；前端不需要传。
    */
   referenceAssetKey?: string
+  faceIdModelId?: string | null
 }
 
 export interface BackgroundReplaceParams {

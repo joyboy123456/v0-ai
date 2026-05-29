@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Check,
   Loader2,
   Sparkles,
   Upload,
@@ -74,10 +75,14 @@ interface LeftPanelProps {
   fashionRemixRequest: FashionRemixRequest | null;
   photoFissionCaseRequest: PhotoFissionCaseRequest | null;
   poseFissionCaseRequest: PoseFissionCaseRequest | null;
+  faceIdModels?: CompanyModel[];
+  selectedFaceIdModel?: CompanyModel | null;
   onChangeSelectedPoseTemplates: (templates: PoseTemplate[]) => void;
+  onChangeSelectedFaceIdModel?: (model: CompanyModel | null) => void;
   onAddFashionReference: (reference: FashionReferenceImage) => void;
   onRemoveFashionReference: (assetId: string) => void;
   onOpenCompanyModelLibrary: () => void;
+  onOpenFaceIdLibrary?: () => void;
   onOpenPoseLibrary: () => void;
   onTaskCreated: (taskId: string) => void;
 }
@@ -100,10 +105,14 @@ export function LeftPanel({
   fashionRemixRequest,
   photoFissionCaseRequest,
   poseFissionCaseRequest,
+  faceIdModels = [],
+  selectedFaceIdModel = null,
   onChangeSelectedPoseTemplates,
+  onChangeSelectedFaceIdModel = () => {},
   onAddFashionReference,
   onRemoveFashionReference,
   onOpenCompanyModelLibrary,
+  onOpenFaceIdLibrary = () => {},
   onOpenPoseLibrary,
   onTaskCreated,
 }: LeftPanelProps) {
@@ -389,6 +398,7 @@ export function LeftPanel({
         photoFissionMainImage.assetId,
         ...(photoFissionFrontDetail ? [photoFissionFrontDetail.assetId] : []),
         ...(photoFissionBackDetail ? [photoFissionBackDetail.assetId] : []),
+        ...(selectedFaceIdModel ? [selectedFaceIdModel.assetId] : []),
       ];
     }
 
@@ -438,6 +448,7 @@ export function LeftPanel({
         resolution: photoFissionResolution,
         shotPlan: [],
         resultCount: photoFissionResultCount,
+        faceIdModelId: selectedFaceIdModel?.assetId ?? null,
       };
     }
 
@@ -559,6 +570,8 @@ export function LeftPanel({
                 imageRatio={photoFissionImageRatio}
                 resolution={photoFissionResolution}
                 helperText={helperText}
+                faceIdModels={faceIdModels}
+                selectedFaceIdModel={selectedFaceIdModel}
                 onModelChange={setPhotoFissionModel}
                 onCategoryChange={setPhotoFissionCategory}
                 onChildrensCategoryChange={setPhotoFissionChildrensCategory}
@@ -580,6 +593,8 @@ export function LeftPanel({
                 onFrontDetailRemove={() => setPhotoFissionFrontDetail(null)}
                 onBackDetailUploaded={setPhotoFissionBackDetail}
                 onBackDetailRemove={() => setPhotoFissionBackDetail(null)}
+                onSelectFaceIdModel={onChangeSelectedFaceIdModel}
+                onOpenFaceIdLibrary={onOpenFaceIdLibrary}
                 onImageRatioChange={(value) => {
                   photoFissionRatioUserOverrideRef.current = true;
                   setPhotoFissionImageRatio(value);
@@ -1378,6 +1393,8 @@ function PhotoFissionForm({
   imageRatio,
   resolution,
   helperText,
+  faceIdModels = [],
+  selectedFaceIdModel = null,
   onModelChange,
   onCategoryChange,
   onChildrensCategoryChange,
@@ -1387,6 +1404,8 @@ function PhotoFissionForm({
   onFrontDetailRemove,
   onBackDetailUploaded,
   onBackDetailRemove,
+  onSelectFaceIdModel = () => {},
+  onOpenFaceIdLibrary = () => {},
   onImageRatioChange,
   onResolutionChange,
   resultCount,
@@ -1401,6 +1420,8 @@ function PhotoFissionForm({
   imageRatio: PhotoFissionImageRatio;
   resolution: PhotoFissionResolution;
   helperText: string;
+  faceIdModels?: CompanyModel[];
+  selectedFaceIdModel?: CompanyModel | null;
   onModelChange: (value: FashionModelId) => void;
   onCategoryChange: (value: PhotoFissionCategory) => void;
   onChildrensCategoryChange: (value: PhotoFissionChildrensCategory) => void;
@@ -1410,6 +1431,8 @@ function PhotoFissionForm({
   onFrontDetailRemove: () => void;
   onBackDetailUploaded: (image: UploadedImage) => void;
   onBackDetailRemove: () => void;
+  onSelectFaceIdModel?: (model: CompanyModel | null) => void;
+  onOpenFaceIdLibrary?: () => void;
   onImageRatioChange: (value: PhotoFissionImageRatio) => void;
   onResolutionChange: (value: PhotoFissionResolution) => void;
   resultCount: PhotoFissionResultCount;
@@ -1505,6 +1528,13 @@ function PhotoFissionForm({
         required={false}
         variant="compact"
         optimizeForGeneration
+      />
+
+      <FaceIdModelSelect
+        models={faceIdModels}
+        selectedModel={selectedFaceIdModel}
+        onSelectModel={onSelectFaceIdModel}
+        onOpenLibrary={onOpenFaceIdLibrary}
       />
 
       <OptionSelector
@@ -1703,4 +1733,87 @@ function inferPhotoFissionResolution(
   if (maxSide >= 3000) return "4k";
   if (maxSide >= 1500) return "2k";
   return "1k";
+}
+
+function FaceIdModelSelect({
+  models = [],
+  selectedModel = null,
+  onSelectModel = () => {},
+  onOpenLibrary = () => {},
+}: {
+  models?: CompanyModel[];
+  selectedModel?: CompanyModel | null;
+  onSelectModel?: (model: CompanyModel | null) => void;
+  onOpenLibrary?: () => void;
+}) {
+  const previewModels = Array.isArray(models) ? models.slice(0, 4) : [];
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1">
+        <span className="text-sm text-foreground">五官特征锁定（选填）</span>
+      </div>
+
+      <div className="rounded-lg border border-border bg-secondary p-3">
+        {selectedModel ? (
+          <div className="mb-3 flex items-center gap-3">
+            <img
+              src={selectedModel.preview}
+              alt={selectedModel.name}
+              className="w-12 h-12 rounded-md object-cover bg-white"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between">
+                <p className="truncate text-sm text-foreground">{selectedModel.name}</p>
+                <button
+                  type="button"
+                  onClick={() => onSelectModel(null)}
+                  className="text-xs text-destructive hover:underline"
+                >
+                  清除
+                </button>
+              </div>
+              <p className="text-xs text-muted-foreground">已锁定此人像小卡的五官特征</p>
+            </div>
+          </div>
+        ) : (
+          <p className="mb-3 text-xs text-muted-foreground">
+            上传并选择人像小卡（胸口以上），生图时将锁定其五官特征。
+          </p>
+        )}
+
+        <div className="flex items-center gap-2">
+          {previewModels.map((model) => {
+            const isActive = selectedModel?.assetId === model.assetId;
+            return (
+              <button
+                key={model.assetId}
+                type="button"
+                onClick={() => onSelectModel(isActive ? null : model)}
+                className={cn(
+                  'relative w-11 h-11 rounded-md overflow-hidden border bg-white',
+                  isActive ? 'border-primary' : 'border-border',
+                )}
+              >
+                <img src={model.preview} alt={model.name} className="w-full h-full object-cover" />
+                {isActive && (
+                  <span className="absolute right-0.5 top-0.5 w-4 h-4 rounded-full bg-primary text-primary-foreground flex items-center justify-center">
+                    <Check className="w-3 h-3" />
+                  </span>
+                )}
+              </button>
+            );
+          })}
+
+          <button
+            type="button"
+            onClick={onOpenLibrary}
+            className="h-11 min-w-14 rounded-md border border-border bg-card px-3 text-xs text-muted-foreground hover:border-primary/60 hover:text-foreground"
+          >
+            人像小卡
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

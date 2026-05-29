@@ -61,19 +61,31 @@ export function buildPlannerRulePlan(
   childrensCategory?: PhotoFissionChildrensCategory,
   resultCount: PhotoFissionResultCount = 9,
   recentActionHints: readonly string[] = [],
+  hasFaceIdModel?: boolean,
+  faceIdImageIndex?: number,
 ): PlannerRulePlan | undefined {
   if (category === 'childrens' && childrensCategory) {
     if (childrensCategory === 'suit') {
+      let systemPrompt = buildSuitPlannerSystemPrompt(resultCount, recentActionHints)
+      if (hasFaceIdModel && faceIdImageIndex) {
+        systemPrompt += buildFaceIdOverrideSection(faceIdImageIndex)
+      }
       return {
-        systemPrompt: buildSuitPlannerSystemPrompt(resultCount, recentActionHints),
+        systemPrompt,
         userPrompt: buildSuitPlannerUserPrompt(resultCount, recentActionHints),
         slots: buildSuitPlannerSlots(resultCount),
       }
     }
-    const systemPrompt = getChildrensCategoryPlannerSystemPrompt(childrensCategory, resultCount)
-    const slots = getChildrensCategoryPlannerSlots(childrensCategory, resultCount)
-    if (!systemPrompt || !slots) {
+    let systemPrompt = getChildrensCategoryPlannerSystemPrompt(childrensCategory, resultCount)
+    if (!systemPrompt) {
       return undefined
+    }
+    const slots = getChildrensCategoryPlannerSlots(childrensCategory, resultCount)
+    if (!slots) {
+      return undefined
+    }
+    if (hasFaceIdModel && faceIdImageIndex) {
+      systemPrompt += buildFaceIdOverrideSection(faceIdImageIndex)
     }
     return {
       systemPrompt,
@@ -82,6 +94,39 @@ export function buildPlannerRulePlan(
     }
   }
   return undefined
+}
+
+/**
+ * 五官锁定模式覆盖段：追加在 Planner 系统提示词末尾。
+ *
+ * 覆盖上方所有关于"脸部延续参考图"的指令——当用户选了人像小卡时，
+ * 脸型+五官的唯一来源是人像小卡图，不是主图。
+ */
+function buildFaceIdOverrideSection(faceIdImageIndex: number): string {
+  return `
+
+# 五官脸型锁定模式（最高优先级，覆盖上方所有脸部相关指令）
+
+用户本次上传了人像小卡（最后一张图，即图${faceIdImageIndex}），用于锁定人物的脸型和五官。
+
+**此模式下的核心规则变更（覆盖前面的所有脸部指令）：**
+
+1. 每段 imagePrompt 中，不要写"脸型五官延续参考图"或"人物脸部严格延续参考图"。
+   改为写："面部全部特征（脸型+五官）以最后一张人像小卡（图${faceIdImageIndex}）为唯一基准。"
+
+2. "参考图"三个字在脸部/五官/脸型语境下，特指图${faceIdImageIndex}人像小卡，不再指向图1主图。
+   图1主图只提供穿搭比例、发型、发饰、服装细节、场景与光线，不提供任何面部信息。
+
+3. 不要在 imagePrompt 里写"不改变脸部特征"或"脸部保持一致"等含糊指令——
+   必须明确写出"脸型形状、下颌线、颧骨、眼形、鼻型、嘴形、眉形、耳朵形状、面部三庭五眼比例全部以图${faceIdImageIndex}人像小卡为准"。
+
+4. 推荐在每段 imagePrompt 中使用以下锚定句式：
+   "TA面部全部特征（脸型+五官）严格以图${faceIdImageIndex}人像小卡为唯一权威参考，表情可自然变化但脸型骨骼结构和五官细节不改变。"
+
+5. 外景镜头也不例外：场景换成蓝天草地时，脸型+五官仍然以图${faceIdImageIndex}人像小卡为准，不能因为换背景就改变脸。
+
+6. 注意：图1主图的脸部已被预处理覆盖（不可读取面部信息），出图模型只能从图${faceIdImageIndex}获取面部特征。
+`
 }
 
 /**

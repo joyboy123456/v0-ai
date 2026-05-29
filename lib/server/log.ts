@@ -16,6 +16,8 @@ export type ImageEventName =
   | 'pool.dispatch'
   | 'pool.failover'
   | 'pool.circuit'
+  | 'face.blur'
+  | 'face.blur-fallback'
 
 export interface LogContext {
   traceId: string
@@ -33,6 +35,8 @@ const eventLevel: Record<ImageEventName, 'info' | 'warn' | 'error'> = {
   'pool.dispatch': 'info',
   'pool.failover': 'warn',
   'pool.circuit': 'error',
+  'face.blur': 'info',
+  'face.blur-fallback': 'warn',
 }
 
 export function logImageEvent(

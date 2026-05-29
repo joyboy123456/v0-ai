@@ -19,6 +19,7 @@ import {
 } from '@/lib/types'
 
 const companyModelsStorageKey = 'fashion_company_models'
+const faceIdModelsStorageKey = 'fashion_face_id_models'
 const maxFashionReferences = 10
 
 export function Workbench() {
@@ -44,6 +45,10 @@ export function Workbench() {
   const [companyModelLibraryRequestKey, setCompanyModelLibraryRequestKey] = useState(0)
   const [companyModels, setCompanyModels] = useState<CompanyModel[]>([])
   const [companyModelsHydrated, setCompanyModelsHydrated] = useState(false)
+  const [faceIdLibraryRequestKey, setFaceIdLibraryRequestKey] = useState(0)
+  const [faceIdModels, setFaceIdModels] = useState<CompanyModel[]>([])
+  const [faceIdModelsHydrated, setFaceIdModelsHydrated] = useState(false)
+  const [selectedFaceIdModel, setSelectedFaceIdModel] = useState<CompanyModel | null>(null)
   const [fashionReferences, setFashionReferences] = useState<FashionReferenceImage[]>([])
   const [fashionRemixRequest, setFashionRemixRequest] = useState<FashionRemixRequest | null>(null)
   const [photoFissionCaseRequest, setPhotoFissionCaseRequest] = useState<{
@@ -215,6 +220,32 @@ export function Workbench() {
     if (!companyModelsHydrated) return
     window.localStorage.setItem(companyModelsStorageKey, JSON.stringify(companyModels))
   }, [companyModels, companyModelsHydrated])
+
+  useEffect(() => {
+    try {
+      const storedModels = window.localStorage.getItem(faceIdModelsStorageKey)
+      if (storedModels) {
+        const parsed = JSON.parse(storedModels) as CompanyModel[]
+        const validModels = Array.isArray(parsed)
+          ? parsed.filter((model) => {
+              if (!model || typeof model.preview !== 'string') return false
+              if (model.preview.startsWith('blob:')) return false
+              return true
+            })
+          : []
+        setFaceIdModels(validModels)
+      }
+    } catch {
+      // ignore unreadable storage
+    } finally {
+      setFaceIdModelsHydrated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!faceIdModelsHydrated) return
+    window.localStorage.setItem(faceIdModelsStorageKey, JSON.stringify(faceIdModels))
+  }, [faceIdModels, faceIdModelsHydrated])
 
   useEffect(() => {
     if (!user) return
@@ -408,10 +439,14 @@ export function Workbench() {
         fashionRemixRequest={fashionRemixRequest}
         photoFissionCaseRequest={photoFissionCaseRequest}
         poseFissionCaseRequest={poseFissionCaseRequest}
+        faceIdModels={faceIdModels}
+        selectedFaceIdModel={selectedFaceIdModel}
+        onChangeSelectedFaceIdModel={setSelectedFaceIdModel}
         onChangeSelectedPoseTemplates={setSelectedPoseTemplates}
         onAddFashionReference={handleAddFashionReference}
         onRemoveFashionReference={handleRemoveFashionReference}
         onOpenCompanyModelLibrary={() => setCompanyModelLibraryRequestKey((currentKey) => currentKey + 1)}
+        onOpenFaceIdLibrary={() => setFaceIdLibraryRequestKey((currentKey) => currentKey + 1)}
         onOpenPoseLibrary={() => setPoseLibraryDialogOpen(true)}
         onTaskCreated={(taskId) => {
           setActiveTaskId(taskId)
@@ -426,6 +461,9 @@ export function Workbench() {
         companyModels={companyModels}
         fashionReferences={fashionReferences}
         companyModelLibraryRequestKey={companyModelLibraryRequestKey}
+        faceIdModels={faceIdModels}
+        faceIdLibraryRequestKey={faceIdLibraryRequestKey}
+        selectedFaceIdModel={selectedFaceIdModel}
         onAddCompanyModel={(model) => {
           setCompanyModels((currentModels) => {
             if (currentModels.some((item) => item.assetId === model.assetId)) return currentModels
@@ -444,6 +482,27 @@ export function Workbench() {
             ),
           )
         }}
+        onAddFaceIdModel={(model) => {
+          setFaceIdModels((currentModels) => {
+            if (currentModels.some((item) => item.assetId === model.assetId)) return currentModels
+            return [model, ...currentModels]
+          })
+        }}
+        onDeleteFaceIdModel={(assetId) => {
+          setFaceIdModels((currentModels) =>
+            currentModels.filter((item) => item.assetId !== assetId),
+          )
+          setSelectedFaceIdModel((current) => current?.assetId === assetId ? null : current)
+        }}
+        onRenameFaceIdModel={(assetId, name) => {
+          setFaceIdModels((currentModels) =>
+            currentModels.map((item) =>
+              item.assetId === assetId ? { ...item, name } : item,
+            ),
+          )
+          setSelectedFaceIdModel((current) => current?.assetId === assetId ? { ...current, name } : current)
+        }}
+        onSelectFaceIdModel={setSelectedFaceIdModel}
         onAddFashionReference={handleAddFashionReference}
         onUseTaskAsFashionReference={handleUseTaskAsFashionReference}
         onSelectPoseFissionCase={handleSelectPoseFissionCase}

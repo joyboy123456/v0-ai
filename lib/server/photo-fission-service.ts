@@ -20,7 +20,6 @@ import {
   getAvailableProvidersForModel,
   getFailoverProviderForModel,
   getNoAvailableProviderMessage,
-  isGoogleImageModel,
   type ImageProvider,
 } from './image-provider-pool'
 import { logImageEvent } from './log'
@@ -41,6 +40,7 @@ import {
   SUIT_STYLE_ANCHOR,
 } from './prompt-templates/suit-planner-system'
 import { appendFlatDetailReferenceLock } from './fission-flat-detail-lock'
+import { blurFaceRegion } from './face-blur'
 import { buildPlannerRulePlan } from './photo-fission-rule-engine'
 import {
   invokeShotPlanner,
@@ -154,8 +154,13 @@ export function normalizePhotoFissionParams(
   const resolution = readPhotoFissionResolution(params.resolution)
   const resultCount = readResultCount(params.resultCount)
 
+  const faceIdModelId =
+    typeof params.faceIdModelId === 'string' && params.faceIdModelId.trim()
+      ? params.faceIdModelId.trim()
+      : null
+
   const expectedAssetCount =
-    1 + (hasFrontDetail ? 1 : 0) + (hasBackDetail ? 1 : 0)
+    1 + (hasFrontDetail ? 1 : 0) + (hasBackDetail ? 1 : 0) + (faceIdModelId ? 1 : 0)
   if (inputAssetCount !== expectedAssetCount) {
     throw new Error('服装大片裂变素材数量与细节图参数不一致')
   }
@@ -168,6 +173,7 @@ export function normalizePhotoFissionParams(
     hasFrontDetail,
     hasBackDetail,
     resultCount,
+    hasFaceIdModel: Boolean(faceIdModelId),
   })
 
   // R6 输入预检：每条 shot.prompt 不应超过 30000 字（v3 实测 1400-1500 字，远低于上限，加 guard）
@@ -190,6 +196,7 @@ export function normalizePhotoFissionParams(
     shotPlan,
     resultCount,
     referenceAssetKey: buildPhotoFissionReferenceAssetKey(inputAssetIds),
+    faceIdModelId,
   }
 }
 
@@ -201,6 +208,8 @@ export interface PhotoFissionShotPlanInput {
   hasFrontDetail: boolean
   hasBackDetail: boolean
   resultCount: PhotoFissionResultCount
+  /** Whether a portrait card (face ID model) is selected for facial feature locking */
+  hasFaceIdModel: boolean
 }
 
 type PhotoFissionShotScene = 'reference' | 'outdoor'
@@ -247,6 +256,12 @@ export function buildPhotoFissionShotPlan(
     throw new Error('服装大片裂变服装品类无效')
   }
 
+  // Face ID image is always the last item in inputImages.
+  // Image index = 1(main) + (front?1:0) + (back?1:0) + 1
+  const faceIdImageIndex = input.hasFaceIdModel
+    ? 1 + (input.hasFrontDetail ? 1 : 0) + (input.hasBackDetail ? 1 : 0) + 1
+    : undefined
+
   return activeBlueprint.map((blueprint, index) => {
     const shotId = `shot_${index + 1}`
     const order = index + 1
@@ -261,6 +276,8 @@ export function buildPhotoFissionShotPlan(
       resolution: input.resolution,
       hasFrontDetail: input.hasFrontDetail,
       hasBackDetail: input.hasBackDetail,
+      hasFaceIdModel: input.hasFaceIdModel,
+      faceIdImageIndex,
     })
 
     return {
@@ -283,6 +300,10 @@ interface BuildShotPromptInput {
   resolution: PhotoFissionResolution
   hasFrontDetail: boolean
   hasBackDetail: boolean
+  /** Whether a portrait card is selected for facial feature locking */
+  hasFaceIdModel: boolean
+  /** 1-based image index of the portrait card in inputImages */
+  faceIdImageIndex?: number
 }
 
 function buildShotPrompt(input: BuildShotPromptInput): string {
@@ -294,6 +315,7 @@ function buildShotPrompt(input: BuildShotPromptInput): string {
       shotScene: input.shotScene,
       category: input.category,
       childrensCategory: input.childrensCategory,
+      hasFaceIdModel: input.hasFaceIdModel,
     }),
     '',
     buildReferenceImagesSection({
@@ -302,9 +324,11 @@ function buildShotPrompt(input: BuildShotPromptInput): string {
       shotScene: input.shotScene,
       category: input.category,
       childrensCategory: input.childrensCategory,
+      hasFaceIdModel: input.hasFaceIdModel,
+      faceIdImageIndex: input.faceIdImageIndex,
     }),
     '',
-    buildIdentityLockSection(),
+    buildIdentityLockSection(input.hasFaceIdModel, input.faceIdImageIndex),
     '',
     buildWardrobeLockSection(),
     '',
@@ -335,7 +359,7 @@ function buildShotPrompt(input: BuildShotPromptInput): string {
       orientation,
     ),
     '',
-    buildNegativeSection(input.category, input.childrensCategory),
+    buildNegativeSection(input.category, input.childrensCategory, input.hasFaceIdModel, input.faceIdImageIndex),
   ]
 
   // 过滤掉条件性 section 返回空字符串的占位（保持 prompt 紧凑）
@@ -390,12 +414,14 @@ function buildTaskSection(input: {
   shotScene?: PhotoFissionShotScene
   category: PhotoFissionCategory
   childrensCategory?: PhotoFissionChildrensCategory
+  hasFaceIdModel?: boolean
 }): string {
-  const { label, orientation, shotScene, category, childrensCategory } = input
+  const { label, orientation, shotScene, category, childrensCategory, hasFaceIdModel } = input
+  const faceIdNote = hasFaceIdModel ? '；面部全部特征（脸型+五官）以人像小卡为唯一基准，不参照主图' : ''
   if (isSuitChildrensOutdoorShot(category, childrensCategory, shotScene)) {
     return [
       `本次任务：生成同一个人、同一套童装套装的【${label}】单张镜头。`,
-      `画面是一张写实风格的童装套装电商外景补充图，采用${orientation}，主体人物（参考第一张主图的同一个人，身材比例、肤色、年龄感与发型保持一致）居中或轻微居中，人物和套装是绝对主体。`,
+      `画面是一张写实风格的童装套装电商外景补充图，采用${orientation}，主体人物（参考第一张主图的同一个人，身材比例、肤色、年龄感与发型保持一致${faceIdNote}）居中或轻微居中，人物和套装是绝对主体。`,
       '受控裂变：保持人物身份与这套上衣裤装套装统一；当前镜头按童装套装抽卡规则使用晴朗夏日蓝天绿草地真实外景，场景不出现白云，动作、构图与留白都服务于商品上架展示。',
       '输出单张完整图片，不要多宫格拼接。',
     ].join('\n')
@@ -403,7 +429,7 @@ function buildTaskSection(input: {
   if (isDressChildrensOutdoorShot(category, childrensCategory, shotScene)) {
     return [
       `本次任务：生成同一个人、同一套服装的【${label}】单张镜头。`,
-      `画面是一张写实风格的童装连衣裙电商外景补充图，采用${orientation}，主体人物（参考第一张主图的同一个小女孩，身材比例、肤色与发型保持一致）居中或轻微居中，人物和连衣裙是绝对主体。`,
+      `画面是一张写实风格的童装连衣裙电商外景补充图，采用${orientation}，主体人物（参考第一张主图的同一个小女孩，身材比例、肤色与发型保持一致${faceIdNote}）居中或轻微居中，人物和连衣裙是绝对主体。`,
       '受控裂变：保持人物身份与这套连衣裙统一；当前镜头按童装连衣裙抽卡规则使用无云蓝天草地外景，场景不能出现云，动作、构图与留白都服务于商品上架展示。',
       '输出单张完整图片，不要多宫格拼接。',
     ].join('\n')
@@ -411,7 +437,7 @@ function buildTaskSection(input: {
   if (category === 'childrens' && childrensCategory === 'dress') {
     return [
       `本次任务：生成同一个小女孩、同一套童装连衣裙的【${label}】单张镜头。`,
-      `画面是一张写实风格的童装连衣裙电商上架图，采用${orientation}，主体人物（参考第一张主图的同一个小女孩，身材比例、肤色与发型保持一致）居中或轻微居中，人物和连衣裙是绝对主体。`,
+      `画面是一张写实风格的童装连衣裙电商上架图，采用${orientation}，主体人物（参考第一张主图的同一个小女孩，身材比例、肤色与发型保持一致${faceIdNote}）居中或轻微居中，人物和连衣裙是绝对主体。`,
       '受控裂变：当前镜头来自童装连衣裙商品展示抽卡池；保持人物身份、这套连衣裙、参考拍摄环境基调与光线统一，动作和构图都服务于卖货与测流量。',
       '输出单张完整图片，不要多宫格拼接。',
     ].join('\n')
@@ -419,14 +445,14 @@ function buildTaskSection(input: {
   if (isSuitChildrensCategory(category, childrensCategory)) {
     return [
       `本次任务：生成同一个人、同一套套装的【${label}】单张镜头。`,
-      `画面是一张写实风格的套装电商上架图，采用${orientation}，主体人物（参考第一张主图的同一个人，身材比例、肤色、年龄感与发型保持一致）居中或轻微居中，人物和套装是绝对主体。`,
+      `画面是一张写实风格的套装电商上架图，采用${orientation}，主体人物（参考第一张主图的同一个人，身材比例、肤色、年龄感与发型保持一致${faceIdNote}）居中或轻微居中，人物和套装是绝对主体。`,
       '受控裂变：只调整镜头角度、景别、姿势、表情与构图；保持人物身份、上衣与裤装的成套关系、原背景、原光线和原画面风格统一。',
       '输出单张完整图片，不要多宫格拼接。',
     ].join('\n')
   }
   return [
     `本次任务：生成同一个人、同一套服装、同一场景的【${label}】单张镜头。`,
-    `画面是一张写实风格的电商服装大片摄影作品，采用${orientation}，主体人物（参考第一张主图的同一个人，身材比例、肤色与发型保持一致）位于画面中央，以"三分法"构图原则布局。`,
+    `画面是一张写实风格的电商服装大片摄影作品，采用${orientation}，主体人物（参考第一张主图的同一个人，身材比例、肤色与发型保持一致${faceIdNote}）位于画面中央，以"三分法"构图原则布局。`,
     '受控裂变：只调整镜头角度、景别、姿势与构图；保持人物身份、这套服装、原场景与光线统一。',
     '输出单张完整图片，不要多宫格拼接。',
   ].join('\n')
@@ -438,6 +464,8 @@ function buildReferenceImagesSection(input: {
   shotScene?: PhotoFissionShotScene
   category: PhotoFissionCategory
   childrensCategory?: PhotoFissionChildrensCategory
+  hasFaceIdModel: boolean
+  faceIdImageIndex?: number
 }): string {
   const {
     hasFrontDetail,
@@ -445,6 +473,8 @@ function buildReferenceImagesSection(input: {
     shotScene,
     category,
     childrensCategory,
+    hasFaceIdModel,
+    faceIdImageIndex,
   } = input
   const isDressOutdoorShot = isDressChildrensOutdoorShot(
     category,
@@ -456,13 +486,24 @@ function buildReferenceImagesSection(input: {
     childrensCategory,
     shotScene,
   )
-  const lines: string[] = [
-    '【参考图说明】',
-    isDressOutdoorShot
+  // 五官锁定模式：图1不再承载五官/身份，只提供穿搭、发型、场景与光线
+  let mainImageLine: string
+  if (hasFaceIdModel) {
+    mainImageLine = isDressOutdoorShot
+      ? '- 图1：主图基准（这套连衣裙的视觉锚点，承载穿搭比例、发型、发饰、服装款式、面料质感与商品细节；五官特征不从此图读取，以人像小卡为准）'
+      : isSuitOutdoorShot
+        ? '- 图1：主图基准（这套童装套装的视觉锚点，承载穿搭比例、发型、发饰、上衣裤装成套关系、面料质感与商品细节；五官特征不从此图读取，以人像小卡为准）'
+        : '- 图1：主图基准（这套服装的视觉锚点，承载穿搭比例、发型、发饰、服装细节、场景与光线；五官特征不从此图读取，以人像小卡为准）'
+  } else {
+    mainImageLine = isDressOutdoorShot
       ? '- 图1：主图基准（这套连衣裙与这位小女孩的视觉锚点，承载人物身份、服装款式、面料质感与商品细节；当前镜头抽中无云蓝天草地外景卡，场景不能出现云）'
       : isSuitOutdoorShot
         ? '- 图1：主图基准（这套童装套装与这位模特的视觉锚点，承载人物身份、上衣裤装成套关系、面料质感与商品细节；当前镜头抽中晴朗夏日蓝天绿草地真实外景补充卡，场景不出现白云）'
-      : '- 图1：主图基准（这套服装与这位模特的视觉锚点，承载身份、服装、场景、光线的全部细节）',
+        : '- 图1：主图基准（这套服装与这位模特的视觉锚点，承载身份、服装、场景、光线的全部细节）'
+  }
+  const lines: string[] = [
+    '【参考图说明】',
+    mainImageLine,
   ]
   let nextIndex = 2
   if (hasFrontDetail) {
@@ -475,11 +516,32 @@ function buildReferenceImagesSection(input: {
     lines.push(
       `- 图${nextIndex}：这套服装的背面细节参考（背部剪裁、印花、肩线以此为准）`,
     )
+    nextIndex += 1
+  }
+  if (hasFaceIdModel) {
+    lines.push(
+      `- 图${nextIndex}：人像小卡——此人面部全部特征的高清唯一锚点（胸口以上特写），生成时必须严格参照这张图的五官细节+脸型轮廓+下颌线+颧骨+面部比例，图1主图仅用于确认穿搭与身材比例，不提供面部信息`,
+    )
   }
   return lines.join('\n')
 }
 
-function buildIdentityLockSection(): string {
+function buildIdentityLockSection(
+  hasFaceIdModel: boolean,
+  faceIdImageIndex?: number,
+): string {
+  if (hasFaceIdModel && faceIdImageIndex) {
+    return [
+      '【人物呈现 IDENTITY — 五官脸型锁定模式】',
+      '画面中的人物是图1里的同一个人。身材比例、发型、发色、发饰、肤色与年龄感与图1保持一致。',
+      `面部全部特征必须严格复刻图${faceIdImageIndex}中的高清人像小卡，这是此人的"面部身份证"，不可偏离。图1主图的脸部已被覆盖处理，不提供面部信息。具体复刻维度：`,
+      `- 脸型：脸的形状（圆脸/方脸/鹅蛋脸/瓜子脸等）、下颌线弧度、颧骨高低、额头宽窄与发际线形状、下巴长短与尖圆、两腮宽窄`,
+      `- 五官：眼形（包括双眼皮/单眼皮、眼角方向、眼睛大小与间距）、鼻型（鼻梁高低、鼻头大小、鼻翼宽窄）、嘴形（嘴唇厚薄、嘴角方向、嘴的大小）、眉形（眉毛粗细、弧度、浓淡）、耳朵形状`,
+      `- 面部比例：五官在脸上的位置关系（三庭五眼比例）、面部立体感`,
+      '表情、神情可以自然变化（微笑、开朗、专注等），但脸型骨骼结构和五官细节绝对不能改变。',
+      `绝对规则：脸型和五官全部以图${faceIdImageIndex}为准，图1主图的脸不作为任何参考来源。`,
+    ].join('\n')
+  }
   return [
     '【人物呈现 IDENTITY】',
     '画面中的人物是图1里的同一个人，身材比例、发型、发色、肤色与年龄感与图1保持一致；面部特征延续图1，神情自然、状态放松。',
@@ -666,9 +728,13 @@ function buildAngleControlSection(
 }
 
 function buildShotSection(label: string, shotDescription: string): string {
+  const isBackShot = /背面|侧后|背后|背部|不露脸/.test(label + shotDescription)
+  const backNote = isBackShot
+    ? '；头部顺着身体方向自然朝前，不回眸、不回头看镜头，脸部不露出或只露极少侧缘'
+    : ''
   return [
     '【当前镜头 SHOT】',
-    `${label}（采用对应景别的平视构图）：${shotDescription}。`,
+    `${label}（采用对应景别的平视构图）：${shotDescription}${backNote}。`,
   ].join('\n')
 }
 
@@ -687,6 +753,8 @@ function buildCategoryLockSection(
   if (category === 'childrens' && childrensCategory) {
     lines.push(childrensCategoryRequirementMap[childrensCategory])
   }
+  // 鞋子保持要求
+  lines.push('鞋子要求：图1主图如有鞋子，所有生成图中必须保留同款鞋子，不能赤脚、不能换鞋、不能截断到看不见鞋。')
   return lines.join('\n')
 }
 
@@ -732,10 +800,15 @@ function buildOutputParamsSection(
 function buildNegativeSection(
   category: PhotoFissionCategory,
   childrensCategory?: PhotoFissionChildrensCategory,
+  hasFaceIdModel?: boolean,
+  faceIdImageIndex?: number,
 ): string {
+  const faceConstraint = hasFaceIdModel && faceIdImageIndex
+    ? `面部全部特征（脸型形状、下颌线、颧骨、五官细节、面部比例）以图${faceIdImageIndex}人像小卡为唯一绝对基准，不可偏向图1主图——图1主图脸部已被覆盖，不提供面部信息；发型、发饰从图1主图保留。`
+    : '不改变人物的脸部特征与发型；'
   const lines = [
     '【关键约束】',
-    '不改变这套服装的颜色、版型、材质、图案与 logo；不改变人物的脸部特征与发型；画面场景按当前镜头的 SCENE 段执行并保持风格一致。',
+    `不改变这套服装的颜色、版型、材质、图案与 logo；${faceConstraint}画面场景按当前镜头的 SCENE 段执行并保持风格一致。`,
     '不要生成：文字、水印、品牌印章、多余人物、多宫格拼接，不要变成卡通/插画/动漫/3D 渲染风格。',
   ]
   // 童装二级品类有专属反向提示词时，追加到通用约束之后
@@ -809,6 +882,30 @@ export async function runPhotoFissionPipeline(
     throw new Error('服装大片裂变缺少参考图')
   }
 
+  // ---- 五官锁定：模糊主图脸部区域 ----
+  // 当选了人像小卡时，对主图（inputImages[0]）的脸部区域做高斯模糊，
+  // 强制图像生成模型只能从人像小卡获取五官信息。
+  let inputImages = options.inputImages
+  if (params.faceIdModelId && inputImages.length > 0) {
+    try {
+      const blurredMain = await blurFaceRegion(inputImages[0])
+      inputImages = [blurredMain, ...inputImages.slice(1)]
+      logImageEvent(
+        'face.blur',
+        { traceId: taskId, taskId },
+        { stage: 'photo-fission', faceId: params.faceIdModelId },
+      )
+    } catch (blurError) {
+      // 模糊失败不阻塞主流程，降级使用原图
+      const reason = blurError instanceof Error ? blurError.message : String(blurError)
+      logImageEvent(
+        'face.blur-fallback',
+        { traceId: taskId, taskId },
+        { stage: 'photo-fission', reason },
+      )
+    }
+  }
+
   // ---- v5 LLM Planner 接入 ----
   // 在分发到出图模型之前，先调用文本 LLM 镜头策划器（D15-D18）。
   // 当前仅保留童装连衣裙路径；LLM 调用必须成功，否则直接抛错。
@@ -833,7 +930,7 @@ export async function runPhotoFissionPipeline(
 
   // ---- 多渠道分发 ----
   const availableProviders = getAvailableProvidersForModel(params.model)
-  if (!availableProviders.length && !isGoogleImageModel(params.model)) {
+  if (!availableProviders.length) {
     throw new Error(getNoAvailableProviderMessage(params.model))
   }
 
@@ -855,19 +952,9 @@ export async function runPhotoFissionPipeline(
   const groups = useMultiProvider
     ? dispatchItemsForModel(shotPlan, params.model)
     : new Map([[
-        availableProviders[0]?.id ?? 'fallback',
+        availableProviders[0].id,
         {
-          provider: availableProviders[0] ?? {
-            id: 'fallback',
-            type: 'google' as const,
-            apiKey: options.apiKey,
-            model: params.model,
-            maxIpm: 10,
-            maxRpm: 150,
-            weight: 1,
-            enabled: true,
-            timeoutMs: options.timeoutMs,
-          },
+          provider: availableProviders[0],
           items: shotPlan,
         },
       ]])
@@ -884,7 +971,7 @@ export async function runPhotoFissionPipeline(
         provider,
         shots: groupShots,
         params,
-        inputImages: options.inputImages,
+        inputImages,
         apiKey: provider.apiKey || options.apiKey,
         aspectRatio,
         imageSize,
@@ -952,7 +1039,7 @@ export async function runPhotoFissionPipeline(
               provider,
               shots,
               params,
-              inputImages: options.inputImages,
+              inputImages,
               apiKey: provider.apiKey,
               aspectRatio,
               imageSize,
@@ -982,6 +1069,7 @@ export async function runPhotoFissionPipeline(
     )
   }
 
+  // ---- 五官锁定第二步（已移除换脸，仅靠模糊 + prompt）----
   return successResults
 }
 
@@ -1468,6 +1556,10 @@ async function applyShotPlannerOverride(
     params.childrensCategory,
     params.resultCount,
     recentActionHints,
+    Boolean(params.faceIdModelId),
+    params.faceIdModelId
+      ? 1 + (params.hasFrontDetail ? 1 : 0) + (params.hasBackDetail ? 1 : 0) + 1
+      : undefined,
   )
   if (!plan) {
     throw new Error('生成失败：当前服装大片裂变仅支持童装连衣裙和套装')
@@ -1524,12 +1616,14 @@ async function applyShotPlannerOverride(
       : isDressTask
         ? refineDressPlannerCard(card)
         : card
-    const next = appendFlatDetailReferenceLock(
+    let next = appendFlatDetailReferenceLock(
       plannerCard.imagePrompt,
       params,
       `${plannerCard.role} ${plannerCard.imagePrompt}`,
     ).trim()
     if (!next) continue
+    // Face ID lock: force-inject identity lock paragraph after planner rewrite
+    next = appendFaceIdLock(next, params)
     const nextLabel = plannerCard.role.trim()
     fullPlan[idx] = {
       ...fullPlan[idx],
@@ -1581,4 +1675,57 @@ async function applyShotPlannerOverride(
       total: fullPlan.length,
     }),
   )
+}
+
+/**
+ * Append face ID identity lock paragraph to a planner-rewritten prompt.
+ *
+ * Similar to `appendFlatDetailReferenceLock`: the LLM Planner fully rewrites each shot's prompt
+ * and may omit the face ID locking instructions. This function force-injects them so that the
+ * downstream image model always receives the facial feature anchoring directive.
+ *
+ * No-op when `params.faceIdModelId` is not set.
+ */
+function appendFaceIdLock(
+  prompt: string,
+  params: PhotoFissionParams,
+): string {
+  if (!params.faceIdModelId) {
+    return prompt
+  }
+
+  // Compute the 1-based image index for the face ID portrait card
+  const faceIdImageIndex =
+    1 +
+    (params.hasFrontDetail ? 1 : 0) +
+    (params.hasBackDetail ? 1 : 0) +
+    1
+
+  const imgRef = String(faceIdImageIndex)
+
+  // 移除 planner 可能残留的"延续参考图"脸部指令，避免与锁定指令冲突
+  let cleaned = prompt
+  cleaned = cleaned.replace(/脸型五官和人物身份延续参考图[。；]/g, '面部全部特征以图' + imgRef + '人像小卡为唯一基准。')
+  cleaned = cleaned.replace(/脸型五官延续参考图[。；]/g, '面部全部特征以图' + imgRef + '人像小卡为唯一基准。')
+  cleaned = cleaned.replace(/人物脸部必须严格延续参考图[：:][^。；]+[。；]/g, '')
+  cleaned = cleaned.replace(/脸部延续参考图[，,][^。；]+[。；]/g, '面部全部特征以图' + imgRef + '人像小卡为唯一基准。')
+  cleaned = cleaned.replace(/脸型五官保持一致/g, '脸型五官严格以图' + imgRef + '人像小卡为唯一基准')
+  cleaned = cleaned.replace(/面部仍保持参考图一致/g, '面部全部特征严格以图' + imgRef + '人像小卡为唯一基准')
+  cleaned = cleaned.replace(/脸部若可见仍保持参考图一致/g, '脸部若可见，全部特征严格以图' + imgRef + '人像小卡为唯一基准')
+  cleaned = cleaned.replace(/人物身份保持一致；TA[^。]*穿着[^。]*这套[^。]*。/g, (match) => {
+    return match + '面部全部特征（脸型+五官）以图' + imgRef + '人像小卡为唯一基准。'
+  })
+
+  // PREPEND：模型对开头指令权重最高，把面部锁定放在最前面
+  const prepend = [
+    `【最高优先级规则 — 面部锁定】图${imgRef}是人像小卡（胸口以上高清特写），是此人面部全部特征的唯一权威参考。图1主图的脸部已被覆盖处理，不包含任何可识别的面部信息。以下生成指令中，所有面部特征（脸型、五官、面部比例）必须严格以图${imgRef}人像小卡为准，图1仅提供穿搭、发型、发饰和场景光线。\n\n`,
+  ].join('')
+
+  // APPEND：尾部再次强调
+  const append = [
+    `\n\n【面部锁定 — 尾部重申】`,
+    `重申：图${imgRef}人像小卡是面部全部特征的唯一权威参考。脸型形状、下颌线弧度、颧骨、眼形、鼻型、嘴形、眉形、耳朵形状、三庭五眼比例全部严格复刻图${imgRef}。图1主图脸部已被覆盖，不可从中读取面部信息。表情可自然变化，但脸型骨骼结构和五官细节绝对不能改变。`,
+  ].join('')
+
+  return `${prepend}${cleaned.trim()}${append}`
 }
