@@ -43,7 +43,6 @@
     "@volcengine/openapi": "^1.36.2",
     "ali-oss": "^6.23.0",
     "autoprefixer": "^10.4.20",
-    "aws4fetch": "^1.0.20",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

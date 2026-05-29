@@ -75,7 +75,7 @@ IMAGE_API_DEMO=1
 | `IMAGE_API_TIMEOUT_MS` | Raycast / OpenAI 兼容超时 | `120000` |
 | `IMAGE_API_SKIP_HEALTHCHECK` | 跳过本地健康检查 | `0` |
 | `IMAGE_API_DEMO` | 启用本地 Demo 模式（不调用任何 provider） | `0` |
-| `STORAGE_MODE` | `local` 本地演示 / `cloud` Cloudflare 线上存储 | `local` |
+| `STORAGE_MODE` | `local` 本地演示 / `oss` 阿里云 OSS 存储 | `local` |
 | `LOCAL_AUTH_MODE` | local 认证：`super-admin` 内网直进 / `password` 账号登录 | `super-admin` |
 | `LOCAL_IMAGE_ROOT` | local 图片根目录；留空使用 `public/generated` | 空 |
 

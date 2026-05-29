@@ -1,17 +1,17 @@
 /**
  * 全局认证 middleware（Edge Runtime）。
  *
- * 设计要点（任务说明 §7 / PRD D5）：
+ * 设计要点：
  * - 跳过登录页 / auth API / 静态资源 / API auth 子树
- * - cloud 模式：通过 KV REST API 校验 session（Edge runtime 能跑 fetch）
  * - local super-admin 模式：内网演示直接放行，不要求 cookie
  * - local password 模式：Edge runtime 看不见 Node.js 进程内 session Map，所以只做
  *   cookie 存在性拦截；真正有效性由 nodejs route / useAuth 再校验
+ * - oss 模式：同 local password 模式处理
  * - 失效或缺失：API → 401 JSON；页面 → 302 /login?next=<原始 path>
  * - 有效：通过 `x-user-id` header 把 userId 注入到下游
  *
  * ⚠️ middleware 不能 import `bcryptjs` / `node:crypto`（Edge runtime 限制），
- *     这里只读 KV，所以没问题。
+ *     这里只做基本校验，真正认证逻辑在 Node.js runtime 的 route 中处理。
  */
 
 import { NextResponse, type NextRequest } from 'next/server'
@@ -24,7 +24,8 @@ const PUBLIC_PATH_PREFIXES = [
   '/login',
   '/api/auth/login',
   '/api/auth/logout',
-  '/api/health', // PR5 健康检查端点，curl 一行验证整个系统活着
+  '/api/auth/me',
+  '/api/health',
   '/_next',
   '/favicon.ico',
   '/icon',
@@ -32,8 +33,8 @@ const PUBLIC_PATH_PREFIXES = [
   '/placeholder',
   '/poses',
   '/cases',
-  '/generated', // public 静态资源（local 模式下生成的图片）
-  '/local-assets', // LOCAL_IMAGE_ROOT 自定义目录的本地图片读取路由
+  '/generated',
+  '/local-assets',
 ]
 
 function isPublicPath(pathname: string): boolean {
@@ -48,42 +49,9 @@ function isPublicPath(pathname: string): boolean {
   return false
 }
 
-function readStorageMode(): 'local' | 'cloud' {
+function readStorageMode(): 'local' | 'oss' {
   const raw = process.env.STORAGE_MODE?.trim().toLowerCase()
-  return raw === 'cloud' ? 'cloud' : 'local'
-}
-
-interface SessionPayload {
-  userId: string
-  expiresAt: number
-}
-
-async function verifyKvSession(
-  sessionId: string,
-): Promise<SessionPayload | null> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID
-  const token = process.env.CLOUDFLARE_D1_KV_TOKEN
-  const namespaceId = process.env.KV_NAMESPACE_ID
-  if (!accountId || !token || !namespaceId) {
-    // cloud 模式但 env 缺失：拒绝所有请求（保险起见）
-    return null
-  }
-  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/values/${encodeURIComponent(sessionId)}`
-
-  try {
-    const response = await fetch(endpoint, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    if (response.status === 404) return null
-    if (!response.ok) return null
-    const raw = await response.text()
-    const parsed = JSON.parse(raw) as Partial<SessionPayload>
-    if (!parsed.userId || typeof parsed.expiresAt !== 'number') return null
-    if (parsed.expiresAt <= Date.now()) return null
-    return { userId: parsed.userId, expiresAt: parsed.expiresAt }
-  } catch {
-    return null
-  }
+  return raw === 'oss' ? 'oss' : 'local'
 }
 
 function rejectUnauthorized(request: NextRequest): NextResponse {
@@ -113,7 +81,7 @@ export async function middleware(request: NextRequest) {
   const mode = readStorageMode()
 
   if (
-    mode === 'local' &&
+    (mode === 'local' || mode === 'oss') &&
     isLocalSuperAdminEnabled() &&
     pathname === '/login'
   ) {
@@ -126,7 +94,8 @@ export async function middleware(request: NextRequest) {
 
   const sessionId = request.cookies.get(SESSION_COOKIE_NAME)?.value
 
-  if (mode === 'local') {
+  // local / oss 模式处理
+  if (mode === 'local' || mode === 'oss') {
     if (isLocalSuperAdminEnabled()) {
       return NextResponse.next()
     }
@@ -134,28 +103,14 @@ export async function middleware(request: NextRequest) {
     if (!sessionId) {
       return rejectUnauthorized(request)
     }
-    const headers = new Headers(request.headers)
-    headers.set('x-session-id', sessionId)
-    return NextResponse.next({ request: { headers } })
+    // local/oss 模式：cookie 存在性由 route 层校验
+    return NextResponse.next()
   }
 
-  // cloud 模式：严格校验
-  if (!sessionId) {
-    return rejectUnauthorized(request)
-  }
-  const payload = await verifyKvSession(sessionId)
-  if (!payload) {
-    return rejectUnauthorized(request)
-  }
-
-  const headers = new Headers(request.headers)
-  headers.set('x-user-id', payload.userId)
-  headers.set('x-session-id', sessionId)
-  return NextResponse.next({ request: { headers } })
+  // 不应该到达这里（cloud 模式已移除）
+  return rejectUnauthorized(request)
 }
 
 export const config = {
-  // 排除 _next 静态资源（更彻底地降低 middleware 调用次数）。
-  // 注意：API 路由仍走 middleware。
   matcher: ['/((?!_next/static|_next/image).*)'],
 }

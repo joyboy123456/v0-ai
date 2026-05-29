@@ -1,8 +1,5 @@
 /**
- * 任务仓储抽象：屏蔽 `STORAGE_MODE=local`（进程内 Map + JSON 文件）与
- * `STORAGE_MODE=cloud`（Cloudflare D1）差异。
- *
- * 由 `05-19-cloudflare-backend-foundation` PR3 引入。
+ * 任务仓储抽象。
  *
  * 设计要点：
  * - 这是**底层仓储**，只管 `users` / `tasks` / `assets` 三张表的 CRUD，
@@ -11,20 +8,9 @@
  * - `task-store.ts` 通过 `getTaskRepo()` 调用本仓储；
  *   service 层（photo-fission-service / pose-fission-service / ai-fashion-photo-service）
  *   **不直接**调本仓储，只通过 task-store 间接调。
- * - row shape 是 camelCase；D1 列是 snake_case，由 `task-repo.d1.ts` 内部 mapping。
- *
- * PR3 范围：
- * - local 实现复用 `task-store.ts` 现有的进程内 Map + JSON 文件持久化逻辑，
- *   通过引入「内部 getter」让 repo 间接读写 store（避免重写流式持久化 / 并发控制 / 文件锁）。
- * - cloud 实现走 D1 REST API。
- *
- * PR4 范围（不在本 PR 完成）：把 `task-store.ts` 对外签名加上 userId 形参 +
- * 按 userId 过滤；目前 listTasks / getTask 均按全表返回，保持现状。
+ * - row shape 是 camelCase。
  */
 
-import { isCloud } from '@/lib/server/storage-mode'
-
-import { createD1TaskRepo } from './task-repo.d1'
 import { createLocalTaskRepo } from './task-repo.local'
 
 export interface TaskRow {
@@ -51,7 +37,7 @@ export interface AssetRow {
   userId: string
   taskId: string | null
   kind: 'upload' | 'generated'
-  /** local 模式 = publicUrl（`/generated/...` 或 `/local-assets/...`）；cloud 模式 = R2 object key */
+  /** local 模式 = publicUrl（`/generated/...` 或 `/local-assets/...`）；oss 模式 = OSS object key */
   r2Key: string
   publicUrl: string | null
   mime: string | null
@@ -86,18 +72,12 @@ export interface TaskRepo {
   deleteAsset(id: string): Promise<void>
 }
 
-let cached: { repo: TaskRepo; mode: 'local' | 'cloud' } | null = null
+let cached: TaskRepo | null = null
 
 export function getTaskRepo(): TaskRepo {
-  const mode: 'local' | 'cloud' = isCloud() ? 'cloud' : 'local'
-  if (cached && cached.mode === mode) {
-    return cached.repo
-  }
-  cached = {
-    mode,
-    repo: mode === 'cloud' ? createD1TaskRepo() : createLocalTaskRepo(),
-  }
-  return cached.repo
+  if (cached) return cached
+  cached = createLocalTaskRepo()
+  return cached
 }
 
 /**

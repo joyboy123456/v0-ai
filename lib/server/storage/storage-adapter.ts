@@ -1,39 +1,31 @@
 /**
- * 图片存储抽象层：屏蔽 `STORAGE_MODE=local` 与 `STORAGE_MODE=cloud` 差异。
+ * 图片存储抽象层：屏蔽 `STORAGE_MODE=local` 与 `STORAGE_MODE=oss` 差异。
  *
- * 由 `05-19-cloudflare-backend-foundation` PR3 引入。所有业务代码（task-store /
- * service 层）**禁止**直接 `import` r2-client；必须通过 `getStorageAdapter()`
- * 拿到 adapter 调用 `putImage` / `putImageFromDataUrl` / `getImage`。
+ * 所有业务代码（task-store / service 层）**禁止**直接 `import` oss-client；
+ * 必须通过 `getStorageAdapter()` 拿到 adapter 调用 `putImage` / `putImageFromDataUrl` / `getImage`。
  *
- * 路径约定（参考 prd.md §D5「完全私有的数据隔离」）：
+ * 路径约定：
  * - local 模式：
  *   - 默认根目录：`public/generated/{bucket}/{userId}/{filename}`
  *     publicUrl = `/generated/{bucket}/{userId}/{filename}`
  *   - 设置 `LOCAL_IMAGE_ROOT` 后：`{LOCAL_IMAGE_ROOT}/{bucket}/{userId}/{filename}`
  *     publicUrl = `/local-assets/{bucket}/{userId}/{filename}`
- *   - 匿名（PR3 兼容现状）不带 `{userId}` 段（PR4 接通 auth 后逐步去掉匿名兜底）
- * - cloud 模式：
- *   - key = `users/{userId}/{bucket}/{filename}`
- *   - publicUrl = `R2_PUBLIC_URL + '/' + key`
- *   - userId 为空直接抛出 NotAuthorized（cloud 不允许匿名）
+ *   - 匿名用户不带 `{userId}` 段
+ * - oss 模式：
+ *   - key = `yibai/{userId}/{bucket}/{filename}`
+ *   - publicUrl = `OSS_PUBLIC_URL + '/' + key`
+ *   - userId 为空直接抛出 NotAuthorized（oss 不允许匿名）
  *
  * 流式持久化契约：
- * 本 adapter 是同步 put 单文件，符合 `streaming-fission-pipeline.md` 里
- * 「每个 shot 成功立即写盘」的预期；并发写不同 key 在两种模式下都安全
- * （local 各自 mkdir + writeFile 不会冲突；R2 PUT 互不影响）。
+ * 本 adapter 是同步 put 单文件，符合「每个 shot 成功立即写盘」的预期；
+ * 并发写不同 key 在两种模式下都安全（local 各自 mkdir + writeFile 不会冲突；
+ * OSS PUT 互不影响）。
  */
 
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-import { isCloud, isLocal, isOss, type StorageMode } from '@/lib/server/storage-mode'
-
-import {
-  buildR2PublicUrl,
-  r2Delete,
-  r2Get,
-  r2Put,
-} from './r2-client'
+import { isLocal, isOss, type StorageMode } from '@/lib/server/storage-mode'
 
 import {
   assertOssConfigured,
@@ -280,85 +272,6 @@ const localAdapter: StorageAdapter = {
 }
 
 // -----------------------------------------------------------------------------
-// Cloud 实现
-// -----------------------------------------------------------------------------
-
-function requireCloudUserId(userId: string | null | undefined): string {
-  if (isAnonymousUser(userId)) {
-    throw new Error(
-      'storage-adapter: cloud 模式不允许匿名写入，必须传入有效 userId',
-    )
-  }
-  return userId as string
-}
-
-function buildCloudKey(
-  userId: string,
-  bucket: StorageBucket,
-  filename: string,
-): string {
-  const safeUser = sanitizeUserSegment(userId)
-  return `users/${safeUser}/${bucket}/${filename}`
-}
-
-const cloudAdapter: StorageAdapter = {
-  async putImage(input) {
-    const userId = requireCloudUserId(input.userId)
-    const key = buildCloudKey(userId, sanitizeBucket(input.bucket), input.filename)
-    const result = await r2Put({
-      key,
-      body: input.body,
-      contentType: input.contentType,
-    })
-    return {
-      key: result.key,
-      publicUrl: result.publicUrl,
-      bytes: result.bytes,
-    }
-  },
-
-  async putImageFromDataUrl(input) {
-    const parsed = parseDataUrl(input.dataUrl)
-    if (!parsed) {
-      throw new Error(`无法解析 dataURL（filename=${input.filename}）`)
-    }
-    const result = await this.putImage({
-      userId: input.userId,
-      bucket: input.bucket,
-      filename: input.filename,
-      body: parsed.buffer,
-      contentType: parsed.mime,
-    })
-    return { ...result, mime: parsed.mime }
-  },
-
-  async getImage(key) {
-    // cloud 模式服务端理论上不需要回读图片（图片直接由浏览器从 R2 CDN 拉），
-    // 但保留 GET 入口给未来 / 测试用。
-    try {
-      const { body, contentType } = await r2Get(key)
-      return { body, contentType }
-    } catch (error) {
-      // NOT_FOUND 直接降级为 null；其他错误冒泡
-      if (
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        (error as { code?: string }).code === 'NOT_FOUND'
-      ) {
-        return null
-      }
-      throw error
-    }
-  },
-
-  async deleteImage(key) {
-    await r2Delete(key)
-  },
-}
-
-
-// -----------------------------------------------------------------------------
 // OSS 实现
 // -----------------------------------------------------------------------------
 
@@ -442,12 +355,11 @@ let cachedAdapter: StorageAdapter | null = null
 let cachedMode: StorageMode | null = null
 
 export function getStorageAdapter(): StorageAdapter {
-  const mode: StorageMode = isOss() ? 'oss' : isCloud() ? 'cloud' : 'local'
+  const mode: StorageMode = isOss() ? 'oss' : 'local'
   if (cachedAdapter && cachedMode === mode) {
     return cachedAdapter
   }
   if (mode === 'oss') cachedAdapter = ossAdapter
-  else if (mode === 'cloud') cachedAdapter = cloudAdapter
   else cachedAdapter = localAdapter
   cachedMode = mode
   return cachedAdapter
@@ -462,17 +374,14 @@ export function __resetStorageAdapterForTests(): void {
 }
 
 /**
- * 把 R2 公共 URL（cloud 模式）或 publicUrl 反推出来。
- * local 模式 publicUrl 已经在 putImage 返回过；cloud 模式偶尔需要从历史 key 拼 URL。
+ * 把 OSS 公共 URL（oss 模式）或 publicUrl 反推出来。
+ * local 模式 publicUrl 已经在 putImage 返回过；oss 模式偶尔需要从历史 key 拼 URL。
  */
 export function buildPublicUrlForKey(key: string): string {
   if (isLocal()) {
     return key.startsWith('/') ? key : `/${key}`
   }
-  if (isOss()) {
-    return buildOssPublicUrl(key)
-  }
-  return buildR2PublicUrl(key)
+  return buildOssPublicUrl(key)
 }
 
 /**

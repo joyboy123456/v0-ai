@@ -4,7 +4,6 @@
  * 错误统一通过 `AuthError`：
  *   - `INVALID_CREDENTIALS` 用户名或密码错误
  *   - `SESSION_EXPIRED` session 不存在或已过期
- *   - `CONFIG_ERROR` 后端配置缺失（cloud 模式 env 不全等）
  *
  * 用户响应里**禁止**包含 passwordHash。`toPublicUser` 是唯一允许暴露给前端
  * 的脱敏 shape。
@@ -12,7 +11,6 @@
 
 import bcrypt from 'bcryptjs'
 
-import { CloudflareError } from '@/lib/server/cloudflare'
 import type { User } from '@/lib/types'
 
 import {
@@ -26,7 +24,6 @@ import { findUserById, findUserByUsername } from './user-repo'
 export type AuthErrorCode =
   | 'INVALID_CREDENTIALS'
   | 'SESSION_EXPIRED'
-  | 'CONFIG_ERROR'
 
 export class AuthError extends Error {
   code: AuthErrorCode
@@ -66,15 +63,7 @@ export async function loginWithPassword(
     throw new AuthError('INVALID_CREDENTIALS', '用户名或密码不能为空')
   }
 
-  let user: User | null
-  try {
-    user = await findUserByUsername(username)
-  } catch (error) {
-    if (error instanceof CloudflareError) {
-      throw new AuthError('CONFIG_ERROR', error.message)
-    }
-    throw error
-  }
+  const user = await findUserByUsername(username)
   if (!user) {
     throw new AuthError('INVALID_CREDENTIALS')
   }
@@ -84,15 +73,7 @@ export async function loginWithPassword(
     throw new AuthError('INVALID_CREDENTIALS')
   }
 
-  let session
-  try {
-    session = await createSession(user.id)
-  } catch (error) {
-    if (error instanceof CloudflareError) {
-      throw new AuthError('CONFIG_ERROR', error.message)
-    }
-    throw error
-  }
+  const session = await createSession(user.id)
 
   return {
     sessionId: session.sessionId,
@@ -107,7 +88,6 @@ export async function logout(sessionId: string | null | undefined): Promise<void
     await destroySession(sessionId)
   } catch (error) {
     // logout 失败不应该卡住用户，但记录日志
-    // eslint-disable-next-line no-console
     console.warn('[auth] destroySession failed:', error)
   }
 }
@@ -115,7 +95,7 @@ export async function logout(sessionId: string | null | undefined): Promise<void
 /**
  * 拿当前登录用户。
  *
- * 5 人内测场景下用户名稳定，简单实现：
+ * 用户名稳定，简单实现：
  * - 先 `getSession(sessionId)` 拿 userId
  * - 再 `findUserById(userId)` 拿当前 user 行
  * 这样用户名 / displayName 变更后第一次访问就能反映出来。
@@ -124,26 +104,11 @@ export async function getCurrentUser(
   sessionId: string | null | undefined,
 ): Promise<PublicUser | null> {
   if (!sessionId) return null
-  let session
-  try {
-    session = await getSession(sessionId)
-  } catch (error) {
-    if (error instanceof CloudflareError) {
-      throw new AuthError('CONFIG_ERROR', error.message)
-    }
-    throw error
-  }
+
+  const session = await getSession(sessionId)
   if (!session) return null
 
-  let user
-  try {
-    user = await findUserById(session.userId)
-  } catch (error) {
-    if (error instanceof CloudflareError) {
-      throw new AuthError('CONFIG_ERROR', error.message)
-    }
-    throw error
-  }
+  const user = await findUserById(session.userId)
   if (!user) return null
   return toPublicUser(user)
 }

@@ -63,6 +63,8 @@ export type FashionModelId =
   | 'gemini-3-pro-image-preview'
   | 'gpt-image-2'
   | 'jimeng-seedream-4.6'
+  | 'doubao-seedream-4.5'
+  | 'doubao-seedream-5.0-lite'
 
 export interface Feature {
   id: FeatureType
@@ -598,6 +600,22 @@ export const FASHION_MODELS: FashionModelOption[] = [
     alias: '即梦 AI 4.6',
     description: '字节跳动火山引擎图片生成，高质量中文场景理解，支持 4K 出图',
     maxInputImages: 5,
+    maxResolutionLabel: '4K',
+  },
+  {
+    id: 'doubao-seedream-4.5',
+    label: '豆包 Seedream 4.5',
+    alias: '豆包 AI 4.5',
+    description: '字节跳动火山引擎豆包图片生成，高质量中文场景理解，支持 2K 出图',
+    maxInputImages: 5,
+    maxResolutionLabel: '2K',
+  },
+  {
+    id: 'doubao-seedream-5.0-lite',
+    label: '豆包 Seedream 5.0 Lite',
+    alias: '豆包 AI 5.0 Lite',
+    description: '字节跳动火山引擎豆包图片生成，支持 PNG 无损输出和联网搜索，最高 4K 出图',
+    maxInputImages: 14,
     maxResolutionLabel: '4K',
   },
 ]

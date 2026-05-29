@@ -15,7 +15,7 @@
 
 import { logImageEvent } from './log'
 
-export type ImageProviderType = 'google' | 'qiniu' | 'jimeng'
+export type ImageProviderType = 'google' | 'qiniu' | 'jimeng' | 'volces'
 
 export interface ImageProvider {
   /** 唯一标识，用于日志、节流桶隔离和配置引用 */
@@ -147,8 +147,10 @@ function buildDefaultProviders(): ImageProvider[] {
   const providers = [buildDefaultGoogleProvider()]
   const qiniuProvider = buildDefaultQiniuProvider()
   const jimengProvider = buildDefaultJimengProvider()
+  const volcesProvider = buildDefaultVolcesProvider()
   if (jimengProvider) providers.push(jimengProvider)
   if (qiniuProvider) providers.push(qiniuProvider)
+  if (volcesProvider) providers.push(volcesProvider)
   return providers
 }
 
@@ -199,6 +201,24 @@ function buildDefaultJimengProvider(): ImageProvider | null {
     weight: 5,
     enabled: true,
     timeoutMs: readPositiveInt(process.env.JIMENG_IMAGE_TIMEOUT_MS, 600000),
+  }
+}
+
+function buildDefaultVolcesProvider(): ImageProvider | null {
+  const apiKey = process.env.VOLCES_API_KEY?.trim() ?? ''
+  if (!apiKey) return null
+
+  return {
+    id: 'volces-default',
+    type: 'volces',
+    apiKey,
+    baseUrl: process.env.VOLCES_BASE_URL ?? 'https://ark.cn-beijing.volces.com',
+    model: process.env.VOLCES_IMAGE_MODEL ?? 'doubao-seedream-4-5-251128',
+    maxIpm: readPositiveInt(process.env.VOLCES_IMAGE_IPM, 500),
+    maxRpm: readPositiveInt(process.env.VOLCES_IMAGE_RPM, 150),
+    weight: 5,
+    enabled: true,
+    timeoutMs: readPositiveInt(process.env.VOLCES_IMAGE_TIMEOUT_MS, 600000),
   }
 }
 
@@ -338,6 +358,12 @@ export function isJimengImageModel(model: string | undefined): boolean {
   return lower.startsWith("jimeng")
 }
 
+export function isVolcesImageModel(model: string | undefined): boolean {
+  if (!model) return true
+  const lower = model.trim().toLowerCase()
+  return lower.startsWith('doubao') || lower.startsWith('seedream') || lower.startsWith('volces')
+}
+
 export function isImageProviderModelCompatible(
   provider: ImageProvider,
   model: string | undefined,
@@ -346,6 +372,7 @@ export function isImageProviderModelCompatible(
   if (provider.type === 'google') return isGoogleImageModel(candidate)
   if (provider.type === 'qiniu') return isQiniuImageModel(candidate)
   if (provider.type === 'jimeng') return isJimengImageModel(candidate)
+  if (provider.type === 'volces') return isVolcesImageModel(candidate)
   return false
 }
 

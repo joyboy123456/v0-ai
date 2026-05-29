@@ -11,6 +11,7 @@ import { tripProviderCircuit, type ImageProvider } from './image-provider-pool'
 import { GoogleImageError } from './google-image-retry'
 import { runQiniuImageEdit } from './qiniu-image-adapter'
 import { runJimengImageEdit } from './jimeng-image-adapter'
+import { runVolcesImageEdit } from './volces-image-adapter'
 
 export interface ProviderImageEditInput {
   taskId: string
@@ -70,6 +71,31 @@ export async function runImageEditViaProvider(
           count: input.count,
           aspectRatio: input.aspectRatio,
           imageSize: input.imageSize,
+          traceId: input.traceId,
+          shotId: input.shotId,
+          providerId: provider.id,
+          maxIpm: provider.maxIpm,
+          maxRpm: provider.maxRpm,
+        })
+
+      case 'volces':
+        // 豆包 Seedream 4.5/5.0-lite 使用单一 size 参数
+        // 优先使用 imageSize（2K/4K），如果没有则使用 aspectRatio（如 16:9）
+        const volcesSize = input.imageSize || input.aspectRatio || '2K'
+        const volcesModel = input.model || provider.model || ''
+        // 5.0-lite 支持 PNG 无损输出，自动启用以获得高质量图片
+        const volcesOutputFormat = volcesModel.includes('5-0-260128') ? 'png' : undefined
+        return await runVolcesImageEdit({
+          taskId: input.taskId,
+          apiKey,
+          baseUrl: provider.baseUrl,
+          model: volcesModel,
+          timeoutMs,
+          prompt: input.prompt,
+          inputImages: input.inputImages,
+          count: input.count,
+          size: volcesSize,
+          outputFormat: volcesOutputFormat,
           traceId: input.traceId,
           shotId: input.shotId,
           providerId: provider.id,

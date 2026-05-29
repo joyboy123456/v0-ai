@@ -75,6 +75,8 @@ function getClient(): OSS {
     endpoint,
     // 内网 endpoint 用 http 即可（更快、免 TLS 开销）
     secure: !endpoint.includes('-internal'),
+    // 增加超时时间：默认 60 秒太短，网络不稳定时容易超时
+    timeout: 300000, // 5 分钟
   })
   return cachedClient
 }

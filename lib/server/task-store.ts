@@ -416,9 +416,14 @@ function hydrateTaskInputAssets(task: GenerationTask): GenerationTask {
 }
 
 async function runTask(taskId: string) {
+  console.log('[task-store] runTask 开始执行:', taskId)
   await storeReady
   const task = store.tasks.get(taskId)
-  if (!task) return
+  if (!task) {
+    console.log('[task-store] runTask 找不到任务:', taskId)
+    return
+  }
+  console.log('[task-store] runTask 找到任务，状态:', task.status)
 
   // PR4：task.userId 由 createTask 注入；historical task 没存 userId 时回退到 defaultUserId。
   const ownerUserId = task.userId ?? defaultUserId
