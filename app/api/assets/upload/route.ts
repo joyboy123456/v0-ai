@@ -8,6 +8,7 @@ export const runtime = 'nodejs'
 // 这里按原始字节 7.5MB 拒绝，避免 base64 inline_data 超过 Google ~10MB 软上限触发 400。
 const MAX_RAW_BYTES = Math.floor(7.5 * 1024 * 1024)
 const MAX_BASE64_BYTES = 10 * 1024 * 1024
+const MAX_REMOTE_URL_LENGTH = 2048
 const ALLOWED_MIME_PREFIX = 'image/'
 const ALLOWED_MIME_TYPES = new Set([
   'image/png',
@@ -21,6 +22,11 @@ export async function POST(request: NextRequest) {
   const userResult = await requireUser(request)
   if (userResult instanceof NextResponse) return userResult
   const { userId } = userResult
+
+  const contentType = request.headers.get('content-type')?.toLowerCase() ?? ''
+  if (contentType.includes('application/json')) {
+    return handleRemoteImageUrlUpload(request, userId)
+  }
 
   const formData = await request.formData()
   const file = formData.get('file')
@@ -86,6 +92,109 @@ export async function POST(request: NextRequest) {
   })
 }
 
+interface RemoteImageUploadBody {
+  fileUrl?: unknown
+  fileName?: unknown
+  fileType?: unknown
+  width?: unknown
+  height?: unknown
+}
+
+async function handleRemoteImageUrlUpload(request: NextRequest, userId: string) {
+  let body: RemoteImageUploadBody
+  try {
+    body = (await request.json()) as RemoteImageUploadBody
+  } catch {
+    return NextResponse.json({ error: '请求 JSON 格式错误' }, { status: 400 })
+  }
+
+  if (typeof body.fileUrl !== 'string' || !body.fileUrl.trim()) {
+    return NextResponse.json({ error: '缺少公网图片 URL' }, { status: 400 })
+  }
+
+  const fileUrl = body.fileUrl.trim()
+  const urlError = validateRemoteImageUrl(fileUrl)
+  if (urlError) {
+    return NextResponse.json({ error: urlError }, { status: 400 })
+  }
+
+  const fileType = readRemoteImageFileType(body.fileType, fileUrl)
+  const asset = await createAsset({
+    fileName: readRemoteImageFileName(body.fileName, fileUrl),
+    fileType,
+    fileUrl,
+    width: readPositiveDimensionValue(body.width) ?? 1024,
+    height: readPositiveDimensionValue(body.height) ?? 1365,
+    userId,
+  })
+
+  return NextResponse.json({
+    assetId: asset.assetId,
+    url: asset.fileUrl,
+    fileName: asset.fileName,
+    width: asset.width,
+    height: asset.height,
+  })
+}
+
+function validateRemoteImageUrl(fileUrl: string): string | null {
+  if (fileUrl.length > MAX_REMOTE_URL_LENGTH) {
+    return '公网图片 URL 过长'
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(fileUrl)
+  } catch {
+    return '公网图片 URL 格式无效'
+  }
+
+  if (parsed.protocol !== 'https:') {
+    return '公网图片 URL 必须使用 https://'
+  }
+
+  const hostname = parsed.hostname.toLowerCase()
+  if (
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname.startsWith('10.') ||
+    hostname.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname) ||
+    hostname.startsWith('169.254.')
+  ) {
+    return '公网图片 URL 不能是 localhost 或内网地址'
+  }
+
+  return null
+}
+
+function readRemoteImageFileType(value: unknown, fileUrl: string) {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized.startsWith(ALLOWED_MIME_PREFIX) && ALLOWED_MIME_TYPES.has(normalized)) {
+      return normalized
+    }
+  }
+
+  const pathname = new URL(fileUrl).pathname.toLowerCase()
+  if (pathname.endsWith('.png')) return 'image/png'
+  if (pathname.endsWith('.webp')) return 'image/webp'
+  if (pathname.endsWith('.gif')) return 'image/gif'
+  return 'image/jpeg'
+}
+
+function readRemoteImageFileName(value: unknown, fileUrl: string) {
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim()
+  }
+
+  const pathname = new URL(fileUrl).pathname
+  const lastSegment = decodeURIComponent(pathname.split('/').filter(Boolean).pop() ?? '')
+  return lastSegment || 'remote-image.jpg'
+}
+
 function readImageDimensions(formData: FormData) {
   const width = readPositiveDimension(formData.get('width'))
   const height = readPositiveDimension(formData.get('height'))
@@ -96,6 +205,11 @@ function readImageDimensions(formData: FormData) {
 
 function readPositiveDimension(value: FormDataEntryValue | null) {
   if (typeof value !== 'string') return undefined
+  return readPositiveDimensionValue(value)
+}
+
+function readPositiveDimensionValue(value: unknown) {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined
 
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed <= 0) return undefined

@@ -15,7 +15,9 @@ import {
   GoogleImageError,
   callGoogleImageWithRetry,
 } from './google-image-retry'
+import { resolveImageSize, type ResolvedImageSize } from './image-size-policy'
 import { logImageEvent, type LogContext } from './log'
+import { isLocal } from './storage-mode'
 import { ossPut } from './storage/oss-client'
 
 // ---- 常量 ----
@@ -26,6 +28,7 @@ const JIMENG_SERVICE = 'cv'
 const JIMENG_VERSION = '2022-08-31'
 const JIMENG_REQ_KEY = 'jimeng_seedream46_cvtob'
 const POLL_INTERVAL_MS = 3000
+const JIMENG_MAX_PIXELS = 4096 * 4096
 
 // ---- 输入接口 ----
 
@@ -40,6 +43,7 @@ export interface JimengEditInput {
   count: number
   aspectRatio?: string
   imageSize?: string
+  resolvedSize?: ResolvedImageSize
   traceId?: string
   shotId?: string
   providerId?: string
@@ -221,16 +225,34 @@ async function pollResult(
   throw new GoogleImageError({ category: 'network', message: `即梦任务超时（${timeoutMs}ms）`, retryable: true })
 }
 
-// ---- 图片上传到 OSS ----
+// ---- 图片输入 URL 解析 ----
 
 async function resolveImageUrl(imageUrl: string, key: string): Promise<string> {
   // 已经是 HTTP/HTTPS URL，直接返回
   if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
     return imageUrl
   }
-  // data URL，上传到 OSS 获取公网 URL
+
+  // 即梦老接口只接受火山服务端可访问的公网 URL。local 模式的本地文件 URL
+  // 无法被火山拉取，也不应偷偷上传到 OSS。
+  if (isLocal()) {
+    throw new GoogleImageError({
+      category: 'bad_request',
+      message:
+        '即梦 Seedream 4.6 图生图需要公网参考图；当前 STORAGE_MODE=local，本地上传图不能传给即梦。请切换到支持 data URL 的模型，或在线上 ECS + OSS 模式下使用即梦。',
+      retryable: false,
+    })
+  }
+
+  // oss 模式：data URL 上传到 OSS 获取公网 URL
   const match = imageUrl.match(/^data:([^;]+);base64,(.+)$/)
-  if (!match) throw new Error('invalid data URL: not a valid HTTP URL or data URL')
+  if (!match) {
+    throw new GoogleImageError({
+      category: 'bad_request',
+      message: '即梦输入图不是有效的 HTTP URL 或 data URL',
+      retryable: false,
+    })
+  }
   const mime = match[1]
   const buffer = Buffer.from(match[2], 'base64')
   const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg'
@@ -256,11 +278,16 @@ export async function runJimengImageEdit(input: JimengEditInput): Promise<Result
 
   const traceId = input.traceId ?? input.taskId
   const ctx: LogContext = { traceId, taskId: input.taskId, shotId: input.shotId }
+  const resolvedSize =
+    input.resolvedSize ?? resolveImageSize(input.aspectRatio, input.imageSize)
   const results: ResultAsset[] = []
 
   logImageEvent('gimg.attempt', ctx, {
     adapter: 'jimeng', stage: 'enter', model: input.model,
     count: input.count, promptLen: input.prompt.length, refs: input.inputImages.length,
+    aspect: resolvedSize.ratio,
+    size: resolvedSize.size,
+    resolution: resolvedSize.resolution,
   })
 
   // 上传输入图片到 OSS
@@ -284,17 +311,20 @@ export async function runJimengImageEdit(input: JimengEditInput): Promise<Result
           req_key: JIMENG_REQ_KEY,
           prompt: input.prompt,
           force_single: true,
+          size: Math.min(resolvedSize.pixels, JIMENG_MAX_PIXELS),
+          width: resolvedSize.width,
+          height: resolvedSize.height,
+          return_url: true,
         }
         if (imageUrls.length > 0) requestBody.image_urls = imageUrls
 
-        // 宽高比映射
-        if (input.imageSize) {
-          const sizeMap: Record<string, number> = { '1K': 1024 * 1024, '2K': 2048 * 2048, '4K': 4096 * 4096 }
-          requestBody.size = sizeMap[input.imageSize] || 2048 * 2048
-        }
-
         logImageEvent('gimg.attempt', { ...ctx, traceId: iterTraceId }, {
-          adapter: 'jimeng', iteration: i + 1, providerId: input.providerId,
+          adapter: 'jimeng',
+          iteration: i + 1,
+          providerId: input.providerId,
+          size: resolvedSize.size,
+          width: resolvedSize.width,
+          height: resolvedSize.height,
         })
 
         const taskId = await submitTask(accessKeyId, secretKey, requestBody, input.timeoutMs)
@@ -329,6 +359,13 @@ export async function runJimengImageEdit(input: JimengEditInput): Promise<Result
         width: 0,
         height: 0,
         shotId: input.shotId,
+        metadata: {
+          provider: 'jimeng',
+          model: input.model,
+          requestedSize: resolvedSize.size,
+          requestedResolution: resolvedSize.resolution,
+          requestedRatio: resolvedSize.ratio,
+        },
       })
     }
   }

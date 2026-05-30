@@ -26,6 +26,7 @@ import {
   callGoogleImageWithRetry,
   parseRetryAfter,
 } from './google-image-retry'
+import { resolveImageSize } from './image-size-policy'
 import { logImageEvent, type LogContext } from './log'
 
 const QINIU_DEFAULT_BASE_URL = 'https://api.qnaigc.com'
@@ -323,38 +324,21 @@ function resolveQiniuGptSize(
   aspectRatio: string | undefined,
   imageSize: string | undefined,
 ): string {
-  const orientation = resolveRatioOrientation(aspectRatio)
   const size = (imageSize ?? '').toUpperCase()
 
   if (size === '4K') {
-    if (orientation === 'portrait') return '2160x3840'
-    if (orientation === 'landscape') return '3840x2160'
-    return '2048x2048'
+    return resolveImageSize(aspectRatio, '4K').size
+  }
+
+  if (size === '3K') {
+    return resolveImageSize(aspectRatio, '3K').size
   }
 
   if (size === '2K') {
-    if (orientation === 'portrait') return '1152x2048'
-    if (orientation === 'landscape') return '2048x1152'
-    return '2048x2048'
+    return resolveImageSize(aspectRatio, '2K').size
   }
 
-  if (orientation === 'portrait') return '1024x1536'
-  if (orientation === 'landscape') return '1536x1024'
-  return '1024x1024'
-}
-
-function resolveRatioOrientation(
-  aspectRatio: string | undefined,
-): 'square' | 'portrait' | 'landscape' {
-  if (!aspectRatio) return 'square'
-  const [rawWidth, rawHeight] = aspectRatio.split(':')
-  const width = Number(rawWidth)
-  const height = Number(rawHeight)
-  if (!Number.isFinite(width) || !Number.isFinite(height) || height <= 0) {
-    return 'square'
-  }
-  if (width === height) return 'square'
-  return width > height ? 'landscape' : 'portrait'
+  return resolveImageSize(aspectRatio, '1K').size
 }
 
 function buildQiniuHttpError(

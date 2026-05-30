@@ -67,6 +67,8 @@ import {
   type UploadedImage,
 } from "@/lib/types";
 
+const CREATE_TASK_TIMEOUT_MS = 15_000;
+
 interface LeftPanelProps {
   feature: FeatureType;
   selectedPoseTemplates: PoseTemplate[];
@@ -361,15 +363,21 @@ export function LeftPanel({
 
     try {
       const taskInputAssetIds = getInputAssetIds();
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(
+        () => controller.abort(),
+        CREATE_TASK_TIMEOUT_MS,
+      );
       const response = await fetch("/api/tasks", {
         method: "POST",
         headers: { "content-type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           featureType: feature,
           inputAssetIds: taskInputAssetIds,
           params: getParams(),
         }),
-      });
+      }).finally(() => window.clearTimeout(timeoutId));
 
       if (!response.ok) {
         const data = (await response.json()) as { error?: string };
@@ -379,6 +387,10 @@ export function LeftPanel({
       const data = (await response.json()) as { taskId: string };
       onTaskCreated(data.taskId);
     } catch (createError) {
+      if (createError instanceof DOMException && createError.name === "AbortError") {
+        setError("创建任务超时，请刷新任务列表确认是否已创建，或稍后重试");
+        return;
+      }
       setError(
         createError instanceof Error ? createError.message : "创建任务失败",
       );
@@ -899,7 +911,7 @@ function AiFashionPhotoForm({
             onChange={(event) => onPromptChange(event.target.value)}
             placeholder="请输入提示词"
             maxLength={800}
-            className="h-[132px] w-full resize-none rounded-md border border-border bg-black p-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="h-[132px] w-full resize-none rounded-md border border-border bg-white p-4 text-sm text-black placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
           />
           <span className="absolute bottom-2 right-2 text-xs text-muted-foreground">
             {prompt.length}/800
@@ -1248,7 +1260,7 @@ function FashionResolutionSelector({
 }) {
   return (
     <div className="space-y-2">
-      <span className="text-sm text-foreground">分辨率</span>
+      <span className="text-sm text-foreground">画质</span>
       <div className="grid grid-cols-3 gap-2">
         {FASHION_RESOLUTIONS.map((option) => (
           <button
@@ -1344,7 +1356,7 @@ function ResolutionSelector({
 }) {
   return (
     <div className="space-y-2">
-      <span className="text-sm text-foreground">分辨率</span>
+      <span className="text-sm text-foreground">画质</span>
       <div className="grid grid-cols-3 gap-2">
         {POSE_RESOLUTIONS.map((option) => (
           <button
@@ -1380,7 +1392,7 @@ function getPoseRatioStyle(id: PoseImageRatio) {
 
 /**
  * 服装大片裂变（PRD v2）左侧表单。
- * 字段：模型 / 品类 / 主图（必填）/ 正面细节图 / 背面细节图 / 图片比例（6+5）/ 分辨率。
+ * 字段：模型 / 品类 / 主图（必填）/ 正面细节图 / 背面细节图 / 图片比例（6+5）/ 画质。
  * 「更多」按钮在主图比例后弹出 Radix Popover 平铺 5 个扩展比例。
  */
 function PhotoFissionForm({
@@ -1646,7 +1658,7 @@ function PhotoFissionForm({
       </div>
 
       <div className="space-y-2">
-        <span className="text-sm text-foreground">分辨率</span>
+        <span className="text-sm text-foreground">画质</span>
         <div className="grid grid-cols-3 gap-2">
           {PHOTO_FISSION_RESOLUTIONS.map((option) => (
             <button

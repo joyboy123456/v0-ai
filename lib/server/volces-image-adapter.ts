@@ -42,11 +42,18 @@ import {
   callGoogleImageWithRetry,
   parseRetryAfter,
 } from './google-image-retry'
+import { type ResolvedImageSize } from './image-size-policy'
 import { logImageEvent, type LogContext } from './log'
 
 const VOLCES_DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com'
 const VOLCES_DEFAULT_MODEL = 'doubao-seedream-4-5-251128'
 const VOLCES_GENERATIONS_PATH = '/api/v3/images/generations'
+
+/**
+ * 记录不支持 output_format 参数的模型，避免反复尝试导致浪费配额。
+ * 首次请求时若 API 报错（参数不支持），自动加入此集合，后续请求不再传 output_format。
+ */
+const MODELS_WITHOUT_OUTPUT_FORMAT = new Set<string>()
 
 /**
  * 模型 ID 映射：前端友好名称 → API 实际模型名称
@@ -65,34 +72,38 @@ function normalizeModelId(model: string): string {
 }
 
 /**
- * 豆包 Seedream 4.5 支持的比例与分辨率映射。
+ * 豆包 Seedream 支持的比例与分辨率映射。
  *
  * 根据官方文档的推荐宽高像素值：
- * https://www.volcengine.com/docs/82379/1666945
+ * https://www.volcengine.com/docs/82379/1541523
+ *
+ * 注意：3K 分辨率仅 Seedream 5.0-lite 支持，4.5 仅支持 2K/4K。
  */
 interface VolcesSizeMapping {
   /** 比例，如 "16:9" */
   ratio: string
   /** 2K 分辨率的宽高像素值 */
   size2K: string
+  /** 3K 分辨率的宽高像素值（仅 5.0-lite 支持） */
+  size3K: string
   /** 4K 分辨率的宽高像素值 */
   size4K: string
 }
 
 /** 比例到宽高像素值的映射表 */
 const RATIO_TO_SIZE_MAP: Record<string, VolcesSizeMapping> = {
-  '1:1': { ratio: '1:1', size2K: '2048x2048', size4K: '4096x4096' },
-  '4:3': { ratio: '4:3', size2K: '2304x1728', size4K: '4704x3520' },
-  '3:4': { ratio: '3:4', size2K: '1728x2304', size4K: '3520x4704' },
-  '16:9': { ratio: '16:9', size2K: '2848x1600', size4K: '5504x3040' },
-  '9:16': { ratio: '9:16', size2K: '1600x2848', size4K: '3040x5504' },
-  '3:2': { ratio: '3:2', size2K: '2496x1664', size4K: '4992x3328' },
-  '2:3': { ratio: '2:3', size2K: '1664x2496', size4K: '3328x4992' },
-  '21:9': { ratio: '21:9', size2K: '3136x1344', size4K: '6240x2656' },
+  '1:1': { ratio: '1:1', size2K: '2048x2048', size3K: '3072x3072', size4K: '4096x4096' },
+  '4:3': { ratio: '4:3', size2K: '2304x1728', size3K: '3456x2592', size4K: '4704x3520' },
+  '3:4': { ratio: '3:4', size2K: '1728x2304', size3K: '2592x3456', size4K: '3520x4704' },
+  '16:9': { ratio: '16:9', size2K: '2848x1600', size3K: '4096x2304', size4K: '5504x3040' },
+  '9:16': { ratio: '9:16', size2K: '1600x2848', size3K: '2304x4096', size4K: '3040x5504' },
+  '3:2': { ratio: '3:2', size2K: '2496x1664', size3K: '3744x2496', size4K: '4992x3328' },
+  '2:3': { ratio: '2:3', size2K: '1664x2496', size3K: '2496x3744', size4K: '3328x4992' },
+  '21:9': { ratio: '21:9', size2K: '3136x1344', size3K: '4704x2016', size4K: '6240x2656' },
 }
 
 /** 支持的分辨率类型 */
-type VolcesResolution = '2K' | '4K'
+type VolcesResolution = '2K' | '3K' | '4K'
 
 export interface VolcesEditInput {
   taskId: string
@@ -113,6 +124,8 @@ export interface VolcesEditInput {
    * - 如果传 "宽x高"（如 "2848x1600"），直接使用该值
    */
   size?: string
+  /** 已解析的宽高，用于结果元数据和日志 */
+  resolvedSize?: ResolvedImageSize
   /** 是否带水印（默认 true） */
   watermark?: boolean
   /**
@@ -153,7 +166,7 @@ interface VolcesImageResponse {
  * 将用户输入的 size 参数转换为豆包 API 支持的格式。
  *
  * 输入可以是：
- * - "2K" / "4K" → 返回默认 1:1 的宽高值
+ * - "2K" / "3K" / "4K" → 返回默认 1:1 的宽高值
  * - "16:9" / "9:16" 等比例 → 返回 2K 分辨率的对应宽高值
  * - "2848x1600" 等具体宽高 → 直接返回
  */
@@ -162,8 +175,9 @@ function normalizeSizeParam(size: string | undefined): string {
 
   const trimmed = size.trim().toUpperCase()
 
-  // 方式1：分辨率 "2K" / "4K"，使用默认 1:1 比例
+  // 方式1：分辨率 "2K" / "3K" / "4K"，使用默认 1:1 比例
   if (trimmed === '2K') return '2048x2048'
+  if (trimmed === '3K') return '3072x3072'
   if (trimmed === '4K') return '4096x4096'
 
   // 方式2：已经是 "宽x高" 格式，直接返回
@@ -183,22 +197,36 @@ function normalizeSizeParam(size: string | undefined): string {
 
 /**
  * 根据比例和分辨率生成宽高像素值。
+ * 已导出，供 provider-image-router 直接使用。
  */
-function getSizeByRatioAndResolution(
+export function getSizeByRatioAndResolution(
   ratio: string | undefined,
   resolution: VolcesResolution,
 ): string {
-  if (!ratio) {
-    return resolution === '4K' ? '4096x4096' : '2048x2048'
-  }
-
-  const normalizedRatio = ratio.replace('：', ':')
+  // 无比例时默认 1:1
+  const normalizedRatio = ratio ? ratio.replace('：', ':') : '1:1'
   const mapping = RATIO_TO_SIZE_MAP[normalizedRatio]
+
   if (!mapping) {
-    return resolution === '4K' ? '4096x4096' : '2048x2048'
+    // 未知比例，回退到 1:1
+    const fallback = RATIO_TO_SIZE_MAP['1:1']!
+    return pickSizeByResolution(fallback, resolution)
   }
 
-  return resolution === '4K' ? mapping.size4K : mapping.size2K
+  return pickSizeByResolution(mapping, resolution)
+}
+
+/** 根据分辨率选取对应的宽高像素值 */
+function pickSizeByResolution(mapping: VolcesSizeMapping, resolution: VolcesResolution): string {
+  switch (resolution) {
+    case '4K':
+      return mapping.size4K
+    case '3K':
+      return mapping.size3K
+    case '2K':
+    default:
+      return mapping.size2K
+  }
 }
 
 async function callVolcesOnce(
@@ -217,11 +245,18 @@ async function callVolcesOnce(
     response_format: 'url',
     stream: false,
     sequential_image_generation: 'disabled',
-    watermark: input.watermark !== false,
+    // 关闭水印：避免右下角"AI生成"字样影响画面和 JPEG 压缩质量
+    watermark: input.watermark === true,
   }
 
-  // 5.0-lite 支持 output_format 参数（png/jpeg）
-  if (normalizedModel === 'doubao-seedream-5-0-260128' && input.outputFormat) {
+  // 尝试指定 output_format（png 无损输出）。
+  // 5.0-lite 官方支持；4.5 文档标记为不支持，但实际传入测试：
+  // - 若 API 忽略：退回默认 JPEG，无副作用
+  // - 若 API 接受：获得 PNG 无损输出（~10MB），画质大幅提升
+  // - 若 API 报错：自动标记该模型不支持，后续请求不再尝试
+  const shouldTryOutputFormat =
+    input.outputFormat && !MODELS_WITHOUT_OUTPUT_FORMAT.has(normalizedModel)
+  if (shouldTryOutputFormat) {
     requestBody.output_format = input.outputFormat
   }
 
@@ -256,6 +291,23 @@ async function callVolcesOnce(
 
       if (!res.ok) {
         const text = await res.text().catch(() => '')
+        // 检测是否因 output_format 参数不支持导致报错（4.5 文档标记为不支持）。
+        // 仅当错误信息明确提到 output_format / unsupported / not supported 时才回退，
+        // 避免把其他 400 错误（如 prompt 违规）误判为参数问题。
+        const lowerText = text.toLowerCase()
+        const isOutputFormatError =
+          shouldTryOutputFormat &&
+          (lowerText.includes('output_format') ||
+            lowerText.includes('not supported') ||
+            lowerText.includes('unsupported parameter'))
+        if (isOutputFormatError) {
+          MODELS_WITHOUT_OUTPUT_FORMAT.add(normalizedModel)
+          throw new GoogleImageError({
+            category: 'api_error',
+            httpStatus: res.status,
+            message: `__OUTPUT_FORMAT_UNSUPPORTED__: 模型 ${normalizedModel} 不支持 output_format 参数，将回退到 JPEG`,
+          })
+        }
         throw new GoogleImageError({
           category: res.status === 401 || res.status === 403 ? 'auth_failed' : 'api_error',
           httpStatus: res.status,
@@ -267,6 +319,7 @@ async function callVolcesOnce(
     },
     logCtx,
     {
+      apiKey: input.apiKey,
       providerId: input.providerId || 'volces',
       maxIpm: input.maxIpm || 500, // 豆包 Seedream 4.5 IPM 默认 500
       maxRpm: input.maxRpm || 150,
@@ -335,7 +388,27 @@ export async function runVolcesImageEdit(
 
   // 豆包不支持 n 参数，需要串行调用
   for (let i = 0; i < input.count; i++) {
-    const item = await callVolcesOnce(input, { ...logCtx, attempt: i + 1 })
+    let item: VolcesImageItem
+    try {
+      item = await callVolcesOnce(input, { ...logCtx, attempt: i + 1 })
+    } catch (err) {
+      // 如果 API 不支持 output_format（如 Seedream 4.5），自动回退到 JPEG 重试
+      if (
+        err instanceof GoogleImageError &&
+        err.message.startsWith('__OUTPUT_FORMAT_UNSUPPORTED__')
+      ) {
+        logImageEvent('volces.output_format_fallback', logCtx, {
+          reason: 'API 不支持 output_format 参数，回退到默认 JPEG',
+          model: input.model,
+        })
+        item = await callVolcesOnce(
+          { ...input, outputFormat: undefined },
+          { ...logCtx, attempt: i + 1 },
+        )
+      } else {
+        throw err
+      }
+    }
 
     const assetId = `${input.taskId}-volces-${Date.now()}-${i}`
 
@@ -355,11 +428,17 @@ export async function runVolcesImageEdit(
     results.push({
       assetId,
       url: dataUrl,
+      downloadUrl: dataUrl,
+      width: input.resolvedSize?.width ?? 0,
+      height: input.resolvedSize?.height ?? 0,
       kind: 'generated',
       metadata: {
         provider: 'volces',
         model: input.model,
         size: item.size,
+        requestedSize: input.resolvedSize?.size ?? input.size,
+        requestedResolution: input.resolvedSize?.resolution,
+        requestedRatio: input.resolvedSize?.ratio,
       },
     })
   }

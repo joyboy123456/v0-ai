@@ -23,6 +23,7 @@ export type GoogleImageErrorCategory =
   | 'empty_output'
   | 'bad_request'
   | 'auth_failed'
+  | 'api_error'
   | 'unknown'
 
 export interface GoogleImageErrorInit {
@@ -46,6 +47,7 @@ const defaultRetryableByCategory: Record<GoogleImageErrorCategory, boolean> = {
   empty_output: true,
   bad_request: false,
   auth_failed: false,
+  api_error: false,
   unknown: true,
 }
 
@@ -90,6 +92,8 @@ interface RetryAcquireOptions {
   maxIpm?: number
   /** 该 provider 的 RPM 上限。不传时降级读 env */
   maxRpm?: number
+  /** 自定义 Retry-After 解析器，兼容非 Google provider 的 header 表达 */
+  parseRetryAfter?: (value: string | null | undefined) => number | undefined
 }
 
 /**

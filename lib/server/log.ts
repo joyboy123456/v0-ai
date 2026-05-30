@@ -18,6 +18,10 @@ export type ImageEventName =
   | 'pool.circuit'
   | 'face.blur'
   | 'face.blur-fallback'
+  | 'volces.request'
+  | 'volces.success'
+  | 'volces.output_format_fallback'
+  | 'volces.batch_complete'
 
 export interface LogContext {
   traceId: string
@@ -37,6 +41,10 @@ const eventLevel: Record<ImageEventName, 'info' | 'warn' | 'error'> = {
   'pool.circuit': 'error',
   'face.blur': 'info',
   'face.blur-fallback': 'warn',
+  'volces.request': 'info',
+  'volces.success': 'info',
+  'volces.output_format_fallback': 'warn',
+  'volces.batch_complete': 'info',
 }
 
 export function logImageEvent(

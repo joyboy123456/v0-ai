@@ -30,6 +30,7 @@ import {
 } from '@/lib/types'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import sharp from 'sharp'
 
 const globalStore = globalThis as typeof globalThis & {
   fashionMvpStore?: {
@@ -189,15 +190,19 @@ async function storeAssetFromDataUrl(
 async function storeResultFromResultAsset(
   result: ResultAsset,
   userId: string,
-): Promise<{ url: string; bytes?: number }> {
+): Promise<{ url: string; bytes?: number; mimeType: string; width?: number; height?: number }> {
   if (result.url.startsWith('data:')) {
+    const mimeType = extractDataUrlMime(result.url) ?? 'image/png'
     const persisted = await storage().putImageFromDataUrl({
       userId: userId === defaultUserId ? null : userId,
       bucket: 'results',
-      filename: `${result.assetId}.${getExtension(extractDataUrlMime(result.url) ?? 'image/png')}`,
+      filename: `${result.assetId}.${getExtension(mimeType)}`,
       dataUrl: result.url,
     })
-    return { url: persisted.publicUrl, bytes: persisted.bytes }
+    const dimensions = await readImageDimensionsFromBuffer(
+      Buffer.from(result.url.split(',')[1] ?? '', 'base64'),
+    )
+    return { url: persisted.publicUrl, bytes: persisted.bytes, mimeType, ...dimensions }
   }
 
   if (!result.url.startsWith('http')) {
@@ -210,6 +215,7 @@ async function storeResultFromResultAsset(
   }
   const mimeType = response.headers.get('content-type') ?? 'image/jpeg'
   const buffer = Buffer.from(await response.arrayBuffer())
+  const dimensions = await readImageDimensionsFromBuffer(buffer)
   const persisted = await storage().putImage({
     userId: userId === defaultUserId ? null : userId,
     bucket: 'results',
@@ -217,7 +223,21 @@ async function storeResultFromResultAsset(
     body: buffer,
     contentType: mimeType,
   })
-  return { url: persisted.publicUrl, bytes: persisted.bytes }
+  return { url: persisted.publicUrl, bytes: persisted.bytes, mimeType, ...dimensions }
+}
+
+async function readImageDimensionsFromBuffer(
+  buffer: Buffer,
+): Promise<{ width?: number; height?: number }> {
+  try {
+    const metadata = await sharp(buffer).metadata()
+    return {
+      width: metadata.width,
+      height: metadata.height,
+    }
+  } catch {
+    return {}
+  }
 }
 
 function extractDataUrlMime(dataUrl: string): string | null {
@@ -372,15 +392,15 @@ export async function createTask(input: {
   }
 
   store.tasks.set(taskId, task)
-  // PR3：shadow write 到 repo。local 模式 repo 共享同一份 Map，等价 no-op；
-  // cloud 模式会写入 D1 tasks 表。失败不阻塞主流程。
-  try {
-    await taskRepo().insertTask(buildTaskRow(task))
-  } catch (error) {
-    console.error('[task-store] insertTask 失败：', error)
-  }
-  void persistStore()
-  void runTask(taskId)
+  setTimeout(() => {
+    // 创建接口必须快速返回；repo shadow write / JSON 落盘 / 后台生成都放到
+    // 响应后的 tick，避免拖住前端按钮的“创建任务中”状态。
+    void taskRepo().insertTask(buildTaskRow(task)).catch((error) => {
+      console.error('[task-store] insertTask 失败：', error)
+    })
+    void persistStore()
+    void runTask(taskId)
+  }, 0)
 
   return task
 }
@@ -544,14 +564,16 @@ async function persistOneResult(
   const persisted = await storeResultFromResultAsset(result, ownerUserId)
   result.url = persisted.url
   result.downloadUrl = persisted.url
+  result.width = persisted.width ?? result.width
+  result.height = persisted.height ?? result.height
 
   const asset: AssetRecord = {
     assetId: result.assetId,
     userId: ownerUserId,
     projectId: defaultProjectId,
-    fileName: `${result.assetId}.jpg`,
+    fileName: `${result.assetId}.${getExtension(persisted.mimeType)}`,
     fileUrl: persisted.url,
-    fileType: 'image/jpeg',
+    fileType: persisted.mimeType,
     width: result.width,
     height: result.height,
     createdAt: new Date().toISOString(),
@@ -666,13 +688,17 @@ async function saveResults(
     // PR4：透传 ownerUserId，cloud 模式 R2 路径按用户隔离。
     const persistedResult = await storeResultFromResultAsset(result, ownerUserId)
     const resultUrl = persistedResult.url
+    result.url = resultUrl
+    result.downloadUrl = resultUrl
+    result.width = persistedResult.width ?? result.width
+    result.height = persistedResult.height ?? result.height
     const asset: AssetRecord = {
       assetId: result.assetId,
       userId: ownerUserId,
       projectId: defaultProjectId,
-      fileName: `${result.assetId}.jpg`,
+      fileName: `${result.assetId}.${getExtension(persistedResult.mimeType)}`,
       fileUrl: resultUrl,
-      fileType: 'image/jpeg',
+      fileType: persistedResult.mimeType,
       width: result.width,
       height: result.height,
       createdAt: new Date().toISOString(),

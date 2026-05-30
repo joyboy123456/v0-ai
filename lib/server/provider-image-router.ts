@@ -7,6 +7,7 @@
 
 import type { ResultAsset } from '@/lib/types'
 import { runGoogleImageEdit } from './google-genai-adapter'
+import { resolveImageSize } from './image-size-policy'
 import { tripProviderCircuit, type ImageProvider } from './image-provider-pool'
 import { GoogleImageError } from './google-image-retry'
 import { runQiniuImageEdit } from './qiniu-image-adapter'
@@ -38,6 +39,7 @@ export async function runImageEditViaProvider(
   const { provider } = input
   const apiKey = provider.apiKey || input.fallbackApiKey || ''
   const timeoutMs = provider.timeoutMs || 600000
+  const resolvedSize = resolveImageSize(input.aspectRatio, input.imageSize)
 
   try {
     switch (provider.type) {
@@ -71,6 +73,7 @@ export async function runImageEditViaProvider(
           count: input.count,
           aspectRatio: input.aspectRatio,
           imageSize: input.imageSize,
+          resolvedSize,
           traceId: input.traceId,
           shotId: input.shotId,
           providerId: provider.id,
@@ -78,13 +81,21 @@ export async function runImageEditViaProvider(
           maxRpm: provider.maxRpm,
         })
 
-      case 'volces':
-        // 豆包 Seedream 4.5/5.0-lite 使用单一 size 参数
-        // 优先使用 imageSize（2K/4K），如果没有则使用 aspectRatio（如 16:9）
-        const volcesSize = input.imageSize || input.aspectRatio || '2K'
+      case 'volces': {
+        // 豆包 Seedream 4.5/5.0-lite 使用 "宽x高" 格式的 size 参数。
+        // 必须将 aspectRatio（如 "16:9"）与 resolution（如 "4K"）组合为正确的像素尺寸，
+        // 否则 normalizeSizeParam 会把 "4K" 当作 1:1 → 4096x4096，导致所有比例都出正方形。
         const volcesModel = input.model || provider.model || ''
-        // 5.0-lite 支持 PNG 无损输出，自动启用以获得高质量图片
-        const volcesOutputFormat = volcesModel.includes('5-0-260128') ? 'png' : undefined
+        const volcesResolvedSize =
+          volcesModel.includes('5.0-lite') || volcesModel.includes('5-0-260128')
+            ? resolvedSize
+            : resolveImageSize(
+                input.aspectRatio,
+                resolvedSize.resolution === '4K' ? '4K' : '2K',
+              )
+        // 尝试 PNG 无损输出：5.0-lite 官方支持；4.5 文档不支持但尝试传入，
+        // 若 API 忽略则不影响，若接受则获得高质量输出。
+        const volcesOutputFormat = 'png' as const
         return await runVolcesImageEdit({
           taskId: input.taskId,
           apiKey,
@@ -94,14 +105,16 @@ export async function runImageEditViaProvider(
           prompt: input.prompt,
           inputImages: input.inputImages,
           count: input.count,
-          size: volcesSize,
+          size: volcesResolvedSize.size,
           outputFormat: volcesOutputFormat,
+          resolvedSize: volcesResolvedSize,
           traceId: input.traceId,
           shotId: input.shotId,
           providerId: provider.id,
           maxIpm: provider.maxIpm,
           maxRpm: provider.maxRpm,
         })
+      }
 
       case 'google':
       default:

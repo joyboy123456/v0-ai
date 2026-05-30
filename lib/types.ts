@@ -37,7 +37,7 @@ export type PoseImageRatio =
   | 'more'
 export type PoseAgeGroup = 'adult' | 'kid'
 export type PoseBodyPart = 'full' | 'upper' | 'lower'
-export type PoseResolution = '1k' | '2k' | '4k'
+export type PoseResolution = '1k' | '2k' | '3k' | '4k'
 export type FashionResolution = PoseResolution
 export type ProductCategory = 'tops' | 'bottoms' | 'dress' | 'suit' | 'outerwear'
 export type PhotoFissionCategory = 'childrens'
@@ -103,9 +103,11 @@ export interface ResultAsset {
   downloadUrl: string
   width: number
   height: number
+  kind?: 'generated'
   label?: string
   shotId?: string
   finalPrompt?: string
+  metadata?: Record<string, unknown>
 }
 
 export interface GenerationTask {
@@ -445,6 +447,7 @@ export const PHOTO_FISSION_RATIOS_EXTRA = [
 export const PHOTO_FISSION_RESOLUTIONS = [
   { id: '1k', label: '1k' },
   { id: '2k', label: '2k' },
+  { id: '3k', label: '3k' },
   { id: '4k', label: '4k' },
 ] satisfies { id: PhotoFissionResolution; label: string }[]
 
@@ -532,6 +535,7 @@ export const POSE_IMAGE_RATIOS_EXTRA = [
 export const POSE_RESOLUTIONS = [
   { id: '1k', label: '1k' },
   { id: '2k', label: '2k' },
+  { id: '3k', label: '3k' },
   { id: '4k', label: '4k' },
 ] satisfies { id: PoseResolution; label: string }[]
 
@@ -559,7 +563,7 @@ export interface FashionModelOption {
   alias: string
   description: string
   maxInputImages: number
-  maxResolutionLabel: '4K'
+  maxResolutionLabel: '1K' | '2K' | '3K' | '4K'
   selectable?: boolean
 }
 
@@ -606,15 +610,15 @@ export const FASHION_MODELS: FashionModelOption[] = [
     id: 'doubao-seedream-4.5',
     label: '豆包 Seedream 4.5',
     alias: '豆包 AI 4.5',
-    description: '字节跳动火山引擎豆包图片生成，高质量中文场景理解，支持 2K 出图',
+    description: '字节跳动火山引擎豆包图片生成，高质量中文场景理解，支持 4K 出图',
     maxInputImages: 5,
-    maxResolutionLabel: '2K',
+    maxResolutionLabel: '4K',
   },
   {
     id: 'doubao-seedream-5.0-lite',
     label: '豆包 Seedream 5.0 Lite',
     alias: '豆包 AI 5.0 Lite',
-    description: '字节跳动火山引擎豆包图片生成，支持 PNG 无损输出和联网搜索，最高 4K 出图',
+    description: '字节跳动火山引擎豆包图片生成，支持 PNG 无损输出、3K/4K 高分辨率和联网搜索',
     maxInputImages: 14,
     maxResolutionLabel: '4K',
   },

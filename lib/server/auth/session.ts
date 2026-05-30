@@ -6,6 +6,9 @@
  * 注意：
  * - sessionId 用 `crypto.randomUUID()`，36 字符 + 4 dash，足够防猜测
  * - 进程内 Map 重启即丢，但 STORAGE_MODE=local/oss 是本地/私有云用，可接受
+ * - Next.js 会把不同 route handler 打到不同 server bundle；模块级 Map 在
+ *   bundle 间不共享，所以这里挂到 globalThis，保证 auth/me 与业务 API
+ *   看到同一份登录态
  */
 
 import { randomUUID } from 'node:crypto'
@@ -24,7 +27,14 @@ export interface CreatedSession extends SessionRecord {
 /** 30 天，单位秒（同步给 cookie maxAge 使用） */
 export const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 
-const LOCAL_SESSIONS = new Map<string, SessionRecord>()
+const globalForSessions = globalThis as typeof globalThis & {
+  __yibaiLocalSessions?: Map<string, SessionRecord>
+}
+
+const LOCAL_SESSIONS =
+  globalForSessions.__yibaiLocalSessions ?? new Map<string, SessionRecord>()
+
+globalForSessions.__yibaiLocalSessions = LOCAL_SESSIONS
 
 function makeSessionId(): string {
   return `sess_${randomUUID()}`

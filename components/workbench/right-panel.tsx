@@ -48,6 +48,179 @@ interface ResultPreview {
   task: GenerationTask;
 }
 
+interface GeneratingSlot {
+  id: string;
+  label: string;
+}
+
+type ResultGridItem =
+  | { kind: "image"; image: ResultAsset }
+  | { kind: "pending"; slot: GeneratingSlot };
+
+function isTaskGenerating(task: GenerationTask): boolean {
+  return task.status === "pending" || task.status === "running";
+}
+
+function readPositiveCount(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.floor(value);
+}
+
+function getPlannedResultCount(task: GenerationTask): number {
+  const params = task.params as {
+    resultCount?: number;
+    generateCount?: number;
+    shotPlan?: { shotId?: string; label?: string }[];
+    poseTemplateIds?: string[];
+  };
+
+  const explicitCount =
+    readPositiveCount(params.resultCount) ??
+    readPositiveCount(params.generateCount);
+  if (explicitCount) return explicitCount;
+
+  if (task.featureType === "photo-fission" && Array.isArray(params.shotPlan)) {
+    return Math.max(params.shotPlan.length, task.results.length, 1);
+  }
+
+  if (
+    task.featureType === "pose-fission" &&
+    Array.isArray(params.poseTemplateIds)
+  ) {
+    return Math.max(params.poseTemplateIds.length, task.results.length, 1);
+  }
+
+  return Math.max(task.results.length, 1);
+}
+
+function getPendingGenerationSlots(task: GenerationTask): GeneratingSlot[] {
+  if (!isTaskGenerating(task)) return [];
+
+  const params = task.params as {
+    shotPlan?: { shotId?: string; label?: string }[];
+    poseTemplateIds?: string[];
+  };
+  const succeededShotIds = new Set(
+    task.results
+      .map((result) => result.shotId)
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  if (task.featureType === "photo-fission" && Array.isArray(params.shotPlan)) {
+    return params.shotPlan
+      .filter((shot, index) => {
+        const shotId = shot.shotId ?? `shot_${index + 1}`;
+        return !succeededShotIds.has(shotId);
+      })
+      .map((shot, index) => ({
+        id: shot.shotId ?? `pending-shot-${index + 1}`,
+        label: shot.label ?? `镜头 ${index + 1}`,
+      }));
+  }
+
+  if (
+    task.featureType === "pose-fission" &&
+    Array.isArray(params.poseTemplateIds)
+  ) {
+    return params.poseTemplateIds
+      .filter((templateId) => !succeededShotIds.has(templateId))
+      .map((templateId, index) => ({
+        id: templateId,
+        label: `姿势 ${index + 1}`,
+      }));
+  }
+
+  const pendingCount = Math.max(0, getPlannedResultCount(task) - task.results.length);
+  return Array.from({ length: pendingCount }, (_, index) => ({
+    id: `pending-${index + 1}`,
+    label: `图片 ${task.results.length + index + 1}`,
+  }));
+}
+
+function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
+  const params = task.params as {
+    shotPlan?: { shotId?: string; label?: string }[];
+    poseTemplateIds?: string[];
+  };
+  const isGenerating = isTaskGenerating(task);
+  const resultsByShotId = new Map(
+    task.results
+      .filter((result) => result.shotId)
+      .map((result) => [result.shotId as string, result]),
+  );
+
+  if (task.featureType === "photo-fission" && Array.isArray(params.shotPlan)) {
+    const plannedItems = params.shotPlan.flatMap<ResultGridItem>((shot, index) => {
+      const shotId = shot.shotId ?? `shot_${index + 1}`;
+      const result = resultsByShotId.get(shotId);
+      if (result) return [{ kind: "image", image: result }];
+      if (!isGenerating) return [];
+      return [
+        {
+          kind: "pending",
+          slot: {
+            id: shotId,
+            label: shot.label ?? `镜头 ${index + 1}`,
+          },
+        },
+      ];
+    });
+    const plannedIds = new Set(
+      params.shotPlan.map((shot, index) => shot.shotId ?? `shot_${index + 1}`),
+    );
+    const extraResults = task.results
+      .filter((result) => !result.shotId || !plannedIds.has(result.shotId))
+      .map<ResultGridItem>((image) => ({ kind: "image", image }));
+    return [...plannedItems, ...extraResults];
+  }
+
+  if (
+    task.featureType === "pose-fission" &&
+    Array.isArray(params.poseTemplateIds)
+  ) {
+    const plannedItems = params.poseTemplateIds.flatMap<ResultGridItem>(
+      (templateId, index) => {
+        const result = resultsByShotId.get(templateId);
+        if (result) return [{ kind: "image", image: result }];
+        if (!isGenerating) return [];
+        return [
+          {
+            kind: "pending",
+            slot: {
+              id: templateId,
+              label: `姿势 ${index + 1}`,
+            },
+          },
+        ];
+      },
+    );
+    const plannedIds = new Set(params.poseTemplateIds);
+    const extraResults = task.results
+      .filter((result) => !result.shotId || !plannedIds.has(result.shotId))
+      .map<ResultGridItem>((image) => ({ kind: "image", image }));
+    return [...plannedItems, ...extraResults];
+  }
+
+  return [
+    ...task.results.map<ResultGridItem>((image) => ({ kind: "image", image })),
+    ...getPendingGenerationSlots(task).map<ResultGridItem>((slot) => ({
+      kind: "pending",
+      slot,
+    })),
+  ];
+}
+
+function getTaskAspectRatio(task: GenerationTask): string {
+  const params = task.params as { imageRatio?: string };
+  const ratio = params.imageRatio;
+  if (typeof ratio === "string" && /^\d+:\d+$/.test(ratio)) {
+    return ratio.replace(":", " / ");
+  }
+  return "3 / 4";
+}
+
 interface RightPanelProps {
   feature: FeatureType;
   activeTask: GenerationTask | null;
@@ -189,6 +362,9 @@ export function RightPanel({
       ? activeTask
       : (currentFeatureTasks[0] ?? activeTask);
   const results = visibleTask?.results ?? [];
+  const visibleTaskGridItems = visibleTask
+    ? getTaskResultGridItems(visibleTask)
+    : [];
 
   useEffect(() => {
     if (isPoseFission) {
@@ -653,62 +829,42 @@ export function RightPanel({
                 onRetryShots={handleRetryShots}
               />
 
-              {results.length > 0 ? (
-                <div className="columns-2 md:columns-3 xl:columns-4 gap-2">
-                  {results.map((image) => {
+              {visibleTaskGridItems.length > 0 ? (
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                  {visibleTaskGridItems.map((item) => {
+                    if (item.kind === "pending") {
+                      return (
+                        <GeneratingImageCard
+                          key={`pending-${item.slot.id}`}
+                          label={item.slot.label}
+                          aspectRatio={getTaskAspectRatio(visibleTask)}
+                        />
+                      );
+                    }
+
+                    const image = item.image;
                     const isFavorite = favorites.has(image.assetId);
 
                     return (
-                      <div
+                      <ResultImageCard
                         key={image.assetId}
-                        className="group relative overflow-hidden glass-card glass-card-hover break-inside-avoid mb-2 inline-block w-full cursor-pointer"
+                        image={image}
+                        isFavorite={isFavorite}
                         onClick={() =>
                           setPreviewResult({ image, task: visibleTask })
                         }
-                      >
-                        <img
-                          src={image.url}
-                          alt=""
-                          className="w-full h-auto block bg-secondary"
-                        />
-                        <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-2 p-3 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setFavorites((current) => {
-                                const next = new Set(current);
-                                if (next.has(image.assetId)) {
-                                  next.delete(image.assetId);
-                                } else {
-                                  next.add(image.assetId);
-                                }
-                                return next;
-                              });
-                            }}
-                            className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center"
-                            aria-label="收藏"
-                          >
-                            <Star
-                              className={cn(
-                                "w-4 h-4",
-                                isFavorite
-                                  ? "fill-yellow-400 text-yellow-400"
-                                  : "text-muted-foreground",
-                              )}
-                            />
-                          </button>
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              window.open(image.downloadUrl, "_blank");
-                            }}
-                            className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center"
-                            aria-label="下载"
-                          >
-                            <Download className="w-4 h-4 text-muted-foreground" />
-                          </button>
-                        </div>
-                      </div>
+                        onToggleFavorite={() => {
+                          setFavorites((current) => {
+                            const next = new Set(current);
+                            if (next.has(image.assetId)) {
+                              next.delete(image.assetId);
+                            } else {
+                              next.add(image.assetId);
+                            }
+                            return next;
+                          });
+                        }}
+                      />
                     );
                   })}
                 </div>
