@@ -72,11 +72,9 @@ const photoFissionChildrensCategoryLabelMap = new Map(
 )
 
 const SUIT_ACTION_HISTORY_GENERATIONS = 3
+const DRESS_ACTION_HISTORY_GENERATIONS = 3
 const recentSuitActionHistoryByKey = new Map<string, string[][]>()
-const recentDressActionHistoryByKey = new Map<
-  string,
-  { generationCount: number; hints: string[] }
->()
+const recentDressActionHistoryByKey = new Map<string, string[][]>()
 const DEFAULT_PHOTO_FISSION_CONCURRENCY = 3
 
 type PlannerPromptCard = {
@@ -538,13 +536,16 @@ function buildIdentityLockSection(
       `- 脸型：脸的形状（圆脸/方脸/鹅蛋脸/瓜子脸等）、下颌线弧度、颧骨高低、额头宽窄与发际线形状、下巴长短与尖圆、两腮宽窄`,
       `- 五官：眼形（包括双眼皮/单眼皮、眼角方向、眼睛大小与间距）、鼻型（鼻梁高低、鼻头大小、鼻翼宽窄）、嘴形（嘴唇厚薄、嘴角方向、嘴的大小）、眉形（眉毛粗细、弧度、浓淡）、耳朵形状`,
       `- 面部比例：五官在脸上的位置关系（三庭五眼比例）、面部立体感`,
-      '表情、神情可以自然变化（微笑、开朗、专注等），但脸型骨骼结构和五官细节绝对不能改变。',
-      `绝对规则：脸型和五官全部以图${faceIdImageIndex}为准，图1主图的脸不作为任何参考来源。`,
+      `- 面部皮肤质感：严格复刻图${faceIdImageIndex}的皮肤质感——脸部毛孔清晰可见、皮肤纹理细腻真实、面部光泽感与高光分布与图${faceIdImageIndex}一致，不添加磨皮或过度柔化效果，保留皮肤的天然肌理和真实感`,
+      `- 表情丰富度：表情自然多变且生动，可以展现微笑、开朗、专注、俏皮、好奇、惊喜、温柔等各种自然表情，每种表情都要确保五官细节（眼角弯度、嘴角弧度、眉毛舒展度）与图${faceIdImageIndex}的基础特征一致，但表情本身要自然流畅不僵硬`,
+      '脸型骨骼结构和五官细节绝对不能改变，但表情和神态应当丰富自然，避免千篇一律的固定微笑。',
+      `绝对规则：脸型、五官、皮肤质感和面部比例全部以图${faceIdImageIndex}为准，图1主图的脸不作为任何参考来源。`,
     ].join('\n')
   }
   return [
     '【人物呈现 IDENTITY】',
     '画面中的人物是图1里的同一个人，身材比例、发型、发色、肤色与年龄感与图1保持一致；面部特征延续图1，神情自然、状态放松。',
+    '面部皮肤质感要求：脸部毛孔清晰可见、皮肤纹理细腻真实，不添加磨皮或过度柔化效果，保留皮肤的天然肌理和真实感。表情丰富自然，避免千篇一律。',
   ].join('\n')
 }
 
@@ -1300,15 +1301,13 @@ function getRecentSuitActionHints(params: PhotoFissionParams): string[] {
   return [...new Set(generations.flat())]
 }
 
-function getSecondDressGenerationAvoidHints(params: PhotoFissionParams): string[] {
+function getRecentDressActionHints(params: PhotoFissionParams): string[] {
   if (!isDressChildrensCategory(params.category, params.childrensCategory)) {
     return []
   }
-  const history = recentDressActionHistoryByKey.get(buildDressActionHistoryKey(params))
-  if (!history || history.generationCount !== 1) {
-    return []
-  }
-  return history.hints
+  const key = buildDressActionHistoryKey(params)
+  const generations = recentDressActionHistoryByKey.get(key) ?? []
+  return [...new Set(generations.flat())]
 }
 
 function rememberSuitActionHints(
@@ -1336,12 +1335,13 @@ function rememberDressActionHints(
     return
   }
   const nextHints = extractDressActionHints(shots)
+  if (nextHints.length === 0) {
+    return
+  }
   const key = buildDressActionHistoryKey(params)
-  const previous = recentDressActionHistoryByKey.get(key)
-  recentDressActionHistoryByKey.set(key, {
-    generationCount: (previous?.generationCount ?? 0) + 1,
-    hints: nextHints,
-  })
+  const generations = recentDressActionHistoryByKey.get(key) ?? []
+  const nextGenerations = [...generations, nextHints].slice(-DRESS_ACTION_HISTORY_GENERATIONS)
+  recentDressActionHistoryByKey.set(key, nextGenerations)
 }
 
 function buildSuitActionHistoryKey(params: PhotoFissionParams): string {
@@ -1550,7 +1550,7 @@ async function applyShotPlannerOverride(
     params.childrensCategory,
   )
     ? getRecentSuitActionHints(params)
-    : getSecondDressGenerationAvoidHints(params)
+    : getRecentDressActionHints(params)
   const plan = buildPlannerRulePlan(
     params.category,
     params.childrensCategory,
@@ -1663,6 +1663,19 @@ async function applyShotPlannerOverride(
       : output.shots,
   )
 
+  // 多样性诊断：检测 planner 输出的重复率并记录日志
+  const diversityDiag = diagnosePromptDiversity(fullPlan)
+  console.log(
+    JSON.stringify({
+      lvl: diversityDiag.hasWarning ? 'warn' : 'info',
+      evt: 'planner.diversity',
+      ts: new Date().toISOString(),
+      traceId: taskId,
+      taskId,
+      ...diversityDiag,
+    }),
+  )
+
   console.log(
     JSON.stringify({
       lvl: 'info',
@@ -1716,16 +1729,105 @@ function appendFaceIdLock(
     return match + '面部全部特征（脸型+五官）以图' + imgRef + '人像小卡为唯一基准。'
   })
 
-  // PREPEND：模型对开头指令权重最高，把面部锁定放在最前面
+  // PREPEND：使用 Seedream 官方推荐的多图指令格式
+  // 官方文档明确建议："清楚指明不同图像需要编辑/参考的对象及操作"
+  // 开头用简洁替换指令，模型对开头指令权重最高
   const prepend = [
-    `【最高优先级规则 — 面部锁定】图${imgRef}是人像小卡（胸口以上高清特写），是此人面部全部特征的唯一权威参考。图1主图的脸部已被覆盖处理，不包含任何可识别的面部信息。以下生成指令中，所有面部特征（脸型、五官、面部比例）必须严格以图${imgRef}人像小卡为准，图1仅提供穿搭、发型、发饰和场景光线。\n\n`,
+    `参考图${imgRef}的人物面部形象（脸型、五官、面部比例、皮肤质感），保持图1的服装、穿搭、发型和场景，用图${imgRef}的面部替换图1的面部。图1面部已被遮挡处理，不包含面部信息。生成的人物面部必须与图${imgRef}完全一致：脸型形状、下颌线弧度、颧骨、眼形（含双眼皮/单眼皮）、鼻型、嘴形、眉形、耳朵形状、三庭五眼比例、皮肤质感（毛孔清晰、纹理细腻、真实光泽感）全部严格复刻图${imgRef}。皮肤不磨皮、不柔化，保留真实肌理。表情可以自然变化，但脸型骨骼结构和五官细节绝对不能改变。\n\n`,
   ].join('')
 
-  // APPEND：尾部再次强调
+  // APPEND：尾部用替换指令格式再次强调
   const append = [
-    `\n\n【面部锁定 — 尾部重申】`,
-    `重申：图${imgRef}人像小卡是面部全部特征的唯一权威参考。脸型形状、下颌线弧度、颧骨、眼形、鼻型、嘴形、眉形、耳朵形状、三庭五眼比例全部严格复刻图${imgRef}。图1主图脸部已被覆盖，不可从中读取面部信息。表情可自然变化，但脸型骨骼结构和五官细节绝对不能改变。`,
+    `\n\n再次强调多图参考规则：用图${imgRef}的人物面部形象生成图1中穿着同套服装的人物。面部全部特征以图${imgRef}为唯一基准，图1不提供面部信息。表情可自然丰富变化，但脸型、五官、面部比例和皮肤质感严格复刻图${imgRef}。`,
   ].join('')
 
   return `${prepend}${cleaned.trim()}${append}`
+}
+
+/**
+ * 多样性诊断：检测 planner 输出中手势/表情/视线的重复率。
+ *
+ * 纯诊断+日志，不修改 prompt。重复率过高时输出 warn 级日志，
+ * 方便运维观察 planner 质量趋势。
+ */
+function diagnosePromptDiversity(
+  shots: ReadonlyArray<{ prompt: string }>,
+): { hasWarning: boolean; gestureDuplication: number; expressionDuplication: number; gazeDuplication: number; topGestures: string[]; topExpressions: string[] } {
+  const gesturePatterns: ReadonlyArray<[RegExp, string]> = [
+    [/比\s*V|比耶|剪刀手|V\s*字/i, '比V'],
+    [/撩发|拢发|别耳后|发丝/i, '撩发别耳后'],
+    [/提裙|拉起裙摆|展裙|轻提裙/i, '提裙展裙'],
+    [/叉腰|手停腰侧|腰侧/i, '叉腰'],
+    [/背手|身后交握|背后交握/i, '背手'],
+    [/托腮|托脸|戳脸颊/i, '托腮'],
+    [/捂嘴|遮嘴/i, '捂嘴'],
+    [/挥手|打招呼/i, '挥手'],
+    [/交握身前|身前交握/i, '身前交握'],
+    [/扶发顶|扶额/i, '扶发顶'],
+    [/插兜|口袋/i, '插兜'],
+    [/OK\s*手势|比\s*OK/i, 'OK手势'],
+  ]
+
+  const expressionPatterns: ReadonlyArray<[RegExp, string]> = [
+    [/浅笑|微笑|小弧|轻扬/i, '浅笑'],
+    [/露齿|笑.*牙|牙.*笑/i, '露齿笑'],
+    [/嘟嘴|嘟嘟嘴/i, '嘟嘴'],
+    [/轻抿|抿嘴|抿唇/i, '轻抿'],
+    [/微张嘴|小惊喜/i, '小惊喜'],
+    [/闭眼|微仰|迎光/i, '闭眼'],
+    [/冷酷|高冷|帅气/i, '冷酷'],
+  ]
+
+  const gazePatterns: ReadonlyArray<[RegExp, string]> = [
+    [/直视镜头|平视镜头|看向镜头/i, '直视镜头'],
+    [/看裙摆|看脚尖|低垂|低头/i, '看下方'],
+    [/越过镜头|看右上|看右下|看左上|看左前/i, '看向侧方'],
+    [/闭眼|迎光/i, '闭眼'],
+    [/看远方|侧看|不看镜头/i, '看远方'],
+  ]
+
+  function countPatterns(texts: readonly string[], patterns: ReadonlyArray<[RegExp, string]>): Map<string, number> {
+    const counts = new Map<string, number>()
+    for (const text of texts) {
+      for (const [pattern, label] of patterns) {
+        if (pattern.test(text)) {
+          counts.set(label, (counts.get(label) ?? 0) + 1)
+        }
+      }
+    }
+    return counts
+  }
+
+  const prompts = shots.map((s) => s.prompt)
+  const gestureCounts = countPatterns(prompts, gesturePatterns)
+  const expressionCounts = countPatterns(prompts, expressionPatterns)
+  const gazeCounts = countPatterns(prompts, gazePatterns)
+
+  const totalShots = shots.length
+  const duplicateThreshold = Math.max(3, Math.ceil(totalShots * 0.45))
+
+  const gestureDuplication = Math.max(...gestureCounts.values(), 0)
+  const expressionDuplication = Math.max(...expressionCounts.values(), 0)
+  const gazeDuplication = Math.max(...gazeCounts.values(), 0)
+
+  const hasWarning =
+    gestureDuplication > duplicateThreshold ||
+    expressionDuplication > duplicateThreshold ||
+    gazeDuplication > duplicateThreshold
+
+  function getTopN(counts: Map<string, number>, n: number): string[] {
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, n)
+      .map(([label, count]) => `${label}×${count}`)
+  }
+
+  return {
+    hasWarning,
+    gestureDuplication,
+    expressionDuplication,
+    gazeDuplication,
+    topGestures: getTopN(gestureCounts, 5),
+    topExpressions: getTopN(expressionCounts, 5),
+  }
 }

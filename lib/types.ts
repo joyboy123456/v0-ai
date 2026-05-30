@@ -37,7 +37,7 @@ export type PoseImageRatio =
   | 'more'
 export type PoseAgeGroup = 'adult' | 'kid'
 export type PoseBodyPart = 'full' | 'upper' | 'lower'
-export type PoseResolution = '1k' | '2k' | '3k' | '4k'
+export type PoseResolution = '2k' | '4k'
 export type FashionResolution = PoseResolution
 export type ProductCategory = 'tops' | 'bottoms' | 'dress' | 'suit' | 'outerwear'
 export type PhotoFissionCategory = 'childrens'
@@ -445,9 +445,7 @@ export const PHOTO_FISSION_RATIOS_EXTRA = [
 ] satisfies { id: PhotoFissionImageRatio; label: string }[]
 
 export const PHOTO_FISSION_RESOLUTIONS = [
-  { id: '1k', label: '1k' },
   { id: '2k', label: '2k' },
-  { id: '3k', label: '3k' },
   { id: '4k', label: '4k' },
 ] satisfies { id: PhotoFissionResolution; label: string }[]
 
@@ -533,9 +531,7 @@ export const POSE_IMAGE_RATIOS_EXTRA = [
 ] satisfies { id: PoseImageRatio; label: string }[]
 
 export const POSE_RESOLUTIONS = [
-  { id: '1k', label: '1k' },
   { id: '2k', label: '2k' },
-  { id: '3k', label: '3k' },
   { id: '4k', label: '4k' },
 ] satisfies { id: PoseResolution; label: string }[]
 
@@ -698,7 +694,7 @@ export const PHOTO_FISSION_CASES: PhotoFissionCase[] = [
       '局部细节特写',
     ],
     imageRatio: '3:4',
-    resolution: '1k',
+    resolution: '2k',
     modelId: 'gemini-3.1-flash-image-preview',
   },
 ]
