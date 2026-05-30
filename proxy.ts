@@ -1,5 +1,5 @@
 /**
- * 全局认证 middleware（Edge Runtime）。
+ * 全局认证 proxy（Edge Runtime）。
  *
  * 设计要点：
  * - 跳过登录页 / auth API / 静态资源 / API auth 子树
@@ -10,7 +10,7 @@
  * - 失效或缺失：API → 401 JSON；页面 → 302 /login?next=<原始 path>
  * - 有效：通过 `x-user-id` header 把 userId 注入到下游
  *
- * ⚠️ middleware 不能 import `bcryptjs` / `node:crypto`（Edge runtime 限制），
+ * ⚠️ proxy 不能 import `bcryptjs` / `node:crypto`（Edge runtime 限制），
  *     这里只做基本校验，真正认证逻辑在 Node.js runtime 的 route 中处理。
  */
 
@@ -76,7 +76,7 @@ function redirectLocalSuperAdminLogin(request: NextRequest): NextResponse {
   return NextResponse.redirect(new URL(nextPath, request.url))
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
   const mode = readStorageMode()
 

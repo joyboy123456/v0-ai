@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn, validateUploadSize } from "@/lib/utils";
+import { EnhancedImageTaskCard } from "./image-task-card";
 import {
   AI_FASHION_DEMO_TASKS,
   FASHION_MODELS,
@@ -2302,20 +2303,39 @@ function TaskHistory({
   return (
     <div className="flex-1 overflow-y-auto p-5">
       <div className="space-y-3">
-        {tasks.map((task) => (
-          <TaskHistoryCard
-            key={task.taskId}
-            task={task}
-            isActive={activeTaskId === task.taskId}
-            favorites={favorites}
-            batchSelectMode={batchSelectMode}
-            selectedAssetIds={selectedAssetIds}
-            onSelectTask={onSelectTask}
-            onToggleFavorite={onToggleFavorite}
-            onPreviewImage={onPreviewImage}
-            onToggleImageSelection={onToggleImageSelection}
-          />
-        ))}
+        {tasks.map((task) => {
+          // 使用增强版动画组件（如果不需要批量选择模式）
+          if (!batchSelectMode) {
+            return (
+              <EnhancedImageTaskCard
+                key={task.taskId}
+                task={task}
+                plannedResultCount={getPlannedResultCount(task)}
+                isActive={activeTaskId === task.taskId}
+                onSelectTask={onSelectTask}
+                onPreviewImage={onPreviewImage}
+                onToggleFavorite={onToggleFavorite}
+                favorites={favorites}
+              />
+            );
+          }
+
+          // 批量选择模式下使用原版组件
+          return (
+            <TaskHistoryCard
+              key={task.taskId}
+              task={task}
+              isActive={activeTaskId === task.taskId}
+              favorites={favorites}
+              batchSelectMode={batchSelectMode}
+              selectedAssetIds={selectedAssetIds}
+              onSelectTask={onSelectTask}
+              onToggleFavorite={onToggleFavorite}
+              onPreviewImage={onPreviewImage}
+              onToggleImageSelection={onToggleImageSelection}
+            />
+          );
+        })}
       </div>
     </div>
   );
