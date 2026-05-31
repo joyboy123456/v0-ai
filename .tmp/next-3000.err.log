@@ -1,0 +1,62 @@
+$ node scripts/predev-guard.cjs
+$ next dev -H 0.0.0.0
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+{"lvl":"error","evt":"gimg.fail","ts":"2026-05-29T18:26:18.333Z","traceId":"task_1780079127396_n8dc4s_shot_1","taskId":"task_1780079127396_n8dc4s","shotId":"shot_1","attempt":1,"category":"api_error","httpStatus":400,"reason":"__OUTPUT_FORMAT_UNSUPPORTED__: 模型 doubao-seedream-4-5-251128 不支持 output_format 参数，将回退到 JPEG"}
+{"lvl":"warn","evt":"volces.output_format_fallback","ts":"2026-05-29T18:26:18.333Z","traceId":"task_1780079127396_n8dc4s_shot_1","taskId":"task_1780079127396_n8dc4s","shotId":"shot_1","reason":"API 不支持 output_format 参数，回退到默认 JPEG","model":"doubao-seedream-4.5"}
+{"lvl":"error","evt":"gimg.fail","ts":"2026-05-29T18:26:18.344Z","traceId":"task_1780079127396_n8dc4s_shot_2","taskId":"task_1780079127396_n8dc4s","shotId":"shot_2","attempt":1,"category":"api_error","httpStatus":400,"reason":"__OUTPUT_FORMAT_UNSUPPORTED__: 模型 doubao-seedream-4-5-251128 不支持 output_format 参数，将回退到 JPEG"}
+{"lvl":"warn","evt":"volces.output_format_fallback","ts":"2026-05-29T18:26:18.344Z","traceId":"task_1780079127396_n8dc4s_shot_2","taskId":"task_1780079127396_n8dc4s","shotId":"shot_2","reason":"API 不支持 output_format 参数，回退到默认 JPEG","model":"doubao-seedream-4.5"}
+[browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <HotReload globalError={[...]} webSocket={WebSocket} staticIndicatorState={{pathname:null, ...}}>
+      <AppDevOverlayErrorBoundary globalError={[...]}>
+        <ReplaySsrOnlyErrors>
+        <DevRootHTTPAccessFallbackBoundary>
+          <HTTPAccessFallbackBoundary notFound={<NotAllowedRootHTTPFallbackError>}>
+            <HTTPAccessFallbackErrorBoundary pathname="/" notFound={<NotAllowedRootHTTPFallbackError>} ...>
+              <RedirectBoundary>
+                <RedirectErrorBoundary router={{...}}>
+                  <Head>
+                  <__next_root_layout_boundary__>
+                    <SegmentViewNode type="layout" pagePath="layout.tsx">
+                      <SegmentTrieNode>
+                      <link>
+                      <script>
+                      <script>
+                      <RootLayout>
+                        <html
+                          lang="zh-CN"
+                          className="bg-background"
+-                         data-immersive-translate-page-theme="light"
+                        >
+                  ...
+ 
+{"lvl":"error","evt":"gimg.fail","ts":"2026-05-29T18:47:39.969Z","traceId":"task_1780080350455_3cw3u8_shot_2","taskId":"task_1780080350455_3cw3u8","shotId":"shot_2","attempt":1,"category":"api_error","httpStatus":400,"reason":"__OUTPUT_FORMAT_UNSUPPORTED__: 模型 doubao-seedream-4-5-251128 不支持 output_format 参数，将回退到 JPEG"}
+{"lvl":"warn","evt":"volces.output_format_fallback","ts":"2026-05-29T18:47:39.969Z","traceId":"task_1780080350455_3cw3u8_shot_2","taskId":"task_1780080350455_3cw3u8","shotId":"shot_2","reason":"API 不支持 output_format 参数，回退到默认 JPEG","model":"doubao-seedream-4.5"}
+{"lvl":"error","evt":"gimg.fail","ts":"2026-05-29T18:47:39.971Z","traceId":"task_1780080350455_3cw3u8_shot_1","taskId":"task_1780080350455_3cw3u8","shotId":"shot_1","attempt":1,"category":"api_error","httpStatus":400,"reason":"__OUTPUT_FORMAT_UNSUPPORTED__: 模型 doubao-seedream-4-5-251128 不支持 output_format 参数，将回退到 JPEG"}
+{"lvl":"warn","evt":"volces.output_format_fallback","ts":"2026-05-29T18:47:39.972Z","traceId":"task_1780080350455_3cw3u8_shot_1","taskId":"task_1780080350455_3cw3u8","shotId":"shot_1","reason":"API 不支持 output_format 参数，回退到默认 JPEG","model":"doubao-seedream-4.5"}
+{"lvl":"error","evt":"gimg.fail","ts":"2026-05-29T18:47:40.120Z","traceId":"task_1780080350455_3cw3u8_shot_3","taskId":"task_1780080350455_3cw3u8","shotId":"shot_3","attempt":1,"category":"api_error","httpStatus":400,"reason":"__OUTPUT_FORMAT_UNSUPPORTED__: 模型 doubao-seedream-4-5-251128 不支持 output_format 参数，将回退到 JPEG"}
+{"lvl":"warn","evt":"volces.output_format_fallback","ts":"2026-05-29T18:47:40.121Z","traceId":"task_1780080350455_3cw3u8_shot_3","taskId":"task_1780080350455_3cw3u8","shotId":"shot_3","reason":"API 不支持 output_format 参数，回退到默认 JPEG","model":"doubao-seedream-4.5"}
+[browser] Uncaught ReferenceError: ResultImageCard is not defined
+    at <unknown> (components/workbench/right-panel.tsx:849:24)
+    at Array.map (<anonymous>)
+    at RightPanel (components/workbench/right-panel.tsx:834:41)
+    at Workbench (components/workbench/workbench.tsx:456:7)
+    at Home (app\page.tsx:4:10)
+  847 |
+  848 |                     return (
+> 849 |                       <ResultImageCard
+      |                        ^
+  850 |                         key={image.assetId}
+  851 |                         image={image}
+  852 |                         isFavorite={isFavorite}
