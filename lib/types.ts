@@ -202,6 +202,7 @@ export interface PhotoFissionParams {
   childrensCategory?: PhotoFissionChildrensCategory
   hasFrontDetail: boolean
   hasBackDetail: boolean
+  plannerReasoningEnabled?: boolean
   imageRatio: PhotoFissionImageRatio
   resolution: PhotoFissionResolution
   shotPlan: PhotoFissionShot[]
@@ -601,6 +602,7 @@ export const FASHION_MODELS: FashionModelOption[] = [
     description: '字节跳动火山引擎图片生成，高质量中文场景理解，支持 4K 出图',
     maxInputImages: 5,
     maxResolutionLabel: '4K',
+    selectable: false,
   },
   {
     id: 'doubao-seedream-4.5',
@@ -617,6 +619,7 @@ export const FASHION_MODELS: FashionModelOption[] = [
     description: '字节跳动火山引擎豆包图片生成，支持 PNG 无损输出、3K/4K 高分辨率和联网搜索',
     maxInputImages: 14,
     maxResolutionLabel: '4K',
+    selectable: false,
   },
 ]
 

@@ -53,7 +53,9 @@ const VOLCES_GENERATIONS_PATH = '/api/v3/images/generations'
  * 记录不支持 output_format 参数的模型，避免反复尝试导致浪费配额。
  * 首次请求时若 API 报错（参数不支持），自动加入此集合，后续请求不再传 output_format。
  */
-const MODELS_WITHOUT_OUTPUT_FORMAT = new Set<string>()
+const MODELS_WITHOUT_OUTPUT_FORMAT = new Set<string>([
+  'doubao-seedream-4-5-251128',
+])
 
 /**
  * 模型 ID 映射：前端友好名称 → API 实际模型名称
@@ -139,6 +141,8 @@ export interface VolcesEditInput {
   shotId?: string
   /** provider 唯一标识，用于令牌桶隔离 */
   providerId?: string
+  /** 同一 API Key 的多个 provider 共享节流桶 */
+  rateLimitKey?: string
   /** 该 provider 的 IPM 上限（豆包 Seedream 4.5 默认 500） */
   maxIpm?: number
   /** 该 provider 的 RPM 上限 */
@@ -321,6 +325,7 @@ async function callVolcesOnce(
     {
       apiKey: input.apiKey,
       providerId: input.providerId || 'volces',
+      rateLimitKey: input.rateLimitKey,
       maxIpm: input.maxIpm || 500, // 豆包 Seedream 4.5 IPM 默认 500
       maxRpm: input.maxRpm || 150,
       parseRetryAfter,

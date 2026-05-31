@@ -22,6 +22,10 @@ const companyModelsStorageKey = 'fashion_company_models'
 const faceIdModelsStorageKey = 'fashion_face_id_models'
 const maxFashionReferences = 10
 
+function isTaskInFlight(task: GenerationTask) {
+  return task.status === 'pending' || task.status === 'running'
+}
+
 export function Workbench() {
   const router = useRouter()
   const pathname = usePathname()
@@ -36,6 +40,7 @@ export function Workbench() {
   const [currentFeature, setCurrentFeature] = useState<FeatureType>('ai-fashion-photo')
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [tasks, setTasks] = useState<GenerationTask[]>([])
+  const tasksRef = useRef<GenerationTask[]>([])
   const [tasksLoading, setTasksLoading] = useState(false)
   // PR3：升级为「已选姿势模板数组」，告别 PR1 阶段 selectedPoseFissionCase 兜底单选。
   const [selectedPoseTemplates, setSelectedPoseTemplates] = useState<PoseTemplate[]>([])
@@ -90,15 +95,20 @@ export function Workbench() {
   }, [pathname, router])
 
   const loadTasks = useCallback(async () => {
-    const response = await fetch('/api/tasks', { cache: 'no-store' })
-    if (response.status === 401) {
-      redirectToLogin()
-      return
-    }
-    if (!response.ok) return
+    setTasksLoading(true)
+    try {
+      const response = await fetch('/api/tasks', { cache: 'no-store' })
+      if (response.status === 401) {
+        redirectToLogin()
+        return
+      }
+      if (!response.ok) return
 
-    const data = (await response.json()) as { tasks: GenerationTask[] }
-    setTasks(data.tasks)
+      const data = (await response.json()) as { tasks: GenerationTask[] }
+      setTasks(data.tasks)
+    } finally {
+      setTasksLoading(false)
+    }
   }, [redirectToLogin])
 
   // 从右侧瀑布流 / 案例库 hover 操作里删单张「效果不好的」生成图。
@@ -189,6 +199,10 @@ export function Workbench() {
   }, [isAuthLoading])
 
   useEffect(() => {
+    tasksRef.current = tasks
+  }, [tasks])
+
+  useEffect(() => {
     if (!user) return
     void loadTasks()
   }, [loadTasks, user])
@@ -248,15 +262,33 @@ export function Workbench() {
   }, [faceIdModels, faceIdModelsHydrated])
 
   useEffect(() => {
-    if (!user) return
-    if (!activeTaskId) return
-
-    const intervalId = window.setInterval(() => {
-      void loadTask(activeTaskId)
-    }, 900)
-
+    if (!user || !activeTaskId) return
     void loadTask(activeTaskId)
+  }, [activeTaskId, loadTask, user])
 
+  useEffect(() => {
+    if (!user) return
+
+    const loadInFlightTasks = () => {
+      const taskIds = new Set(
+        tasksRef.current
+          .filter(isTaskInFlight)
+          .map((task) => task.taskId),
+      )
+      if (
+        activeTaskId &&
+        !tasksRef.current.some((task) => task.taskId === activeTaskId)
+      ) {
+        taskIds.add(activeTaskId)
+      }
+
+      for (const taskId of taskIds) {
+        void loadTask(taskId)
+      }
+    }
+
+    const intervalId = window.setInterval(loadInFlightTasks, 900)
+    loadInFlightTasks()
     return () => window.clearInterval(intervalId)
   }, [activeTaskId, loadTask, user])
 

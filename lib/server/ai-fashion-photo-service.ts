@@ -4,6 +4,7 @@ import {
   FASHION_MODELS,
   FASHION_PROMPT_MODES,
   FASHION_RESOLUTIONS,
+  SELECTABLE_FASHION_MODELS,
   type AiFashionPhotoParams,
   type FashionImageRatio,
   type FashionModelId,
@@ -24,7 +25,7 @@ const fashionPromptModeIds = new Set<FashionPromptMode>(
   FASHION_PROMPT_MODES.map((option) => option.id),
 )
 const fashionModelIds = new Set<FashionModelId>(
-  FASHION_MODELS.map((option) => option.id),
+  SELECTABLE_FASHION_MODELS.map((option) => option.id),
 )
 
 export interface ComposeAiFashionPhotoPromptInput {

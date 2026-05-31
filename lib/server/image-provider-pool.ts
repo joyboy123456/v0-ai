@@ -24,7 +24,7 @@ export interface ImageProvider {
   type: ImageProviderType
   /** API 凭证 */
   apiKey: string
-  /** 可选 API base URL（七牛云：https://api.qnaigc.com/v1） */
+  /** 可选 API base URL（七牛 Gemini 默认 api.qnaigc.com，GPT 图像默认 openai.qiniu.com） */
   baseUrl?: string
   /** 可选模型覆盖（不传走 env 默认） */
   model?: string
@@ -32,6 +32,8 @@ export interface ImageProvider {
   maxIpm: number
   /** 该渠道的 RPM 上限 */
   maxRpm: number
+  /** 单个任务内分配到该 provider 的最大并发 worker 数 */
+  maxConcurrency?: number
   /** 权重（用于加权轮询调度，值越大分配越多） */
   weight: number
   /** 是否启用（运行时可熔断） */
@@ -88,6 +90,7 @@ interface RawProviderJson {
   model?: string
   maxIpm?: number
   maxRpm?: number
+  maxConcurrency?: number
   weight?: number
   enabled?: boolean
   timeoutMs?: number
@@ -162,6 +165,7 @@ function buildDefaultGoogleProvider(): ImageProvider {
     model: process.env.GOOGLE_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview',
     maxIpm: readPositiveInt(process.env.GOOGLE_IMAGE_IPM, 10),
     maxRpm: readPositiveInt(process.env.GOOGLE_IMAGE_RPM, 150),
+    maxConcurrency: readPositiveInt(process.env.GOOGLE_IMAGE_CONCURRENCY, 3),
     weight: 1,
     enabled: true,
     timeoutMs: readPositiveInt(process.env.GOOGLE_IMAGE_TIMEOUT_MS, 600000),
@@ -176,10 +180,11 @@ function buildDefaultQiniuProvider(): ImageProvider | null {
     id: 'qiniu-default',
     type: 'qiniu',
     apiKey,
-    baseUrl: process.env.QINIU_IMAGE_BASE_URL ?? 'https://api.qnaigc.com',
+    baseUrl: process.env.QINIU_IMAGE_BASE_URL,
     model: process.env.QINIU_IMAGE_MODEL ?? 'openai/gpt-image-2',
     maxIpm: readPositiveInt(process.env.QINIU_IMAGE_IPM, 10),
     maxRpm: readPositiveInt(process.env.QINIU_IMAGE_RPM, 150),
+    maxConcurrency: readPositiveInt(process.env.QINIU_IMAGE_CONCURRENCY, 5),
     weight: 1,
     enabled: true,
     timeoutMs: readPositiveInt(process.env.QINIU_IMAGE_TIMEOUT_MS, 600000),
@@ -198,6 +203,7 @@ function buildDefaultJimengProvider(): ImageProvider | null {
     model: process.env.JIMENG_IMAGE_MODEL ?? 'jimeng_seedream46_cvtob',
     maxIpm: readPositiveInt(process.env.JIMENG_IMAGE_IPM, 10),
     maxRpm: readPositiveInt(process.env.JIMENG_IMAGE_RPM, 150),
+    maxConcurrency: readPositiveInt(process.env.JIMENG_IMAGE_CONCURRENCY, 9),
     weight: 5,
     enabled: true,
     timeoutMs: readPositiveInt(process.env.JIMENG_IMAGE_TIMEOUT_MS, 600000),
@@ -216,6 +222,7 @@ function buildDefaultVolcesProvider(): ImageProvider | null {
     model: process.env.VOLCES_IMAGE_MODEL ?? 'doubao-seedream-4-5-251128',
     maxIpm: readPositiveInt(process.env.VOLCES_IMAGE_IPM, 500),
     maxRpm: readPositiveInt(process.env.VOLCES_IMAGE_RPM, 150),
+    maxConcurrency: readPositiveInt(process.env.VOLCES_IMAGE_CONCURRENCY, 9),
     weight: 5,
     enabled: true,
     timeoutMs: readPositiveInt(process.env.VOLCES_IMAGE_TIMEOUT_MS, 600000),
@@ -231,6 +238,7 @@ function normalizeProviderConfig(raw: RawProviderJson, index: number): ImageProv
     model: raw.model,
     maxIpm: raw.maxIpm ?? 10,
     maxRpm: raw.maxRpm ?? 150,
+    maxConcurrency: raw.maxConcurrency,
     weight: raw.weight ?? 1,
     enabled: raw.enabled !== false,
     timeoutMs: raw.timeoutMs ?? 600000,
@@ -364,6 +372,13 @@ export function isVolcesImageModel(model: string | undefined): boolean {
   return lower.startsWith('doubao') || lower.startsWith('seedream') || lower.startsWith('volces')
 }
 
+function normalizeVolcesModelId(model: string | undefined): string {
+  const lower = model?.trim().toLowerCase() ?? ''
+  if (lower === 'doubao-seedream-4.5') return 'doubao-seedream-4-5-251128'
+  if (lower === 'doubao-seedream-5.0-lite') return 'doubao-seedream-5-0-260128'
+  return lower
+}
+
 export function isImageProviderModelCompatible(
   provider: ImageProvider,
   model: string | undefined,
@@ -372,7 +387,11 @@ export function isImageProviderModelCompatible(
   if (provider.type === 'google') return isGoogleImageModel(candidate)
   if (provider.type === 'qiniu') return isQiniuImageModel(candidate)
   if (provider.type === 'jimeng') return isJimengImageModel(candidate)
-  if (provider.type === 'volces') return isVolcesImageModel(candidate)
+  if (provider.type === 'volces') {
+    if (!isVolcesImageModel(candidate)) return false
+    if (!model) return true
+    return normalizeVolcesModelId(model) === normalizeVolcesModelId(provider.model)
+  }
   return false
 }
 
@@ -526,6 +545,10 @@ export function getFailoverProviderForModel(
   return provider
 }
 
+export function getProviderRateLimitKey(provider: ImageProvider): string {
+  return getProviderCredentialKey(provider)
+}
+
 // ---- 内部工具 ----
 
 /**
@@ -609,9 +632,8 @@ function filterProvidersForFailover(
 }
 
 function getProviderCredentialKey(provider: ImageProvider): string {
-  const baseUrl = provider.baseUrl?.replace(/\/+$/, '') ?? ''
   const credential = provider.apiKey || provider.id
-  return `${provider.type}:${baseUrl}:${credential}`
+  return `${provider.type}:${credential}`
 }
 
 function normalizeImageModelId(model: string | undefined): string {

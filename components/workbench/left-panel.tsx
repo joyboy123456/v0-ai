@@ -68,6 +68,13 @@ import {
 } from "@/lib/types";
 
 const CREATE_TASK_TIMEOUT_MS = 15_000;
+const MISSING_ASSET_ERROR_PREFIX = "素材不存在：";
+
+interface AssetDescriptor {
+  assetId: string;
+  name: string;
+  role: string;
+}
 
 interface LeftPanelProps {
   feature: FeatureType;
@@ -148,6 +155,8 @@ export function LeftPanel({
     useState<PhotoFissionResolution>("2k");
   const [photoFissionResultCount, setPhotoFissionResultCount] =
     useState<PhotoFissionResultCount>(9);
+  const [photoFissionPlannerReasoningEnabled, setPhotoFissionPlannerReasoningEnabled] =
+    useState(false);
   const photoFissionRatioUserOverrideRef = useRef(false);
   const photoFissionResolutionUserOverrideRef = useRef(false);
   const [poseMainImage, setPoseMainImage] = useState<UploadedImage | null>(
@@ -362,7 +371,7 @@ export function LeftPanel({
     setIsCreating(true);
 
     try {
-      const taskInputAssetIds = getInputAssetIds();
+      const taskInputAssets = getInputAssetDescriptors();
       const controller = new AbortController();
       const timeoutId = window.setTimeout(
         () => controller.abort(),
@@ -374,14 +383,16 @@ export function LeftPanel({
         signal: controller.signal,
         body: JSON.stringify({
           featureType: feature,
-          inputAssetIds: taskInputAssetIds,
+          inputAssetIds: taskInputAssets.map((asset) => asset.assetId),
           params: getParams(),
         }),
       }).finally(() => window.clearTimeout(timeoutId));
 
       if (!response.ok) {
         const data = (await response.json()) as { error?: string };
-        throw new Error(data.error || "创建任务失败");
+        throw new Error(
+          formatCreateTaskError(data.error, taskInputAssets),
+        );
       }
 
       const data = (await response.json()) as { taskId: string };
@@ -400,31 +411,102 @@ export function LeftPanel({
   };
 
   const getInputAssetIds = () => {
+    return getInputAssetDescriptors().map((asset) => asset.assetId);
+  };
+
+  const getInputAssetDescriptors = (): AssetDescriptor[] => {
     if (feature === "ai-fashion-photo") {
-      return fashionReferences.map((reference) => reference.assetId);
+      return fashionReferences.map((reference, index) => ({
+        assetId: reference.assetId,
+        name: reference.name || `参考图 ${index + 1}`,
+        role: `AI服装大片参考图 ${index + 1}`,
+      }));
     }
 
     if (feature === "photo-fission") {
       if (!photoFissionMainImage) return [];
-      return [
-        photoFissionMainImage.assetId,
-        ...(photoFissionFrontDetail ? [photoFissionFrontDetail.assetId] : []),
-        ...(photoFissionBackDetail ? [photoFissionBackDetail.assetId] : []),
-        ...(selectedFaceIdModel ? [selectedFaceIdModel.assetId] : []),
+      const assets: AssetDescriptor[] = [
+        {
+          assetId: photoFissionMainImage.assetId,
+          name: photoFissionMainImage.name,
+          role: "主图",
+        },
       ];
+      if (photoFissionFrontDetail) {
+        assets.push({
+          assetId: photoFissionFrontDetail.assetId,
+          name: photoFissionFrontDetail.name,
+          role: "产品正面细节图",
+        });
+      }
+      if (photoFissionBackDetail) {
+        assets.push({
+          assetId: photoFissionBackDetail.assetId,
+          name: photoFissionBackDetail.name,
+          role: "产品背面细节图",
+        });
+      }
+      if (selectedFaceIdModel) {
+        assets.push({
+          assetId: selectedFaceIdModel.assetId,
+          name: selectedFaceIdModel.name,
+          role: "五官特征锁定人像小卡",
+        });
+      }
+      return assets;
     }
 
     if (!activeImage) return [];
 
     if (feature === "pose-fission") {
-      return [
-        activeImage.assetId,
-        ...(poseFrontDetailImage ? [poseFrontDetailImage.assetId] : []),
-        ...(poseBackDetailImage ? [poseBackDetailImage.assetId] : []),
+      const assets: AssetDescriptor[] = [
+        {
+          assetId: activeImage.assetId,
+          name: activeImage.name,
+          role: "姿势裂变主图",
+        },
       ];
+      if (poseFrontDetailImage) {
+        assets.push({
+          assetId: poseFrontDetailImage.assetId,
+          name: poseFrontDetailImage.name,
+          role: "姿势裂变正面细节图",
+        });
+      }
+      if (poseBackDetailImage) {
+        assets.push({
+          assetId: poseBackDetailImage.assetId,
+          name: poseBackDetailImage.name,
+          role: "姿势裂变背面细节图",
+        });
+      }
+      return assets;
     }
 
-    return [activeImage.assetId];
+    return [{
+      assetId: activeImage.assetId,
+      name: activeImage.name,
+      role: "主图",
+    }];
+  };
+
+  const formatCreateTaskError = (
+    rawError: string | undefined,
+    assets: AssetDescriptor[],
+  ) => {
+    if (!rawError?.startsWith(MISSING_ASSET_ERROR_PREFIX)) {
+      return rawError || "创建任务失败";
+    }
+
+    const missingAssetId = rawError.slice(MISSING_ASSET_ERROR_PREFIX.length).trim();
+    const missingAsset = assets.find((asset) => asset.assetId === missingAssetId);
+    if (!missingAsset) return rawError;
+
+    if (selectedFaceIdModel?.assetId === missingAssetId) {
+      onChangeSelectedFaceIdModel(null);
+    }
+
+    return `素材不存在：${missingAsset.name}（${missingAsset.role}，${missingAsset.assetId}）。请重新上传或重新选择该素材后再生成。`;
   };
 
   const getParams = ():
@@ -461,6 +543,7 @@ export function LeftPanel({
         shotPlan: [],
         resultCount: photoFissionResultCount,
         faceIdModelId: selectedFaceIdModel?.assetId ?? null,
+        plannerReasoningEnabled: photoFissionPlannerReasoningEnabled,
       };
     }
 
@@ -581,6 +664,7 @@ export function LeftPanel({
                 backDetailImage={photoFissionBackDetail}
                 imageRatio={photoFissionImageRatio}
                 resolution={photoFissionResolution}
+                plannerReasoningEnabled={photoFissionPlannerReasoningEnabled}
                 helperText={helperText}
                 faceIdModels={faceIdModels}
                 selectedFaceIdModel={selectedFaceIdModel}
@@ -617,6 +701,9 @@ export function LeftPanel({
                 }}
                 resultCount={photoFissionResultCount}
                 onResultCountChange={setPhotoFissionResultCount}
+                onPlannerReasoningEnabledChange={
+                  setPhotoFissionPlannerReasoningEnabled
+                }
               />
             ) : null}
           </>
@@ -1404,6 +1491,7 @@ function PhotoFissionForm({
   backDetailImage,
   imageRatio,
   resolution,
+  plannerReasoningEnabled,
   helperText,
   faceIdModels = [],
   selectedFaceIdModel = null,
@@ -1422,6 +1510,7 @@ function PhotoFissionForm({
   onResolutionChange,
   resultCount,
   onResultCountChange,
+  onPlannerReasoningEnabledChange,
 }: {
   model: FashionModelId;
   category: PhotoFissionCategory;
@@ -1431,6 +1520,7 @@ function PhotoFissionForm({
   backDetailImage: UploadedImage | null;
   imageRatio: PhotoFissionImageRatio;
   resolution: PhotoFissionResolution;
+  plannerReasoningEnabled: boolean;
   helperText: string;
   faceIdModels?: CompanyModel[];
   selectedFaceIdModel?: CompanyModel | null;
@@ -1449,6 +1539,7 @@ function PhotoFissionForm({
   onResolutionChange: (value: PhotoFissionResolution) => void;
   resultCount: PhotoFissionResultCount;
   onResultCountChange: (value: PhotoFissionResultCount) => void;
+  onPlannerReasoningEnabledChange: (value: boolean) => void;
 }) {
   const isExtraRatio = PHOTO_FISSION_RATIOS_EXTRA.some(
     (option) => option.id === imageRatio,
@@ -1556,6 +1647,25 @@ function PhotoFissionForm({
         value={resultCount}
         onChange={onResultCountChange}
       />
+
+      <label className="flex cursor-pointer items-start gap-3 rounded-md border border-border bg-secondary/55 p-3 transition-colors hover:border-primary/50">
+        <input
+          type="checkbox"
+          checked={plannerReasoningEnabled}
+          onChange={(event) =>
+            onPlannerReasoningEnabledChange(event.target.checked)
+          }
+          className="mt-0.5 h-4 w-4 accent-primary"
+        />
+        <span className="min-w-0">
+          <span className="block text-sm font-medium text-foreground">
+            分镜推理模式
+          </span>
+          <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">
+            开启后会让分镜 Planner 深度思考，画面策划更稳，但生成前等待时间会增加。
+          </span>
+        </span>
+      </label>
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">

@@ -8,7 +8,11 @@
 import type { ResultAsset } from '@/lib/types'
 import { runGoogleImageEdit } from './google-genai-adapter'
 import { resolveImageSize } from './image-size-policy'
-import { tripProviderCircuit, type ImageProvider } from './image-provider-pool'
+import {
+  getProviderRateLimitKey,
+  tripProviderCircuit,
+  type ImageProvider,
+} from './image-provider-pool'
 import { GoogleImageError } from './google-image-retry'
 import { runQiniuImageEdit } from './qiniu-image-adapter'
 import { runJimengImageEdit } from './jimeng-image-adapter'
@@ -40,6 +44,7 @@ export async function runImageEditViaProvider(
   const apiKey = provider.apiKey || input.fallbackApiKey || ''
   const timeoutMs = provider.timeoutMs || 600000
   const resolvedSize = resolveImageSize(input.aspectRatio, input.imageSize)
+  const rateLimitKey = getProviderRateLimitKey(provider)
 
   try {
     switch (provider.type) {
@@ -58,6 +63,7 @@ export async function runImageEditViaProvider(
           traceId: input.traceId,
           shotId: input.shotId,
           providerId: provider.id,
+          rateLimitKey,
           maxIpm: provider.maxIpm,
           maxRpm: provider.maxRpm,
         })
@@ -77,6 +83,7 @@ export async function runImageEditViaProvider(
           traceId: input.traceId,
           shotId: input.shotId,
           providerId: provider.id,
+          rateLimitKey,
           maxIpm: provider.maxIpm,
           maxRpm: provider.maxRpm,
         })
@@ -111,6 +118,7 @@ export async function runImageEditViaProvider(
           traceId: input.traceId,
           shotId: input.shotId,
           providerId: provider.id,
+          rateLimitKey,
           maxIpm: provider.maxIpm,
           maxRpm: provider.maxRpm,
         })
@@ -131,6 +139,7 @@ export async function runImageEditViaProvider(
           traceId: input.traceId,
           shotId: input.shotId,
           providerId: provider.id,
+          rateLimitKey,
           maxIpm: provider.maxIpm,
           maxRpm: provider.maxRpm,
         })

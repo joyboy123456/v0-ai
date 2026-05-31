@@ -2,6 +2,7 @@ import {
   DEFAULT_FASHION_MODEL,
   PHOTO_FISSION_CHILDRENS_CATEGORIES,
   FASHION_MODELS,
+  SELECTABLE_FASHION_MODELS,
   PHOTO_FISSION_CATEGORIES,
   PHOTO_FISSION_IMAGE_RATIOS,
   PHOTO_FISSION_RESOLUTIONS,
@@ -61,7 +62,7 @@ const photoFissionResolutionIds = new Set<PhotoFissionResolution>(
   PHOTO_FISSION_RESOLUTIONS.map((option) => option.id),
 )
 const fashionModelIds = new Set<FashionModelId>(
-  FASHION_MODELS.map((option) => option.id),
+  SELECTABLE_FASHION_MODELS.map((option) => option.id),
 )
 
 const photoFissionCategoryLabelMap = new Map(
@@ -151,6 +152,11 @@ export function normalizePhotoFissionParams(
   const imageRatio = readPhotoFissionImageRatio(params.imageRatio)
   const resolution = readPhotoFissionResolution(params.resolution)
   const resultCount = readResultCount(params.resultCount)
+  const plannerReasoningEnabled = readOptionalBoolean(
+    params.plannerReasoningEnabled,
+    false,
+    '服装大片裂变推理模式参数无效',
+  )
 
   const faceIdModelId =
     typeof params.faceIdModelId === 'string' && params.faceIdModelId.trim()
@@ -195,6 +201,7 @@ export function normalizePhotoFissionParams(
     resultCount,
     referenceAssetKey: buildPhotoFissionReferenceAssetKey(inputAssetIds),
     faceIdModelId,
+    plannerReasoningEnabled,
   }
 }
 
@@ -506,19 +513,19 @@ function buildReferenceImagesSection(input: {
   let nextIndex = 2
   if (hasFrontDetail) {
     lines.push(
-      `- 图${nextIndex}：这套服装的正面细节参考（领口、扣件、logo、图案以此为准）`,
+      `- 图${nextIndex}：这套服装的正面细节参考（颜色、材质、面料质感、领口、扣件、logo、图案、纽扣、口袋细节以此为准）`,
     )
     nextIndex += 1
   }
   if (hasBackDetail) {
     lines.push(
-      `- 图${nextIndex}：这套服装的背面细节参考（背部剪裁、印花、肩线以此为准）`,
+      `- 图${nextIndex}：这套服装的背面细节参考（背部颜色、材质、面料质感、剪裁、印花、肩线、背部扣件以此为准）`,
     )
     nextIndex += 1
   }
   if (hasFaceIdModel) {
     lines.push(
-      `- 图${nextIndex}：人像小卡——此人面部全部特征的高清唯一锚点（胸口以上特写），生成时必须严格参照这张图的五官细节+脸型轮廓+下颌线+颧骨+面部比例，图1主图仅用于确认穿搭与身材比例，不提供面部信息`,
+      `- 图${nextIndex}：人像小卡——仅作为脸部核心特征参考（五官细节、脸型轮廓、下颌线、颧骨、面部比例与皮肤质感）。图1仍然提供帽子、发型、发饰、发色、头发长度、穿搭比例、服装细节、手持包和整体拍摄环境；不要用图${nextIndex}替换图1的头发、帽子、发饰或穿搭。`,
     )
   }
   return lines.join('\n')
@@ -531,15 +538,16 @@ function buildIdentityLockSection(
   if (hasFaceIdModel && faceIdImageIndex) {
     return [
       '【人物呈现 IDENTITY — 五官脸型锁定模式】',
-      '画面中的人物是图1里的同一个人。身材比例、发型、发色、发饰、肤色与年龄感与图1保持一致。',
-      `面部全部特征必须严格复刻图${faceIdImageIndex}中的高清人像小卡，这是此人的"面部身份证"，不可偏离。图1主图的脸部已被覆盖处理，不提供面部信息。具体复刻维度：`,
+      '画面中的人物是图1里的同一个人。身材比例、帽子、发型、发色、发饰、头发长度、手持包、服装穿搭、肤色倾向与年龄感与图1保持一致。',
+      `图${faceIdImageIndex}人像小卡只提供脸部核心特征，不提供帽子、发型、发饰、服装或穿搭。面部全部特征必须严格参考图${faceIdImageIndex}，但头发、帽子和发饰仍以图1为准。具体复刻维度：`,
       `- 脸型：脸的形状（圆脸/方脸/鹅蛋脸/瓜子脸等）、下颌线弧度、颧骨高低、额头宽窄与发际线形状、下巴长短与尖圆、两腮宽窄`,
       `- 五官：眼形（包括双眼皮/单眼皮、眼角方向、眼睛大小与间距）、鼻型（鼻梁高低、鼻头大小、鼻翼宽窄）、嘴形（嘴唇厚薄、嘴角方向、嘴的大小）、眉形（眉毛粗细、弧度、浓淡）、耳朵形状`,
       `- 面部比例：五官在脸上的位置关系（三庭五眼比例）、面部立体感`,
       `- 面部皮肤质感：严格复刻图${faceIdImageIndex}的皮肤质感——脸部毛孔清晰可见、皮肤纹理细腻真实、面部光泽感与高光分布与图${faceIdImageIndex}一致，不添加磨皮或过度柔化效果，保留皮肤的天然肌理和真实感`,
       `- 表情丰富度：表情自然多变且生动，可以展现微笑、开朗、专注、俏皮、好奇、惊喜、温柔等各种自然表情，每种表情都要确保五官细节（眼角弯度、嘴角弧度、眉毛舒展度）与图${faceIdImageIndex}的基础特征一致，但表情本身要自然流畅不僵硬`,
       '脸型骨骼结构和五官细节绝对不能改变，但表情和神态应当丰富自然，避免千篇一律的固定微笑。',
-      `绝对规则：脸型、五官、皮肤质感和面部比例全部以图${faceIdImageIndex}为准，图1主图的脸不作为任何参考来源。`,
+      `绝对规则：脸型、五官、皮肤质感和面部比例全部以图${faceIdImageIndex}为准；帽子、发型、发饰、发色、头发长度、手持包和服装穿搭全部以图1为准。`,
+      `【头部穿搭强制锁定】图1如果有帽子（鸭舌帽、渔夫帽、贝雷帽、毛线帽、草帽等任何帽子），必须在生成图中完整保留，包括帽子的款式、颜色、材质、佩戴方式和位置；图1如果有特殊发型（马尾、丸子头、双马尾、编发、发髻等），必须完整保留发型结构、高度和蓬松度；图1如果有发饰（发带、发卡、发箍、蝴蝶结等），必须完整保留发饰的款式、颜色和佩戴位置。绝对不能因为图${faceIdImageIndex}没有这些元素就让它们消失。`,
     ].join('\n')
   }
   return [
@@ -552,7 +560,8 @@ function buildIdentityLockSection(
 function buildWardrobeLockSection(): string {
   return [
     '【服装呈现 WARDROBE】',
-    '人物穿着这套服装（图1为主图基准），完整延续这套服装的颜色、版型、材质、图案、logo、纽扣、口袋、领口、袖口与下摆细节。',
+    '人物穿着这套服装，完整延续这套服装的版型、图案、logo、纽扣、口袋、领口、袖口与下摆细节。',
+    '颜色、材质、面料质感的参考优先级：如果有正面/背面细节图，颜色、材质、面料质感以细节图为准；如果没有细节图，才以图1主图为准。',
     '衣物纹理、面料质感、印花与配饰清晰可见，不增加、不减少、不替换任何服装元素。',
     '如果图1主图里已有手拿小包、单肩包、草帽、眼镜、咖啡杯 / 饮品杯、花束、发饰等随身配饰或小道具，必须作为原始穿搭搭配保留，延续参考图中的佩戴/拿取关系；可为避免遮挡服装而放到身体侧边、手部低位或画面边缘，但不能让这些已有配饰消失。',
   ].join('\n')
@@ -577,15 +586,16 @@ function buildSceneLockSection(
   if (category === 'childrens' && childrensCategory === 'dress') {
     return [
       '【场景呈现 SCENE】',
-      `背景沿用图1原本的简洁拍摄环境，光线方向、色温与高光分布与图1保持一致，整体画面保持${orientation}下的童装连衣裙电商上架图调性。`,
-      '如果图1是白底、浅灰白或浅米白棚拍背景，就延续这种干净统一的棚拍货架感；如果图1本身有室内场景，只弱化成低存在感、干净柔和的商品图陪衬。',
+      `背景、环境与图1完全一致，不改变背景内容、色调和材质，光线方向、色温与高光分布与图1保持一致，整体画面保持${orientation}下的童装连衣裙电商上架图调性。`,
+      '无论图1是白底棚拍、室内场景、户外草地还是其他环境，都必须与图1保持相同的背景，不能简化、弱化或替换。',
       '背景不能抢走连衣裙主体，不主动新增沙发、绘本、玩具、窗帘、绿植、包包、帽子或其它生活道具；但图1已有的手拿小包、单肩包、草帽、眼镜、咖啡杯 / 饮品杯、花束或发饰要作为低存在感商品搭配保留，不遮挡裙子主体。画面要方便美工裁切、排版和上架使用。',
     ].join('\n')
   }
   if (isSuitChildrensCategory(category, childrensCategory)) {
     return [
       '【场景呈现 SCENE】',
-      `背景沿用图1原本的拍摄环境、空间关系、色温与画面风格，整体保持${orientation}下干净明确的套装商品图调性。`,
+      `背景、环境与图1完全一致，不改变背景内容、色调和材质，光线方向、色温与高光分布与图1保持一致，整体保持${orientation}下干净明确的套装商品图调性。`,
+      '无论图1是白底棚拍、室内场景还是其他环境，都必须与图1保持相同的背景，不能简化、弱化或替换。',
       '如果图1已有小包、鞋子、花束等道具，只作为低存在感商品搭配保留；如果图1没有，不主动新增。不要新增复杂家具、街景、人群、文字背景或生活故事场景。',
       '背景不能抢走套装主体，画面要方便美工裁切、排版和上架使用。',
     ].join('\n')
@@ -805,7 +815,7 @@ function buildNegativeSection(
   faceIdImageIndex?: number,
 ): string {
   const faceConstraint = hasFaceIdModel && faceIdImageIndex
-    ? `面部全部特征（脸型形状、下颌线、颧骨、五官细节、面部比例）以图${faceIdImageIndex}人像小卡为唯一绝对基准，不可偏向图1主图——图1主图脸部已被覆盖，不提供面部信息；发型、发饰从图1主图保留。`
+    ? `面部核心特征（脸型形状、下颌线、颧骨、五官细节、面部比例）以图${faceIdImageIndex}人像小卡为唯一基准；帽子、发型、发饰、发色、头发长度、手持包和服装穿搭必须从图1主图保留，不可被图${faceIdImageIndex}的人像小卡替换。`
     : '不改变人物的脸部特征与发型；'
   const lines = [
     '【关键约束】',
@@ -1108,13 +1118,19 @@ async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
     allShotResults,
   } = options
 
+  // 按 provider 类型选择默认并发数：即梦/火山引擎 IPM 500 扛得住高并发
+  const providerDefaultConcurrency = readProviderDefaultConcurrency(provider)
+  const providerConcurrency =
+    Number.isFinite(provider.maxConcurrency) && (provider.maxConcurrency ?? 0) >= 1
+      ? provider.maxConcurrency
+      : providerDefaultConcurrency
   const concurrencyRaw = Number(
-    process.env.PHOTO_FISSION_CONCURRENCY ?? DEFAULT_PHOTO_FISSION_CONCURRENCY,
+    process.env.PHOTO_FISSION_CONCURRENCY ?? providerConcurrency,
   )
   const concurrency =
     Number.isFinite(concurrencyRaw) && concurrencyRaw >= 1
       ? Math.min(Math.floor(concurrencyRaw), shots.length)
-      : Math.min(DEFAULT_PHOTO_FISSION_CONCURRENCY, shots.length)
+      : Math.min(providerConcurrency ?? providerDefaultConcurrency, shots.length)
 
   let nextIndex = 0
 
@@ -1201,6 +1217,26 @@ async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
 
   const workers = Array.from({ length: concurrency }, () => worker())
   await Promise.all(workers)
+}
+
+function readProviderDefaultConcurrency(provider: ImageProvider): number {
+  if (provider.type === 'qiniu') {
+    return readPositiveInt(process.env.QINIU_IMAGE_CONCURRENCY, 5)
+  }
+  if (provider.type === 'jimeng') {
+    return readPositiveInt(process.env.JIMENG_IMAGE_CONCURRENCY, 9)
+  }
+  if (provider.type === 'volces') {
+    return readPositiveInt(process.env.VOLCES_IMAGE_CONCURRENCY, 9)
+  }
+  return DEFAULT_PHOTO_FISSION_CONCURRENCY
+}
+
+function readPositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback
+  return Math.floor(parsed)
 }
 
 function readFashionModel(value: unknown): FashionModelId {
@@ -1535,10 +1571,10 @@ function appendSentence(text: string, sentence: string): string {
  * 2. 调用通用文本 LLM Planner（纯文本，单轮 JSON），失败直接抛错
  * 3. 按 shotId 写回 fullPlan[i].prompt
  *
- * 失败策略（无兜底，避免双链路）：
- * - LLM 401 / 403 / 5xx / 超时 / JSON 解析失败 / Schema 校验失败 都直接抛错
- * - 错误信息会带上 stage（http / parse / schema / timeout / config）
- *   与原始消息（含 HTTP 状态码），由上层任务 store 写入 errorMessage，前端显示"生成失败"
+ * 失败策略：
+ * - LLM 401 / 403 / 5xx / 超时 / JSON 解析失败 / Schema 校验失败会记录结构化日志
+ * - 不中断主链路，保留进入本函数前已经生成好的规则 prompt，避免单次文本 LLM
+ *   异常导致整单 0 张失败
  */
 async function applyShotPlannerOverride(
   fullPlan: PhotoFissionShot[],
@@ -1573,15 +1609,16 @@ async function applyShotPlannerOverride(
       userPrompt: plan.userPrompt,
       shotCount: params.resultCount,
       traceId: taskId,
+      reasoningEnabled: Boolean(params.plannerReasoningEnabled),
     })
   } catch (error) {
     const stage =
       error instanceof ShotPlannerError ? error.stage ?? 'unknown' : 'unknown'
     const message = error instanceof Error ? error.message : String(error)
-    console.error(
+    console.warn(
       JSON.stringify({
-        lvl: 'error',
-        evt: 'planner.failed',
+        lvl: 'warn',
+        evt: 'planner.fallback',
         ts: new Date().toISOString(),
         traceId: taskId,
         taskId,
@@ -1590,7 +1627,7 @@ async function applyShotPlannerOverride(
         reason: message,
       }),
     )
-    throw new Error(`生成失败：LLM 镜头策划器调用失败（stage=${stage}）：${message}`)
+    return
   }
 
   // 按 shotId 索引覆盖；任何缺失或越界都跳过单条，不影响其它 shot
@@ -1676,6 +1713,11 @@ async function applyShotPlannerOverride(
     }),
   )
 
+  // 多样性自动修复：当检测到严重重复时，在后续 shot 追加强制差异化指令
+  if (diversityDiag.hasWarning) {
+    enforcePromptDiversity(fullPlan, diversityDiag, taskId)
+  }
+
   console.log(
     JSON.stringify({
       lvl: 'info',
@@ -1686,6 +1728,7 @@ async function applyShotPlannerOverride(
       latencyMs: Date.now() - startedAt,
       overridden,
       total: fullPlan.length,
+      reasoningEnabled: Boolean(params.plannerReasoningEnabled),
     }),
   )
 }
@@ -1733,12 +1776,12 @@ function appendFaceIdLock(
   // 官方文档明确建议："清楚指明不同图像需要编辑/参考的对象及操作"
   // 开头用简洁替换指令，模型对开头指令权重最高
   const prepend = [
-    `参考图${imgRef}的人物面部形象（脸型、五官、面部比例、皮肤质感），保持图1的服装、穿搭、发型和场景，用图${imgRef}的面部替换图1的面部。图1面部已被遮挡处理，不包含面部信息。生成的人物面部必须与图${imgRef}完全一致：脸型形状、下颌线弧度、颧骨、眼形（含双眼皮/单眼皮）、鼻型、嘴形、眉形、耳朵形状、三庭五眼比例、皮肤质感（毛孔清晰、纹理细腻、真实光泽感）全部严格复刻图${imgRef}。皮肤不磨皮、不柔化，保留真实肌理。表情可以自然变化，但脸型骨骼结构和五官细节绝对不能改变。\n\n`,
+    `多图参考分工：图${imgRef}只提供脸部核心特征（脸型、五官、面部比例、皮肤质感），图1提供帽子、发型、发饰、发色、头发长度、手持包、服装穿搭和场景光线。生成时只把图${imgRef}的脸部核心特征融合到图1人物身上，不要替换图1的帽子、发型、发饰、发色、头发长度、手持包或服装穿搭。面部必须与图${imgRef}一致：脸型形状、下颌线弧度、颧骨、眼形、鼻型、嘴形、眉形、面部三庭五眼比例和真实皮肤质感都以图${imgRef}为准；表情可以自然变化，但脸型骨骼结构和五官细节不改变。\n\n`,
   ].join('')
 
   // APPEND：尾部用替换指令格式再次强调
   const append = [
-    `\n\n再次强调多图参考规则：用图${imgRef}的人物面部形象生成图1中穿着同套服装的人物。面部全部特征以图${imgRef}为唯一基准，图1不提供面部信息。表情可自然丰富变化，但脸型、五官、面部比例和皮肤质感严格复刻图${imgRef}。`,
+    `\n\n再次强调多图参考规则：脸部核心特征以图${imgRef}为准；帽子、发型、发饰、发色、头发长度、手持包、服装和穿搭以图1为准。图${imgRef}不能覆盖图1的头部配饰与发型，表情可自然丰富变化，但脸型、五官、面部比例和皮肤质感必须贴近图${imgRef}。`,
   ].join('')
 
   return `${prepend}${cleaned.trim()}${append}`
@@ -1830,4 +1873,146 @@ function diagnosePromptDiversity(
     topGestures: getTopN(gestureCounts, 5),
     topExpressions: getTopN(expressionCounts, 5),
   }
+}
+
+/** 手势替代池：每个重复手势对应一组可用替代 */
+const GESTURE_ALTERNATIVES: ReadonlyArray<readonly string[]> = [
+  ['双手自然下垂', '单手轻搭腰侧', '一手扶包带一手自然垂'],
+  ['撩发别耳后', '轻捏发梢', '手指轻触太阳穴'],
+  ['提裙展裙', '轻抚裙摆边缘', '双手展开裙摆'],
+  ['叉腰', '单手叉腰另一手轻挥', '双手叉腰微微侧身'],
+  ['背手身后', '一手背身后一手轻抬', '双手背后交握微仰头'],
+  ['托腮', '单手轻托下巴', '手指轻点脸颊'],
+  ['身前交握', '双手轻握身前', '十指交叉自然垂于身前'],
+  ['挥手打招呼', '轻举手掌示意', '单手微抬食指指向远方'],
+  ['扶发顶', '轻按帽子', '手指轻整理刘海'],
+]
+
+const EXPRESSION_ALTERNATIVES: ReadonlyArray<readonly string[]> = [
+  ['浅浅抿嘴', '嘴角微微上扬但不出声', '自然放松的面部'],
+  ['俏皮嘟嘴', '微微噘嘴', '略带撒娇的嘟嘴'],
+  ['温柔浅笑', '含蓄微笑', '嘴角轻扬不带牙齿'],
+  ['开朗露齿笑', '灿烂笑容', '自然大笑'],
+  ['故作严肃', '微微板脸', '冷艳高傲'],
+  ['小惊喜微张嘴', '眼睛微微睁大', '嘴角微张像在说"哇"'],
+]
+
+/**
+ * 多样性自动修复：当 planner 输出严重重复时，在后续 shot 追加强制差异化指令。
+ *
+ * 逐 shot 扫描，收集已用的手势/表情，为重复的 shot 追加禁用列表和替代建议。
+ * 不需要重新调用 LLM，通过追加指令让图像模型自行选择不同动作。
+ */
+function enforcePromptDiversity(
+  shots: Array<{ prompt: string }>,
+  diag: ReturnType<typeof diagnosePromptDiversity>,
+  taskId: string,
+): void {
+  const usedGestures = new Set<string>()
+  const usedExpressions = new Set<string>()
+  let fixedCount = 0
+
+  // 手势/表情检测 pattern（与 diagnose 共用逻辑）
+  const gesturePatterns: ReadonlyArray<[RegExp, string]> = [
+    [/比\s*V|比耶|剪刀手|V\s*字/i, '比V'],
+    [/撩发|拢发|别耳后|发丝/i, '撩发别耳后'],
+    [/提裙|拉起裙摆|展裙|轻提裙/i, '提裙展裙'],
+    [/叉腰|手停腰侧|腰侧/i, '叉腰'],
+    [/背手|身后交握|背后交握/i, '背手'],
+    [/托腮|托脸|戳脸颊/i, '托腮'],
+    [/捂嘴|遮嘴/i, '捂嘴'],
+    [/挥手|打招呼/i, '挥手'],
+    [/交握身前|身前交握/i, '身前交握'],
+    [/扶发顶|扶额/i, '扶发顶'],
+    [/插兜|口袋/i, '插兜'],
+    [/OK\s*手势|比\s*OK/i, 'OK手势'],
+    [/自然下垂|手臂垂/i, '手下垂'],
+    [/轻搭|轻放/i, '轻搭'],
+  ]
+
+  const expressionPatterns: ReadonlyArray<[RegExp, string]> = [
+    [/浅笑|微笑|小弧|轻扬/i, '浅笑'],
+    [/露齿|笑.*牙|牙.*笑/i, '露齿笑'],
+    [/嘟嘴|嘟嘟嘴/i, '嘟嘴'],
+    [/轻抿|抿嘴|抿唇/i, '轻抿'],
+    [/微张嘴|小惊喜/i, '小惊喜'],
+    [/闭眼|微仰|迎光/i, '闭眼'],
+    [/冷酷|高冷|帅气/i, '冷酷'],
+    [/自然.*表情|放松.*面部/i, '自然表情'],
+    [/严肃|板脸/i, '严肃'],
+  ]
+
+  function detectPatterns(text: string, patterns: ReadonlyArray<[RegExp, string]>): string[] {
+    const found: string[] = []
+    for (const [pattern, label] of patterns) {
+      if (pattern.test(text)) found.push(label)
+    }
+    return found
+  }
+
+  function pickAlternatives(
+    alreadyUsed: Set<string>,
+    pool: ReadonlyArray<readonly string[]>,
+    count: number,
+  ): string[] {
+    const candidates: string[] = []
+    for (const group of pool) {
+      const available = group.filter(g => !alreadyUsed.has(g))
+      if (available.length > 0) {
+        candidates.push(available[Math.floor(Math.random() * available.length)])
+      }
+    }
+    // 随机打乱后取前 N 个
+    return candidates.sort(() => Math.random() - 0.5).slice(0, count)
+  }
+
+  for (let i = 0; i < shots.length; i++) {
+    const shotGestures = detectPatterns(shots[i].prompt, gesturePatterns)
+    const shotExpressions = detectPatterns(shots[i].prompt, expressionPatterns)
+
+    const gestureDup = shotGestures.filter(g => usedGestures.has(g))
+    const expressionDup = shotExpressions.filter(e => usedExpressions.has(e))
+
+    // 记录本轮使用的手势/表情
+    for (const g of shotGestures) usedGestures.add(g)
+    for (const e of shotExpressions) usedExpressions.add(e)
+
+    // 只有第一个 shot（i===0）或没有重复时跳过
+    if (i === 0 || (gestureDup.length === 0 && expressionDup.length === 0)) continue
+
+    // 构建强制差异化指令
+    const bannedGestures = [...new Set(gestureDup)]
+    const bannedExpressions = [...new Set(expressionDup)]
+    const altGestures = pickAlternatives(usedGestures, GESTURE_ALTERNATIVES, 2)
+    const altExpressions = pickAlternatives(usedExpressions, EXPRESSION_ALTERNATIVES, 2)
+
+    const lines: string[] = ['\n\n【强制差异化】前面镜头已使用的手势/表情与本图重复，必须更改：']
+    if (bannedGestures.length > 0) {
+      lines.push(`禁止使用的手势：${bannedGestures.join('、')}。`)
+      if (altGestures.length > 0) {
+        lines.push(`请改用：${altGestures.join('、')}或其他与前面完全不同的手部动作。`)
+      }
+    }
+    if (bannedExpressions.length > 0) {
+      lines.push(`禁止使用的表情：${bannedExpressions.join('、')}。`)
+      if (altExpressions.length > 0) {
+        lines.push(`请改用：${altExpressions.join('、')}或其他与前面完全不同的面部表情。`)
+      }
+    }
+    lines.push('腿部站姿和重心也必须与前面镜头明显不同。')
+
+    shots[i].prompt = shots[i].prompt + lines.join('\n')
+    fixedCount += 1
+  }
+
+  console.log(
+    JSON.stringify({
+      lvl: 'info',
+      evt: 'planner.diversity.fixed',
+      ts: new Date().toISOString(),
+      traceId: taskId,
+      taskId,
+      fixedCount,
+    }),
+  )
 }

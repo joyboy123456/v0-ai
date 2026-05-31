@@ -1,0 +1,9 @@
+declare module 'ali-oss' {
+  class OSS {
+    constructor(options: any);
+    put(name: string, file: any, options?: any): Promise<any>;
+    get(name: string, file?: any, options?: any): Promise<any>;
+    delete(name: string, options?: any): Promise<any>;
+  }
+  export default OSS;
+}

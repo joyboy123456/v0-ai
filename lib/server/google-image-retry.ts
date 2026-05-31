@@ -88,6 +88,8 @@ interface RetryAcquireOptions {
   signal?: AbortSignal
   /** provider 唯一标识，用于令牌桶隔离。不传时降级到 apiKey */
   providerId?: string
+  /** 节流桶 key：同一凭证的多个 provider 可共享桶，避免重复消耗同一 key 额度 */
+  rateLimitKey?: string
   /** 该 provider 的 IPM 上限。不传时降级读 env */
   maxIpm?: number
   /** 该 provider 的 RPM 上限。不传时降级读 env */
@@ -186,7 +188,7 @@ const authFailureUntilByKey = new Map<string, number>()
 const AUTH_BLOCK_DURATION_MS = 30_000
 
 function getAuthCircuitKey(options: RetryAcquireOptions): string {
-  return options.providerId || options.apiKey || '__default__'
+  return options.rateLimitKey || options.providerId || options.apiKey || '__default__'
 }
 
 function isAuthBlocked(circuitKey: string): boolean {
@@ -303,7 +305,7 @@ export async function callGoogleImageWithRetry<T>(
     await acquireGoogleImageSlot({
       apiKey: acquireOptions.apiKey,
       signal: acquireOptions.signal,
-      providerId: acquireOptions.providerId,
+      providerId: acquireOptions.rateLimitKey ?? acquireOptions.providerId,
       maxIpm: acquireOptions.maxIpm,
       maxRpm: acquireOptions.maxRpm,
       onWait: (waitMs, reason) => {

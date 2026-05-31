@@ -42,6 +42,8 @@ export interface InvokeShotPlannerInput {
   shotCount: PhotoFissionResultCount
   /** 可选的 traceId，仅用于日志追踪 */
   traceId?: string
+  /** 开启 DeepSeek thinking mode，提升分镜推理质量但会增加耗时 */
+  reasoningEnabled?: boolean
 }
 
 /**
@@ -82,6 +84,7 @@ export async function invokeShotPlanner(
       traceId: input.traceId,
       feature: 'photo-fission',
       plannerName: 'photo-fission-shot-planner',
+      reasoningEnabled: input.reasoningEnabled,
     })
   } catch (error) {
     if (error instanceof FissionPromptPlannerError) {

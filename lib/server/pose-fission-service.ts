@@ -5,6 +5,7 @@ import {
   POSE_IMAGE_RATIOS,
   POSE_RESOLUTIONS,
   POSE_TEMPLATES,
+  SELECTABLE_FASHION_MODELS,
   type FashionModelId,
   type PoseFissionCase,
   type PoseFissionParams,
@@ -41,7 +42,7 @@ const poseResolutionIds = new Set<PoseResolution>(
   POSE_RESOLUTIONS.map((option) => option.id),
 )
 const fashionModelIds = new Set<FashionModelId>(
-  FASHION_MODELS.map((option) => option.id),
+  SELECTABLE_FASHION_MODELS.map((option) => option.id),
 )
 
 export function listPoseFissionCases(): PoseFissionCase[] {

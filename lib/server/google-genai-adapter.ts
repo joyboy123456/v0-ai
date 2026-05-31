@@ -66,6 +66,8 @@ export interface GoogleEditInput {
   shotId?: string
   /** provider 唯一标识，用于令牌桶隔离。不传时降级到 apiKey */
   providerId?: string
+  /** 同一 API Key 的多个 provider 共享节流桶 */
+  rateLimitKey?: string
   /** 该 provider 的 IPM 上限。不传时降级读 env */
   maxIpm?: number
   /** 该 provider 的 RPM 上限。不传时降级读 env */
@@ -140,6 +142,7 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
       {
         apiKey: input.apiKey,
         providerId: input.providerId,
+        rateLimitKey: input.rateLimitKey,
         maxIpm: input.maxIpm,
         maxRpm: input.maxRpm,
       },

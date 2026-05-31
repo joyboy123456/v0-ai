@@ -115,7 +115,8 @@ function buildFaceIdOverrideSection(faceIdImageIndex: number): string {
    改为写："面部全部特征（脸型+五官）以最后一张人像小卡（图${faceIdImageIndex}）为唯一基准。"
 
 2. "参考图"三个字在脸部/五官/脸型语境下，特指图${faceIdImageIndex}人像小卡，不再指向图1主图。
-   图1主图只提供穿搭比例、发型、发饰、服装细节、场景与光线，不提供任何面部信息。
+   但图${faceIdImageIndex}只提供脸部核心特征，不提供帽子、发型、发饰、服装或穿搭。
+   图1主图提供穿搭比例、帽子、发型、发饰、发色、头发长度、手持包、服装细节、场景与光线。
 
 3. 不要在 imagePrompt 里写"不改变脸部特征"或"脸部保持一致"等含糊指令——
    必须明确写出"脸型形状、下颌线、颧骨、眼形、鼻型、嘴形、眉形、耳朵形状、面部三庭五眼比例全部以图${faceIdImageIndex}人像小卡为准"。
@@ -125,7 +126,7 @@ function buildFaceIdOverrideSection(faceIdImageIndex: number): string {
 
 5. 外景镜头也不例外：场景换成蓝天草地时，脸型+五官仍然以图${faceIdImageIndex}人像小卡为准，不能因为换背景就改变脸。
 
-6. 注意：图1主图的脸部已被预处理覆盖（不可读取面部信息），出图模型只能从图${faceIdImageIndex}获取面部特征。
+6. 注意：图1主图的脸部核心区已被预处理覆盖，但帽子、发型、发饰、发色、头发长度、手持包和服装穿搭仍然必须从图1读取并保留。
 `
 }
 

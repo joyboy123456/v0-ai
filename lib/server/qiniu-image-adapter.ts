@@ -2,7 +2,7 @@
  * 七牛云 AI 大模型推理 — 图像生成 Adapter。
  *
  * 七牛云 OpenAI 兼容接口：
- * - Base URL: https://api.qnaigc.com
+ * - Base URL: Gemini 用 https://api.qnaigc.com，GPT 图像用 https://openai.qiniu.com
  * - 文生图端点: POST /v1/images/generations
  * - 图生图端点: POST /v1/images/edits
  * - 鉴权: Authorization: Bearer <API_KEY>
@@ -29,7 +29,8 @@ import {
 import { resolveImageSize } from './image-size-policy'
 import { logImageEvent, type LogContext } from './log'
 
-const QINIU_DEFAULT_BASE_URL = 'https://api.qnaigc.com'
+const QINIU_GEMINI_DEFAULT_BASE_URL = 'https://api.qnaigc.com'
+const QINIU_GPT_DEFAULT_BASE_URL = 'https://openai.qiniu.com'
 const QINIU_DEFAULT_MODEL = 'gemini-3.0-pro-image-preview'
 const QINIU_GENERATIONS_PATH = '/v1/images/generations'
 const QINIU_EDITS_PATH = '/v1/images/edits'
@@ -61,6 +62,8 @@ export interface QiniuEditInput {
   shotId?: string
   /** provider 唯一标识，用于令牌桶隔离 */
   providerId?: string
+  /** 同一 API Key 的多个 provider 共享节流桶 */
+  rateLimitKey?: string
   /** 该 provider 的 IPM 上限 */
   maxIpm?: number
   /** 该 provider 的 RPM 上限 */
@@ -106,8 +109,10 @@ export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAs
     })
   }
 
-  const baseUrl = (input.baseUrl || QINIU_DEFAULT_BASE_URL).replace(/\/+$/, '')
   const resolvedModel = resolveQiniuModel(input.model || QINIU_DEFAULT_MODEL)
+  const baseUrl = (
+    input.baseUrl || resolveQiniuDefaultBaseUrl(resolvedModel)
+  ).replace(/\/+$/, '')
   const model = resolvedModel.id
   const endpointPath =
     input.inputImages.length > 0 ? QINIU_EDITS_PATH : QINIU_GENERATIONS_PATH
@@ -198,6 +203,7 @@ export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAs
       {
         apiKey: input.apiKey,
         providerId: input.providerId,
+        rateLimitKey: input.rateLimitKey,
         maxIpm: input.maxIpm,
         maxRpm: input.maxRpm,
       },
@@ -271,6 +277,12 @@ function resolveQiniuModel(model: string): ResolvedQiniuModel {
   })
 }
 
+function resolveQiniuDefaultBaseUrl(model: ResolvedQiniuModel): string {
+  return model.family === 'gpt'
+    ? QINIU_GPT_DEFAULT_BASE_URL
+    : QINIU_GEMINI_DEFAULT_BASE_URL
+}
+
 function buildQiniuRequestBody(
   input: QiniuEditInput,
   model: ResolvedQiniuModel,
@@ -310,6 +322,16 @@ function buildQiniuRequestBody(
 }
 
 function resolveQiniuGptQuality(imageSize: string | undefined): string {
+  const override = process.env.QINIU_GPT_IMAGE_QUALITY?.trim().toLowerCase()
+  if (
+    override === 'low' ||
+    override === 'medium' ||
+    override === 'high' ||
+    override === 'auto'
+  ) {
+    return override
+  }
+
   switch ((imageSize ?? '').toUpperCase()) {
     case '4K':
       return 'high'

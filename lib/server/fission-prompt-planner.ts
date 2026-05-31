@@ -28,6 +28,7 @@ export interface InvokeFissionPromptPlannerInput<TOutput> {
   /** 便于错误信息区分不同策略，如 childrens-dress / pose-template */
   plannerName?: string
   temperature?: number
+  reasoningEnabled?: boolean
 }
 
 export class FissionPromptPlannerError extends Error {
@@ -47,6 +48,7 @@ const DEFAULT_BASE_URL = 'https://api.deepseek.com'
 const DEFAULT_MODEL = 'deepseek-chat'
 const DEFAULT_TIMEOUT_MS = 60_000
 const DEFAULT_TEMPERATURE = 0.85
+const DEFAULT_MAX_ATTEMPTS = 2
 
 /**
  * 调用文本 LLM 生成结构化 fission prompt 计划。
@@ -71,6 +73,10 @@ export async function invokeFissionPromptPlanner<TOutput>(
   const model = process.env.TEXT_LLM_MODEL?.trim() || DEFAULT_MODEL
   const timeoutMs = parseTimeout(process.env.TEXT_LLM_TIMEOUT_MS)
   const endpoint = `${baseUrl}/v1/chat/completions`
+  const useDeepSeekThinkingControls = supportsDeepSeekThinkingControls(
+    baseUrl,
+    model,
+  )
 
   // response_format: json_object 让兼容 OpenAI 规范的模型（DeepSeek / GPT-4 /
   // qwen 等）强制返回合法 JSON，避免被 markdown 代码围栏包裹或附带说明文字。
@@ -85,8 +91,80 @@ export async function invokeFissionPromptPlanner<TOutput>(
     stream: false,
     temperature: input.temperature ?? DEFAULT_TEMPERATURE,
     response_format: { type: 'json_object' as const },
+    ...(useDeepSeekThinkingControls
+      ? {
+          thinking: {
+            type: input.reasoningEnabled
+              ? ('enabled' as const)
+              : ('disabled' as const),
+          },
+          ...(input.reasoningEnabled
+            ? { reasoning_effort: 'high' as const }
+            : {}),
+        }
+      : {}),
   }
 
+  let lastError: FissionPromptPlannerError | null = null
+  for (let attempt = 1; attempt <= DEFAULT_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await invokePlannerOnce({
+        endpoint,
+        apiKey,
+        body,
+        timeoutMs,
+        plannerLabel,
+        input,
+      })
+    } catch (error) {
+      if (!(error instanceof FissionPromptPlannerError)) throw error
+      lastError = error
+      logPlannerRetry({
+        error,
+        attempt,
+        maxAttempts: DEFAULT_MAX_ATTEMPTS,
+        plannerLabel,
+        traceId: input.traceId,
+        feature: input.feature,
+      })
+      if (!shouldRetry(error.stage) || attempt === DEFAULT_MAX_ATTEMPTS) {
+        break
+      }
+    }
+  }
+
+  throw lastError ?? new FissionPromptPlannerError(
+    `Text LLM planner ${plannerLabel} failed without a captured error`,
+    { traceId: input.traceId, feature: input.feature },
+    'parse',
+  )
+}
+
+interface InvokePlannerOnceInput<TOutput> {
+  endpoint: string
+  apiKey: string
+  body: {
+    model: string
+    messages: Array<{ role: 'system' | 'user'; content: string }>
+    stream: boolean
+    temperature: number
+    response_format: { type: 'json_object' }
+    thinking?: { type: 'enabled' | 'disabled' }
+    reasoning_effort?: 'high'
+  }
+  timeoutMs: number
+  plannerLabel: string
+  input: InvokeFissionPromptPlannerInput<TOutput>
+}
+
+async function invokePlannerOnce<TOutput>({
+  endpoint,
+  apiKey,
+  body,
+  timeoutMs,
+  plannerLabel,
+  input,
+}: InvokePlannerOnceInput<TOutput>): Promise<TOutput> {
   let response: Response
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -117,20 +195,30 @@ export async function invokeFissionPromptPlanner<TOutput>(
     clearTimeout(timer)
   }
 
+  const responseText = await safeReadBody(response)
   if (!response.ok) {
-    const errBody = await safeReadBody(response)
     throw new FissionPromptPlannerError(
-      `Text LLM returned ${response.status} for ${plannerLabel}: ${truncate(errBody, 400)}`,
-      { traceId: input.traceId, feature: input.feature },
+      `Text LLM returned ${response.status} for ${plannerLabel}: ${truncate(responseText, 400)}`,
+      {
+        traceId: input.traceId,
+        feature: input.feature,
+        status: response.status,
+        contentType: response.headers.get('content-type'),
+      },
       'http',
     )
   }
 
-  const raw = await response.json().catch(() => null)
+  const raw = parseJsonText(responseText)
   if (!raw) {
     throw new FissionPromptPlannerError(
-      `Text LLM response for ${plannerLabel} is not valid JSON`,
-      undefined,
+      `Text LLM response for ${plannerLabel} is not valid JSON: ${summarizeBody(responseText)}`,
+      {
+        traceId: input.traceId,
+        feature: input.feature,
+        contentType: response.headers.get('content-type'),
+        bodyPreview: truncate(responseText, 400),
+      },
       'parse',
     )
   }
@@ -165,11 +253,57 @@ export async function invokeFissionPromptPlanner<TOutput>(
   return validated.data
 }
 
+function parseJsonText(text: string): unknown | null {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+function summarizeBody(text: string): string {
+  if (!text.trim()) return '<empty body>'
+  return truncate(text.replace(/\s+/g, ' ').trim(), 200)
+}
+
+function shouldRetry(stage: FissionPromptPlannerErrorStage | undefined): boolean {
+  return stage === 'http' || stage === 'parse' || stage === 'timeout'
+}
+
+function logPlannerRetry(input: {
+  error: FissionPromptPlannerError
+  attempt: number
+  maxAttempts: number
+  plannerLabel: string
+  traceId?: string
+  feature?: string
+}) {
+  if (input.attempt >= input.maxAttempts) return
+  console.warn(
+    JSON.stringify({
+      lvl: 'warn',
+      evt: 'planner.retry',
+      ts: new Date().toISOString(),
+      traceId: input.traceId,
+      feature: input.feature,
+      plannerName: input.plannerLabel,
+      attempt: input.attempt,
+      nextAttempt: input.attempt + 1,
+      stage: input.error.stage,
+      reason: input.error.message,
+    }),
+  )
+}
+
 function parseTimeout(raw: string | undefined): number {
   if (!raw) return DEFAULT_TIMEOUT_MS
   const n = Number.parseInt(raw, 10)
   if (Number.isNaN(n) || n <= 0) return DEFAULT_TIMEOUT_MS
   return n
+}
+
+function supportsDeepSeekThinkingControls(baseUrl: string, model: string): boolean {
+  return baseUrl.includes('api.deepseek.com') || model.startsWith('deepseek-')
 }
 
 /**

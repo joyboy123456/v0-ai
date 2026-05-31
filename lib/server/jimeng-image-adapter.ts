@@ -47,6 +47,7 @@ export interface JimengEditInput {
   traceId?: string
   shotId?: string
   providerId?: string
+  rateLimitKey?: string
   maxIpm?: number
   maxRpm?: number
 }
@@ -340,6 +341,7 @@ export async function runJimengImageEdit(input: JimengEditInput): Promise<Result
       {
         apiKey: input.apiKey,
         providerId: input.providerId,
+        rateLimitKey: input.rateLimitKey,
         maxIpm: input.maxIpm,
         maxRpm: input.maxRpm,
       },
