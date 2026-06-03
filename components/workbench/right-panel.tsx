@@ -20,6 +20,7 @@ import {
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn, validateUploadSize } from "@/lib/utils";
 import { EnhancedImageTaskCard } from "./image-task-card";
+import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
 import {
   AI_FASHION_DEMO_TASKS,
   FASHION_MODELS,
@@ -49,103 +50,13 @@ interface ResultPreview {
   task: GenerationTask;
 }
 
-interface GeneratingSlot {
-  id: string;
-  label: string;
-}
-
-type ResultGridItem =
-  | { kind: "image"; image: ResultAsset }
-  | { kind: "pending"; slot: GeneratingSlot };
-
-function isTaskGenerating(task: GenerationTask): boolean {
-  return task.status === "pending" || task.status === "running";
-}
-
-function readPositiveCount(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  return Math.floor(value);
-}
-
-function getPlannedResultCount(task: GenerationTask): number {
-  const params = task.params as {
-    resultCount?: number;
-    generateCount?: number;
-    shotPlan?: { shotId?: string; label?: string }[];
-    poseTemplateIds?: string[];
-  };
-
-  const explicitCount =
-    readPositiveCount(params.resultCount) ??
-    readPositiveCount(params.generateCount);
-  if (explicitCount) return explicitCount;
-
-  if (task.featureType === "photo-fission" && Array.isArray(params.shotPlan)) {
-    return Math.max(params.shotPlan.length, task.results.length, 1);
-  }
-
-  if (
-    task.featureType === "pose-fission" &&
-    Array.isArray(params.poseTemplateIds)
-  ) {
-    return Math.max(params.poseTemplateIds.length, task.results.length, 1);
-  }
-
-  return Math.max(task.results.length, 1);
-}
-
-function getPendingGenerationSlots(task: GenerationTask): GeneratingSlot[] {
-  if (!isTaskGenerating(task)) return [];
-
-  const params = task.params as {
-    shotPlan?: { shotId?: string; label?: string }[];
-    poseTemplateIds?: string[];
-  };
-  const succeededShotIds = new Set(
-    task.results
-      .map((result) => result.shotId)
-      .filter((id): id is string => Boolean(id)),
-  );
-
-  if (task.featureType === "photo-fission" && Array.isArray(params.shotPlan)) {
-    return params.shotPlan
-      .filter((shot, index) => {
-        const shotId = shot.shotId ?? `shot_${index + 1}`;
-        return !succeededShotIds.has(shotId);
-      })
-      .map((shot, index) => ({
-        id: shot.shotId ?? `pending-shot-${index + 1}`,
-        label: shot.label ?? `镜头 ${index + 1}`,
-      }));
-  }
-
-  if (
-    task.featureType === "pose-fission" &&
-    Array.isArray(params.poseTemplateIds)
-  ) {
-    return params.poseTemplateIds
-      .filter((templateId) => !succeededShotIds.has(templateId))
-      .map((templateId, index) => ({
-        id: templateId,
-        label: `姿势 ${index + 1}`,
-      }));
-  }
-
-  const pendingCount = Math.max(0, getPlannedResultCount(task) - task.results.length);
-  return Array.from({ length: pendingCount }, (_, index) => ({
-    id: `pending-${index + 1}`,
-    label: `图片 ${task.results.length + index + 1}`,
-  }));
-}
+type ResultGridItem = { kind: "image"; image: ResultAsset };
 
 function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
   const params = task.params as {
-    shotPlan?: { shotId?: string; label?: string }[];
+    shotPlan?: { shotId?: string }[];
     poseTemplateIds?: string[];
   };
-  const isGenerating = isTaskGenerating(task);
   const resultsByShotId = new Map(
     task.results
       .filter((result) => result.shotId)
@@ -157,16 +68,7 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
       const shotId = shot.shotId ?? `shot_${index + 1}`;
       const result = resultsByShotId.get(shotId);
       if (result) return [{ kind: "image", image: result }];
-      if (!isGenerating) return [];
-      return [
-        {
-          kind: "pending",
-          slot: {
-            id: shotId,
-            label: shot.label ?? `镜头 ${index + 1}`,
-          },
-        },
-      ];
+      return [];
     });
     const plannedIds = new Set(
       params.shotPlan.map((shot, index) => shot.shotId ?? `shot_${index + 1}`),
@@ -182,19 +84,10 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
     Array.isArray(params.poseTemplateIds)
   ) {
     const plannedItems = params.poseTemplateIds.flatMap<ResultGridItem>(
-      (templateId, index) => {
+      (templateId) => {
         const result = resultsByShotId.get(templateId);
         if (result) return [{ kind: "image", image: result }];
-        if (!isGenerating) return [];
-        return [
-          {
-            kind: "pending",
-            slot: {
-              id: templateId,
-              label: `姿势 ${index + 1}`,
-            },
-          },
-        ];
+        return [];
       },
     );
     const plannedIds = new Set(params.poseTemplateIds);
@@ -204,22 +97,39 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
     return [...plannedItems, ...extraResults];
   }
 
-  return [
-    ...task.results.map<ResultGridItem>((image) => ({ kind: "image", image })),
-    ...getPendingGenerationSlots(task).map<ResultGridItem>((slot) => ({
-      kind: "pending",
-      slot,
-    })),
-  ];
+  return task.results.map<ResultGridItem>((image) => ({ kind: "image", image }));
 }
 
-function getTaskAspectRatio(task: GenerationTask): string {
-  const params = task.params as { imageRatio?: string };
-  const ratio = params.imageRatio;
-  if (typeof ratio === "string" && /^\d+:\d+$/.test(ratio)) {
-    return ratio.replace(":", " / ");
+function getLatestTaskResults(task: GenerationTask): ResultAsset[] {
+  const params = task.params as {
+    shotPlan?: { shotId?: string }[];
+    poseTemplateIds?: string[];
+  };
+  const latestByShotId = new Map<string, ResultAsset>();
+  const unplanned: ResultAsset[] = [];
+  for (const result of task.results) {
+    if (result.shotId) {
+      latestByShotId.set(result.shotId, result);
+    } else {
+      unplanned.push(result);
+    }
   }
-  return "3 / 4";
+
+  if (task.featureType === "photo-fission" && Array.isArray(params.shotPlan)) {
+    const planned = params.shotPlan
+      .map((shot, index) => latestByShotId.get(shot.shotId ?? `shot_${index + 1}`))
+      .filter((item): item is ResultAsset => Boolean(item));
+    return [...planned, ...unplanned];
+  }
+
+  if (task.featureType === "pose-fission" && Array.isArray(params.poseTemplateIds)) {
+    const planned = params.poseTemplateIds
+      .map((templateId) => latestByShotId.get(templateId))
+      .filter((item): item is ResultAsset => Boolean(item));
+    return [...planned, ...unplanned];
+  }
+
+  return task.results;
 }
 
 interface RightPanelProps {
@@ -281,6 +191,10 @@ export function RightPanel({
   const [previewResult, setPreviewResult] = useState<ResultPreview | null>(
     null,
   );
+  const [faceRefineTarget, setFaceRefineTarget] = useState<ResultPreview | null>(
+    null,
+  );
+  const [isFaceVariantRunning, setIsFaceVariantRunning] = useState(false);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [favoritesHydrated, setFavoritesHydrated] = useState(false);
   const [onlyCurrentFeature, setOnlyCurrentFeature] = useState(true);
@@ -362,7 +276,6 @@ export function RightPanel({
     activeTab === "current"
       ? activeTask
       : (currentFeatureTasks[0] ?? activeTask);
-  const results = visibleTask?.results ?? [];
   const visibleTaskGridItems = visibleTask
     ? getTaskResultGridItems(visibleTask)
     : [];
@@ -489,15 +402,112 @@ export function RightPanel({
   // 走 confirm 二次确认；删除后由父组件统一更新 tasks 列表。
   const handleDeleteResult = async (taskId: string, assetId: string) => {
     const ok = window.confirm("确定删除这张图吗？删除后无法恢复。");
-    if (!ok) return;
+    if (!ok) return false;
     try {
       await onDeleteTaskResult(taskId, assetId);
       // 如果当前预览框正好预览这张图，关闭预览
       setPreviewResult((current) =>
         current?.image.assetId === assetId ? null : current,
       );
+      return true;
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "删除失败");
+      return false;
+    }
+  };
+
+  const uploadFaceRefineMask = async (
+    maskDataUrl: string,
+    image: ResultAsset,
+  ) => {
+    const blob = await (await fetch(maskDataUrl)).blob();
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new File([blob], `face-refine-mask-${Date.now()}.png`, {
+        type: "image/png",
+      }),
+    );
+    formData.append("width", String(image.width));
+    formData.append("height", String(image.height));
+    const response = await fetch("/api/assets/upload", {
+      method: "POST",
+      body: formData,
+    });
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      throw new Error(data.error ?? `上传重修 mask 失败：HTTP ${response.status}`);
+    }
+    const data = (await response.json()) as { assetId: string };
+    return data.assetId;
+  };
+
+  const openFaceRefine = (task: GenerationTask, image: ResultAsset) => {
+    setPreviewResult(null);
+    setFaceRefineTarget({ image, task });
+  };
+
+  const handleRegenerateShot = async (
+    task: GenerationTask,
+    image: ResultAsset,
+  ) => {
+    if (!image.shotId) {
+      window.alert("这张图没有 shotId，无法单张重生");
+      return;
+    }
+    setIsFaceVariantRunning(true);
+    try {
+      const response = await fetch(`/api/tasks/${task.taskId}/regenerate-shot`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ shotId: image.shotId }),
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(data.error ?? `重生失败：HTTP ${response.status}`);
+      }
+      onRefreshTasks();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "重生失败");
+    } finally {
+      setIsFaceVariantRunning(false);
+    }
+  };
+
+  const handleFaceRefineComplete = async (maskDataUrl: string) => {
+    const target = faceRefineTarget;
+    if (!target) return;
+    setIsFaceVariantRunning(true);
+    try {
+      const maskAssetId = await uploadFaceRefineMask(maskDataUrl, target.image);
+      const response = await fetch(
+        `/api/tasks/${target.task.taskId}/refine-face`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            assetId: target.image.assetId,
+            maskAssetId,
+          }),
+        },
+      );
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(data.error ?? `重修脸失败：HTTP ${response.status}`);
+      }
+      setFaceRefineTarget(null);
+      setPreviewResult(null);
+      onRefreshTasks();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "重修脸失败");
+    } finally {
+      setIsFaceVariantRunning(false);
     }
   };
 
@@ -833,27 +843,21 @@ export function RightPanel({
               {visibleTaskGridItems.length > 0 ? (
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
                   {visibleTaskGridItems.map((item) => {
-                    if (item.kind === "pending") {
-                      return (
-                        <GeneratingImageCard
-                          key={`pending-${item.slot.id}`}
-                          label={item.slot.label}
-                          aspectRatio={getTaskAspectRatio(visibleTask)}
-                        />
-                      );
-                    }
-
                     const image = item.image;
                     const isFavorite = favorites.has(image.assetId);
+                    const canUseFaceActions =
+                      visibleTask.featureType === "photo-fission" &&
+                      Boolean((visibleTask.params as PhotoFissionParams).faceIdModelId);
 
                     return (
                       <ResultImageCard
                         key={image.assetId}
                         image={image}
                         isFavorite={isFavorite}
-                        onClick={() =>
-                          setPreviewResult({ image, task: visibleTask })
-                        }
+                        canRefineFace={canUseFaceActions}
+                        canRegenerate={visibleTask.featureType === "photo-fission"}
+                        actionDisabled={isFaceVariantRunning}
+                        onClick={() => setPreviewResult({ image, task: visibleTask })}
                         onToggleFavorite={() => {
                           setFavorites((current) => {
                             const next = new Set(current);
@@ -865,6 +869,11 @@ export function RightPanel({
                             return next;
                           });
                         }}
+                        onRefineFace={() =>
+                          openFaceRefine(visibleTask, image)
+                        }
+                        onRegenerate={() => handleRegenerateShot(visibleTask, image)}
+                        onDelete={() => handleDeleteResult(visibleTask.taskId, image.assetId)}
                       />
                     );
                   })}
@@ -908,11 +917,33 @@ export function RightPanel({
                 setPreviewResult({ image, task })
               }
               onUseSameStyle={handleUseSameStyle}
+              isFaceVariantRunning={isFaceVariantRunning}
+              onRefineFace={(image, task) => openFaceRefine(task, image)}
+              onRegenerateShot={(task, image) =>
+                handleRegenerateShot(task, image)
+              }
+              onDeleteResult={(task, image) => {
+                void handleDeleteResult(task.taskId, image.assetId);
+              }}
               onClose={() => setPreviewResult(null)}
             />
           )}
         </DialogContent>
       </Dialog>
+
+      {faceRefineTarget && (
+        <FaceMaskPainterDialog
+          open={!!faceRefineTarget}
+          title="涂抹需要重修的人脸区域"
+          imageUrl={faceRefineTarget.image.url}
+          imageWidth={faceRefineTarget.image.width}
+          imageHeight={faceRefineTarget.image.height}
+          onOpenChange={(open) => {
+            if (!open && !isFaceVariantRunning) setFaceRefineTarget(null);
+          }}
+          onComplete={handleFaceRefineComplete}
+        />
+      )}
 
       {batchSelectMode && selectedAssets.size > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-full border border-border bg-card px-5 py-3 shadow-lg">
@@ -937,6 +968,122 @@ export function RightPanel({
         </div>
       )}
     </section>
+  );
+}
+
+function ResultImageCard({
+  image,
+  isFavorite,
+  canRefineFace,
+  canRegenerate,
+  actionDisabled,
+  onClick,
+  onToggleFavorite,
+  onRefineFace,
+  onRegenerate,
+  onDelete,
+}: {
+  image: ResultAsset;
+  isFavorite: boolean;
+  canRefineFace: boolean;
+  canRegenerate: boolean;
+  actionDisabled: boolean;
+  onClick: () => void;
+  onToggleFavorite: () => void;
+  onRefineFace: () => void;
+  onRegenerate: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
+      className="group relative aspect-[3/4] overflow-hidden rounded-md border border-border bg-card transition-colors hover:border-primary/60"
+    >
+      <img src={image.url} alt="" className="h-full w-full object-cover" />
+      <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleFavorite();
+          }}
+          className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60"
+          aria-label={isFavorite ? "取消收藏" : "收藏"}
+        >
+          <Star
+            className={cn(
+              "h-4 w-4",
+              isFavorite ? "fill-yellow-400 text-yellow-400" : "text-white/80",
+            )}
+          />
+        </button>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            window.open(image.downloadUrl, "_blank");
+          }}
+          className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60"
+          aria-label="下载"
+        >
+          <Download className="h-4 w-4 text-white/80" />
+        </button>
+      </div>
+
+      <div className="absolute inset-x-0 bottom-0 space-y-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="grid grid-cols-2 gap-1.5">
+          {canRefineFace && (
+            <button
+              type="button"
+              disabled={actionDisabled}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRefineFace();
+              }}
+              className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-white/35 bg-black/45 px-2 text-xs font-medium text-white hover:bg-white/20 disabled:opacity-50"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              重修脸
+            </button>
+          )}
+          {canRegenerate && (
+            <button
+              type="button"
+              disabled={actionDisabled}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRegenerate();
+              }}
+              className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-white/35 bg-black/45 px-2 text-xs font-medium text-white hover:bg-white/20 disabled:opacity-50"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              重生
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          disabled={actionDisabled}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+          className="inline-flex h-8 w-full items-center justify-center gap-1 rounded-md border border-white/25 bg-black/45 px-2 text-xs font-medium text-white hover:bg-red-500/80 disabled:opacity-50"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          删除
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -1100,6 +1247,10 @@ function GenerationDetailDialog({
   onToggleFavorite,
   onSelectPreview,
   onUseSameStyle,
+  isFaceVariantRunning,
+  onRefineFace,
+  onRegenerateShot,
+  onDeleteResult,
   onClose,
 }: {
   preview: ResultPreview;
@@ -1107,6 +1258,10 @@ function GenerationDetailDialog({
   onToggleFavorite: (assetId: string) => void;
   onSelectPreview: (image: ResultAsset, task: GenerationTask) => void;
   onUseSameStyle: (task: GenerationTask) => void;
+  isFaceVariantRunning: boolean;
+  onRefineFace: (image: ResultAsset, task: GenerationTask) => void;
+  onRegenerateShot: (task: GenerationTask, image: ResultAsset) => void;
+  onDeleteResult: (task: GenerationTask, image: ResultAsset) => void;
   onClose: () => void;
 }) {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
@@ -1151,6 +1306,9 @@ function GenerationDetailDialog({
   const canUseSameStyle =
     task.featureType === "ai-fashion-photo" &&
     Boolean(task.inputAssets?.length);
+  const canUseFaceActions =
+    isPhotoFission && Boolean((task.params as PhotoFissionParams).faceIdModelId);
+  const canRegenerateShot = isPhotoFission && Boolean(image.shotId);
   const resultImages = task.results.length > 0 ? task.results : [image];
   const copyContent = isPhotoFission
     ? (photoFissionPromptBundle ?? "")
@@ -1246,6 +1404,39 @@ function GenerationDetailDialog({
             >
               <Sparkles className="h-4 w-4" />
               做同款
+            </button>
+          )}
+          {canUseFaceActions && (
+            <button
+              type="button"
+              disabled={isFaceVariantRunning}
+              onClick={() => onRefineFace(image, task)}
+              className="inline-flex h-9 items-center gap-2 rounded-full border border-primary/70 bg-primary/10 px-3 text-sm font-medium text-primary hover:bg-primary hover:text-primary-foreground disabled:cursor-not-allowed disabled:border-border disabled:bg-card disabled:text-muted-foreground"
+            >
+              <Pencil className="h-4 w-4" />
+              重修脸
+            </button>
+          )}
+          {canRegenerateShot && (
+            <button
+              type="button"
+              disabled={isFaceVariantRunning}
+              onClick={() => onRegenerateShot(task, image)}
+              className="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-3 text-sm font-medium text-muted-foreground hover:border-primary/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw className="h-4 w-4" />
+              重生
+            </button>
+          )}
+          {isPhotoFission && (
+            <button
+              type="button"
+              disabled={isFaceVariantRunning}
+              onClick={() => onDeleteResult(task, image)}
+              className="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-card px-3 text-sm font-medium text-muted-foreground hover:border-destructive/70 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              删除
             </button>
           )}
         </div>
@@ -2310,7 +2501,6 @@ function TaskHistory({
               <EnhancedImageTaskCard
                 key={task.taskId}
                 task={task}
-                plannedResultCount={getPlannedResultCount(task)}
                 isActive={activeTaskId === task.taskId}
                 onSelectTask={onSelectTask}
                 onPreviewImage={onPreviewImage}
@@ -2398,6 +2588,7 @@ function TaskHistoryCard({
     ? (photoFissionPromptBundle ?? "")
     : displayPrompt;
   const hasCopyContent = Boolean(copyContent);
+  const latestResults = getLatestTaskResults(task);
 
   const handleCopyPrompt = async () => {
     if (!hasCopyContent) return;
@@ -2459,7 +2650,7 @@ function TaskHistoryCard({
         )}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        {task.results.length} 张结果
+        {latestResults.length} 张结果
         {!isPhotoFission && ` · 消耗 ${task.creditsUsed} 点`}
       </p>
 
@@ -2478,9 +2669,9 @@ function TaskHistoryCard({
         </p>
       )}
 
-      {task.results.length > 0 && (
+      {latestResults.length > 0 && (
         <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
-          {task.results.map((image) => {
+          {latestResults.map((image) => {
             const isFavorite = favorites.has(image.assetId);
             const isSelected = selectedAssetIds.has(image.assetId);
 

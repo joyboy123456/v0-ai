@@ -213,6 +213,7 @@ export interface PhotoFissionParams {
    */
   referenceAssetKey?: string
   faceIdModelId?: string | null
+  faceMaskAssetId?: string | null
 }
 
 export interface BackgroundReplaceParams {

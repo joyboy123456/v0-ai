@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Heart, Download, Sparkles } from "lucide-react";
+import { Heart, Download } from "lucide-react";
 import type { GenerationTask, ResultAsset } from "@/lib/types";
 
 // 扩展的内部状态，用于动画控制
@@ -9,99 +9,36 @@ type InternalImageStatus = "loading" | "loaded";
 interface ImageSlot {
   id: string;
   index: number;
-  image?: ResultAsset;
-  isPlaceholder: boolean;
+  image: ResultAsset;
 }
 
-// ==========================================
-// AI 图像显影中占位动画组件
-// ==========================================
-function ImageSlotPlaceholder({ index }: { index: number }) {
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.35 }}
-      className="pointer-events-none absolute inset-0 overflow-hidden bg-gradient-to-br from-[#EEF3FF] via-[#F4F0FF] to-[#EAFBFF]"
-    >
-      {/* 柔和光斑 1 */}
-      <motion.div
-        className="absolute -left-8 top-1/4 h-32 w-32 rounded-full bg-blue-300/30 blur-3xl"
-        animate={{
-          x: ["-20%", "30%", "-10%"],
-          y: ["-10%", "20%", "0%"],
-          scale: [1, 1.15, 1],
-        }}
-        transition={{
-          duration: 3.2,
-          repeat: Infinity,
-          ease: "easeInOut",
-          delay: index * 0.12,
-        }}
-      />
-
-      {/* 柔和光斑 2 */}
-      <motion.div
-        className="absolute -right-8 bottom-1/4 h-32 w-32 rounded-full bg-purple-300/25 blur-3xl"
-        animate={{
-          x: ["10%", "-25%", "15%"],
-          y: ["5%", "-15%", "10%"],
-          scale: [1, 1.12, 1],
-        }}
-        transition={{
-          duration: 3.6,
-          repeat: Infinity,
-          ease: "easeInOut",
-          delay: index * 0.15,
-        }}
-      />
-
-      {/* 斜向 shimmer 扫描线 */}
-      <motion.div
-        className="absolute inset-y-0 -left-1/2 w-1/2 rotate-12 bg-gradient-to-r from-transparent via-white/70 to-transparent"
-        animate={{ x: ["-80%", "260%"] }}
-        transition={{
-          duration: 1.8,
-          repeat: Infinity,
-          ease: "easeInOut",
-          delay: index * 0.18,
-        }}
-      />
-
-      {/* 中心图标和文案 */}
-      <motion.div
-        className="absolute inset-0 flex flex-col items-center justify-center gap-2"
-        animate={{
-          opacity: [0.55, 1, 0.55],
-          scale: [1, 1.06, 1],
-        }}
-        transition={{
-          duration: 1.6,
-          repeat: Infinity,
-          ease: "easeInOut",
-          delay: index * 0.1,
-        }}
-      >
-        <Sparkles className="h-5 w-5 text-blue-400/60" />
-        <span className="text-xs font-medium text-blue-500/70">生成中</span>
-      </motion.div>
-
-      {/* 底部细进度光条 */}
-      <div className="absolute inset-x-0 bottom-0 h-0.5 overflow-hidden bg-blue-200/30">
-        <motion.div
-          className="h-full w-1/3 bg-gradient-to-r from-transparent via-blue-400/80 to-transparent"
-          animate={{ x: ["-100%", "300%"] }}
-          transition={{
-            duration: 2.2,
-            repeat: Infinity,
-            ease: "easeInOut",
-            delay: index * 0.14,
-          }}
-        />
-      </div>
-    </motion.div>
-  );
+function getLatestTaskResults(task: GenerationTask): ResultAsset[] {
+  const params = task.params as {
+    shotPlan?: { shotId?: string }[];
+    poseTemplateIds?: string[];
+  };
+  const latestByShotId = new Map<string, ResultAsset>();
+  const unplanned: ResultAsset[] = [];
+  for (const result of task.results) {
+    if (result.shotId) {
+      latestByShotId.set(result.shotId, result);
+    } else {
+      unplanned.push(result);
+    }
+  }
+  if (task.featureType === "photo-fission" && Array.isArray(params.shotPlan)) {
+    const planned = params.shotPlan
+      .map((shot, index) => latestByShotId.get(shot.shotId ?? `shot_${index + 1}`))
+      .filter((item): item is ResultAsset => Boolean(item));
+    return [...planned, ...unplanned];
+  }
+  if (task.featureType === "pose-fission" && Array.isArray(params.poseTemplateIds)) {
+    const planned = params.poseTemplateIds
+      .map((templateId) => latestByShotId.get(templateId))
+      .filter((item): item is ResultAsset => Boolean(item));
+    return [...planned, ...unplanned];
+  }
+  return task.results;
 }
 
 // ==========================================
@@ -125,7 +62,7 @@ function ImageSlotCard({
   onToggleFavorite: (assetId: string) => void;
 }) {
   const image = slot.image;
-  const isLoaded = image && imageState === "loaded";
+  const isLoaded = imageState === "loaded";
 
   return (
     <motion.div
@@ -136,71 +73,58 @@ function ImageSlotCard({
         duration: 0.28,
         delay: slot.index * 0.06,
       }}
-      role={image ? "button" : undefined}
-      tabIndex={image ? 0 : -1}
-      onClick={
-        image
-          ? (event) => {
-              event.stopPropagation();
-              onPreviewImage(image, task);
-            }
-          : undefined
-      }
-      onKeyDown={
-        image
-          ? (event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                event.stopPropagation();
-                onPreviewImage(image, task);
-              }
-            }
-          : undefined
-      }
-      className={`group relative aspect-[3/4] overflow-hidden rounded border ${
-        image ? "cursor-pointer border-border hover:border-primary/60" : "border-border"
-      } bg-card transition-colors`}
+      role="button"
+      tabIndex={0}
+      onClick={(event) => {
+        event.stopPropagation();
+        onPreviewImage(image, task);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          event.stopPropagation();
+          onPreviewImage(image, task);
+        }
+      }}
+      className="group relative aspect-[3/4] cursor-pointer overflow-hidden rounded border border-border bg-card transition-colors hover:border-primary/60"
     >
-      {/* 占位动画 - 当没有图片或图片未加载完成时显示 */}
-      <AnimatePresence mode="wait">
-        {(!image || !isLoaded) && (
-          <ImageSlotPlaceholder key={`placeholder-${slot.id}`} index={slot.index} />
-        )}
-      </AnimatePresence>
-
-      {/* 真实图片 - 有 imageUrl 后挂载，但加载完成前保持不可见 */}
-      {image && (
-        <motion.img
-          src={image.url}
-          alt={image.finalPrompt ?? ""}
-          draggable={false}
-          onLoad={() => onImageLoad(image.assetId, slot.index)}
-          initial={{
-            opacity: 0,
-            scale: 1.03,
-            filter: "blur(10px)",
-          }}
-          animate={
-            isLoaded
-              ? {
-                  opacity: 1,
-                  scale: 1,
-                  filter: "blur(0px)",
-                }
-              : {
-                  opacity: 0,
-                  scale: 1.03,
-                  filter: "blur(10px)",
-                }
-          }
-          transition={{
-            duration: 0.55,
-            ease: [0.22, 1, 0.36, 1],
-            delay: slot.index * 0.06,
-          }}
-          className="absolute inset-0 h-full w-full object-cover"
+      {!isLoaded && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-secondary/60"
         />
       )}
+
+      <motion.img
+        src={image.url}
+        alt={image.finalPrompt ?? ""}
+        draggable={false}
+        onLoad={() => onImageLoad(image.assetId, slot.index)}
+        initial={{
+          opacity: 0,
+          scale: 1.03,
+          filter: "blur(10px)",
+        }}
+        animate={
+          isLoaded
+            ? {
+                opacity: 1,
+                scale: 1,
+                filter: "blur(0px)",
+              }
+            : {
+                opacity: 0,
+                scale: 1.03,
+                filter: "blur(10px)",
+              }
+        }
+        transition={{
+          duration: 0.55,
+          ease: [0.22, 1, 0.36, 1],
+          delay: slot.index * 0.06,
+        }}
+        className="absolute inset-0 h-full w-full object-cover"
+      />
 
       {/* 操作按钮 - 必须等图片 loaded 后再出现 */}
       <AnimatePresence>
@@ -254,7 +178,6 @@ function ImageSlotCard({
 // ==========================================
 export function EnhancedImageTaskCard({
   task,
-  plannedResultCount,
   isActive,
   onSelectTask,
   onPreviewImage,
@@ -262,7 +185,6 @@ export function EnhancedImageTaskCard({
   favorites = new Set(),
 }: {
   task: GenerationTask;
-  plannedResultCount?: number;
   isActive: boolean;
   onSelectTask: (taskId: string) => void;
   onPreviewImage: (image: ResultAsset, task: GenerationTask) => void;
@@ -272,34 +194,20 @@ export function EnhancedImageTaskCard({
   // 每张图片的加载状态
   const [imageStates, setImageStates] = useState<Map<string, InternalImageStatus>>(new Map());
 
-  // 判断任务是否正在生成中
-  const isGenerating = task.status === "pending" || task.status === "running";
+  const latestResults = useMemo(() => getLatestTaskResults(task), [task]);
 
-  // 计算需要渲染的 slot 数量
-  const slotCount = Math.max(
-    plannedResultCount ?? 0,
-    task.results.length,
-    isGenerating ? 1 : 0
-  );
-
-  // 创建 renderSlots
-  const renderSlots: ImageSlot[] = Array.from({ length: slotCount }).map((_, index) => {
-    const image = task.results[index];
-
-    return {
-      id: image?.assetId ?? `${task.taskId}-placeholder-${index}`,
-      index,
-      image,
-      isPlaceholder: !image,
-    };
-  });
+  const renderSlots: ImageSlot[] = latestResults.map((image, index) => ({
+    id: image.assetId,
+    index,
+    image,
+  }));
 
   // 当 task.results 变化时，为新图片初始化 loading 状态
   useEffect(() => {
     setImageStates((prev) => {
       const next = new Map(prev);
 
-      task.results.forEach((image) => {
+      latestResults.forEach((image) => {
         if (!next.has(image.assetId)) {
           next.set(image.assetId, "loading");
         }
@@ -307,7 +215,7 @@ export function EnhancedImageTaskCard({
 
       return next;
     });
-  }, [task.results]);
+  }, [latestResults]);
 
   // 重新生成时重置状态（根据 taskId 变化）
   useEffect(() => {
@@ -366,8 +274,7 @@ export function EnhancedImageTaskCard({
         </p>
       )}
 
-      {/* 图片网格 - 关键修改：不再判断 task.results.length > 0 */}
-      {slotCount > 0 && (
+      {renderSlots.length > 0 && (
         <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
           {renderSlots.map((slot) => {
             const isFavorite = slot.image ? favorites.has(slot.image.assetId) : false;

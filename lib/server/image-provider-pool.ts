@@ -360,6 +360,14 @@ export function isQiniuImageModel(model: string | undefined): boolean {
   )
 }
 
+function getQiniuModelFamily(model: string | undefined): 'gemini' | 'gpt' | null {
+  if (!model) return null
+  const lower = normalizeImageModelId(model)
+  if (lower.startsWith('gemini-')) return 'gemini'
+  if (lower.startsWith('openai/gpt-image-')) return 'gpt'
+  return null
+}
+
 export function isJimengImageModel(model: string | undefined): boolean {
   if (!model) return true
   const lower = model.trim().toLowerCase()
@@ -385,7 +393,12 @@ export function isImageProviderModelCompatible(
 ): boolean {
   const candidate = model || provider.model
   if (provider.type === 'google') return isGoogleImageModel(candidate)
-  if (provider.type === 'qiniu') return isQiniuImageModel(candidate)
+  if (provider.type === 'qiniu') {
+    if (!isQiniuImageModel(candidate)) return false
+    const requestedFamily = getQiniuModelFamily(model)
+    const providerFamily = getQiniuModelFamily(provider.model)
+    return !requestedFamily || !providerFamily || requestedFamily === providerFamily
+  }
   if (provider.type === 'jimeng') return isJimengImageModel(candidate)
   if (provider.type === 'volces') {
     if (!isVolcesImageModel(candidate)) return false
@@ -554,9 +567,9 @@ export function getProviderRateLimitKey(provider: ImageProvider): string {
 /**
  * 构建唯一凭证优先的加权列表。
  *
- * 同一把七牛 key 下可能配置了多个模型 provider；调度时它们共享同一条
- * credential lane，避免一个批次先把多个 shot 都压到同一把 key。第一轮
- * 先覆盖每条 lane，第二轮开始再按 weight 补齐高权重 lane。
+ * 同一把 key 下可能配置了多个模型 provider；调度时它们共享同一条
+ * credential lane，避免一个批次先把多个 shot 都压到同一把 key。每条 lane
+ * 使用当前模型实际命中的 provider 及其 weight，确保调度权重与 env 对齐。
  */
 function buildCredentialInterleavedList(
   providers: ImageProvider[],
@@ -594,10 +607,13 @@ function buildProviderDispatchLanes(
     groups.set(key, group)
   }
 
-  return Array.from(groups.values()).map((group) => ({
-    provider: pickPreferredProviderForModel(group, model),
-    weight: Math.max(...group.map((provider) => readProviderWeight(provider))),
-  }))
+  return Array.from(groups.values()).map((group) => {
+    const provider = pickPreferredProviderForModel(group, model)
+    return {
+      provider,
+      weight: readProviderWeight(provider),
+    }
+  })
 }
 
 function pickPreferredProviderForModel(

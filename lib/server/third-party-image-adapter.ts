@@ -26,6 +26,7 @@ interface ThirdPartyWorkflowInput {
   featureType: RunnableFeature
   workflowId: string
   inputImages: string[]
+  faceMaskImage?: string | null
   params: TaskParams
   /** 单 shot 成功后立刻回调（photo-fission 流式持久化使用，可选；其他 feature 不消费此字段） */
   onShotResult?: (result: ResultAsset) => Promise<void>
@@ -33,7 +34,7 @@ interface ThirdPartyWorkflowInput {
 
 const demoMode = process.env.IMAGE_API_DEMO === '1'
 
-// 默认主链路：全部走 Provider Pool（七牛优先、即梦按模型兼容兜底）。
+// 默认主链路：全部走 Provider Pool，按 env 中模型兼容的 provider 路由。
 const defaultImageModel = process.env.GOOGLE_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview'
 // 3 系列 + 2K/4K + 多图最坏情况下单图响应可达 5-8 分钟，默认 600s 留足缓冲。
 // 任何短于 480s 的配置都极可能在 2K 以上画质 + 多图场景下超时。
@@ -105,6 +106,7 @@ export async function runThirdPartyWorkflow(
     return runPhotoFissionPipeline({
       taskId: input.taskId,
       inputImages: input.inputImages,
+      faceMaskImage: input.faceMaskImage,
       params: input.params as PhotoFissionParams,
       apiKey: '',
       timeoutMs: defaultImageTimeoutMs,
@@ -125,7 +127,7 @@ async function runGoogleProviderEdits(input: ThirdPartyWorkflowInput) {
       ? (input.params as AiFashionPhotoParams).model
       : undefined
 
-  // 单图/元素类任务固定走 Provider Pool（七牛优先）。
+  // 单图/元素类任务固定走 Provider Pool（按 env 中兼容 provider 的顺序和可用性）。
   // fission 类任务仍由各自 pipeline 做多 provider 分发和 per-shot failover。
   const modelToUse = taskModel ?? defaultImageModel
   const providerChain = buildSingleImageProviderChain(modelToUse)
@@ -182,10 +184,7 @@ async function runGoogleProviderEdits(input: ThirdPartyWorkflowInput) {
 }
 
 function buildSingleImageProviderChain(model: string): ImageProvider[] {
-  const providers = getAvailableProvidersForModel(model)
-  const qiniuProviders = providers.filter((item) => item.type === 'qiniu')
-  const googleProviders = providers.filter((item) => item.type === 'google')
-  return [...qiniuProviders, ...googleProviders]
+  return getAvailableProvidersForModel(model)
 }
 
 function extractGoogleImageOptions(params: TaskParams) {

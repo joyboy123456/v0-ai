@@ -8,6 +8,7 @@ import {
 } from '@/lib/server/pose-fission-service'
 import {
   normalizePhotoFissionParams,
+  runPhotoFissionFaceRefine,
   runPhotoFissionPipeline,
 } from '@/lib/server/photo-fission-service'
 import { isLocalSuperAdminEnabled } from '@/lib/server/auth/local-auth-mode'
@@ -365,6 +366,9 @@ export async function createTask(input: {
     input.inputAssetIds,
   )
 
+  const effectiveUserId =
+    input.userId && input.userId.trim() ? input.userId : defaultUserId
+
   const missingAsset = input.inputAssetIds.find(
     (assetId) => !store.assets.has(assetId),
   )
@@ -372,8 +376,12 @@ export async function createTask(input: {
     throw new Error(`素材不存在：${missingAsset}`)
   }
 
-  const effectiveUserId =
-    input.userId && input.userId.trim() ? input.userId : defaultUserId
+  validatePhotoFissionFaceMaskAsset(
+    input.featureType,
+    normalizedParams,
+    effectiveUserId,
+  )
+
   const taskId = createId('task')
   const task: GenerationTask = {
     taskId,
@@ -424,6 +432,51 @@ function normalizeTaskParams(
   }
 
   return params
+}
+
+function validatePhotoFissionFaceMaskAsset(
+  featureType: FeatureType,
+  params: TaskParams,
+  userId: string,
+) {
+  if (featureType !== 'photo-fission') return
+  const photoParams = params as PhotoFissionParams
+  if (!photoParams.faceIdModelId) return
+
+  const faceMaskAssetId = photoParams.faceMaskAssetId?.trim()
+  if (!faceMaskAssetId) {
+    throw new Error('请先涂抹主图五官区域')
+  }
+
+  const asset = store.assets.get(faceMaskAssetId)
+  if (!asset) {
+    throw new Error(`人脸 mask 素材不存在：${faceMaskAssetId}`)
+  }
+  if (
+    !shouldBypassOwnership(userId) &&
+    (asset.userId ?? defaultUserId) !== userId
+  ) {
+    throw new Error(`人脸 mask 素材不存在：${faceMaskAssetId}`)
+  }
+}
+
+async function resolvePhotoFissionFaceMaskDataUrl(
+  params: PhotoFissionParams,
+): Promise<string | null> {
+  if (!params.faceIdModelId) return null
+  const faceMaskAssetId = params.faceMaskAssetId?.trim()
+  if (!faceMaskAssetId) {
+    throw new Error('请先涂抹主图五官区域')
+  }
+  const asset = store.assets.get(faceMaskAssetId)
+  if (!asset) {
+    throw new Error(`人脸 mask 素材不存在：${faceMaskAssetId}`)
+  }
+  const dataUrl = asset.dataUrl ?? (await resolveAssetToDataUrl(asset))
+  if (!dataUrl) {
+    throw new Error(`人脸 mask 素材无法读取：${faceMaskAssetId}`)
+  }
+  return dataUrl
 }
 
 function hydrateTaskInputAssets(task: GenerationTask): GenerationTask {
@@ -507,12 +560,16 @@ async function runTask(taskId: string) {
         onShotResult,
       })
     } else {
+      const faceMaskImage = isPhotoFission
+        ? await resolvePhotoFissionFaceMaskDataUrl(task.params as PhotoFissionParams)
+        : null
       results = await runThirdPartyWorkflow({
         taskId,
         featureType: task.featureType,
         workflowId: task.workflowId,
         inputImages,
         params: task.params,
+        faceMaskImage,
         onShotResult,
       })
     }
@@ -956,10 +1013,12 @@ export async function retryPhotoFissionShots(
     if (!inputImages.length) {
       throw new Error('原任务参考图已丢失，无法重跑')
     }
+    const faceMaskImage = await resolvePhotoFissionFaceMaskDataUrl(params)
 
     await runPhotoFissionPipeline({
       taskId,
       inputImages,
+      faceMaskImage,
       params,
       apiKey: process.env.GOOGLE_API_KEY ?? '',
       timeoutMs: Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000),
@@ -1007,6 +1066,221 @@ export async function retryPhotoFissionShots(
 
   const refreshed = store.tasks.get(taskId)
   return hydrateTaskInputAssets(refreshed ?? finalTask)
+}
+
+export async function regeneratePhotoFissionShot(
+  taskId: string,
+  shotId: string,
+  userId?: string,
+): Promise<GenerationTask> {
+  await ensureStoreReady()
+
+  const task = assertOwnedPhotoFissionTask(taskId, userId)
+  if (task.status === 'pending' || task.status === 'running') {
+    throw new Error('当前任务仍在生成中，暂不能重生单张')
+  }
+  const params = task.params as PhotoFissionParams
+  if (!Array.isArray(params.shotPlan) || !params.shotPlan.length) {
+    throw new Error('任务缺少 shotPlan，无法重生')
+  }
+  if (!params.shotPlan.some((shot) => shot.shotId === shotId)) {
+    throw new Error(`镜头 ${shotId} 不在原任务计划中`)
+  }
+  if (!task.results.some((result) => result.shotId === shotId)) {
+    throw new Error('仅已成功的图片支持重生这张')
+  }
+
+  const ownerUserId = task.userId ?? defaultUserId
+  updateTask(taskId, {
+    status: 'running',
+    progress: 72,
+    message: `正在重生 ${shotId}`,
+  })
+
+  try {
+    const inputImages = await resolveTaskInputImages(task)
+    if (!inputImages.length) {
+      throw new Error('原任务参考图已丢失，无法重生')
+    }
+    const faceMaskImage = await resolvePhotoFissionFaceMaskDataUrl(params)
+    await runPhotoFissionPipeline({
+      taskId,
+      inputImages,
+      faceMaskImage,
+      params,
+      apiKey: process.env.GOOGLE_API_KEY ?? '',
+      timeoutMs: Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000),
+      targetShotIds: [shotId],
+      resultAssetIdSuffix: createVariantSuffix('regen'),
+      onShotResult: async (result) => {
+        await persistOneResult(taskId, result, ownerUserId)
+      },
+    })
+  } catch (error) {
+    restoreTaskAfterVariantFailure(taskId, error, '重生这张失败')
+    throw error
+  }
+
+  return finishPhotoFissionVariantTask(taskId)
+}
+
+export async function refinePhotoFissionFace(
+  taskId: string,
+  assetId: string,
+  maskAssetId: string,
+  userId?: string,
+): Promise<GenerationTask> {
+  await ensureStoreReady()
+
+  const task = assertOwnedPhotoFissionTask(taskId, userId)
+  if (task.status === 'pending' || task.status === 'running') {
+    throw new Error('当前任务仍在生成中，暂不能重修脸')
+  }
+  const params = task.params as PhotoFissionParams
+  if (!params.faceIdModelId) {
+    throw new Error('当前任务未选择人像小卡，无法重修脸')
+  }
+
+  const sourceResult = task.results.find((item) => item.assetId === assetId)
+  if (!sourceResult) {
+    throw new Error('要重修的人像结果不存在')
+  }
+  const sourceAsset = store.assets.get(assetId)
+  if (!sourceAsset) {
+    throw new Error('要重修的人像结果素材不存在')
+  }
+  const maskAsset = store.assets.get(maskAssetId)
+  if (!maskAsset) {
+    throw new Error('人脸重修 mask 素材不存在')
+  }
+
+  const ownerUserId = task.userId ?? defaultUserId
+  if (
+    !shouldBypassOwnership(userId) &&
+    (maskAsset.userId ?? defaultUserId) !== ownerUserId
+  ) {
+    throw new Error('人脸重修 mask 素材不存在')
+  }
+
+  const faceIdAssetId = params.faceIdModelId
+  const faceIdAsset = store.assets.get(faceIdAssetId)
+  if (!faceIdAsset) {
+    throw new Error('原任务人像小卡已丢失，无法重修脸')
+  }
+
+  updateTask(taskId, {
+    status: 'running',
+    progress: 72,
+    message: `正在重修 ${sourceResult.shotId ?? '当前图片'} 的脸`,
+  })
+
+  try {
+    const baseImage = await resolveRequiredAssetToDataUrl(sourceAsset, '要重修的结果图')
+    const faceIdImage = await resolveRequiredAssetToDataUrl(faceIdAsset, '人像小卡')
+    const faceMaskImage = await resolveRequiredAssetToDataUrl(maskAsset, '重修脸 mask')
+    const result = await runPhotoFissionFaceRefine({
+      taskId,
+      params,
+      sourceResult,
+      baseImage,
+      faceIdImage,
+      faceMaskImage,
+      apiKey: process.env.GOOGLE_API_KEY ?? '',
+      resultAssetIdSuffix: createVariantSuffix('face_refine'),
+    })
+    await persistOneResult(taskId, result, ownerUserId)
+  } catch (error) {
+    restoreTaskAfterVariantFailure(taskId, error, '重修脸失败')
+    throw error
+  }
+
+  return finishPhotoFissionVariantTask(taskId)
+}
+
+async function resolveRequiredAssetToDataUrl(
+  asset: AssetRecord,
+  label: string,
+): Promise<string> {
+  const dataUrl = asset.dataUrl ?? (await resolveAssetToDataUrl(asset))
+  if (dataUrl) return dataUrl
+
+  throw new Error(
+    `重修脸所需素材无法读取：${label}（assetId=${asset.assetId}，url=${asset.fileUrl || '空'}）`,
+  )
+}
+
+function assertOwnedPhotoFissionTask(
+  taskId: string,
+  userId?: string,
+): GenerationTask {
+  const task = store.tasks.get(taskId)
+  if (!task) {
+    throw new Error('任务不存在')
+  }
+  const ownerUserId = task.userId ?? defaultUserId
+  if (
+    userId &&
+    userId.trim() &&
+    !shouldBypassOwnership(userId) &&
+    ownerUserId !== userId.trim()
+  ) {
+    throw new Error('任务不存在')
+  }
+  if (task.featureType !== 'photo-fission') {
+    throw new Error('仅服装大片裂变支持该操作')
+  }
+  return task
+}
+
+async function resolveTaskInputImages(task: GenerationTask): Promise<string[]> {
+  return (
+    await Promise.all(
+      task.inputAssetIds.map(async (assetId) => {
+        const asset = store.assets.get(assetId)
+        if (!asset) return null
+        if (asset.dataUrl) return asset.dataUrl
+        return resolveAssetToDataUrl(asset)
+      }),
+    )
+  ).filter((image): image is string => Boolean(image))
+}
+
+function createVariantSuffix(prefix: string): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+}
+
+function restoreTaskAfterVariantFailure(
+  taskId: string,
+  error: unknown,
+  fallbackMessage: string,
+) {
+  const task = store.tasks.get(taskId)
+  if (!task) return
+  const { status, message } = resolveTaskCompletion(task, task.results)
+  updateTask(taskId, {
+    status,
+    progress: 100,
+    message: task.results.length ? message : fallbackMessage,
+    errorMessage: error instanceof Error ? error.message : String(error),
+    finishedAt: new Date().toISOString(),
+  })
+}
+
+function finishPhotoFissionVariantTask(taskId: string): GenerationTask {
+  const task = store.tasks.get(taskId)
+  if (!task) {
+    throw new Error('任务在操作后丢失')
+  }
+  const { status, message } = resolveTaskCompletion(task, task.results)
+  updateTask(taskId, {
+    status,
+    progress: 100,
+    message,
+    errorMessage: status === 'success' ? undefined : task.errorMessage,
+    finishedAt: new Date().toISOString(),
+  })
+  const refreshed = store.tasks.get(taskId)
+  return hydrateTaskInputAssets(refreshed ?? task)
 }
 
 /**

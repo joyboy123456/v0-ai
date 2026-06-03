@@ -14,6 +14,7 @@ import {
   prepareImageForGenerationUpload,
   UploadBox,
 } from "./upload-components";
+import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
 import { cn, validateUploadSize } from "@/lib/utils";
 import {
   Popover,
@@ -149,6 +150,10 @@ export function LeftPanel({
     useState<UploadedImage | null>(null);
   const [photoFissionBackDetail, setPhotoFissionBackDetail] =
     useState<UploadedImage | null>(null);
+  const [photoFissionFaceMask, setPhotoFissionFaceMask] =
+    useState<UploadedImage | null>(null);
+  const [isFaceMaskPainterOpen, setIsFaceMaskPainterOpen] = useState(false);
+  const [isUploadingFaceMask, setIsUploadingFaceMask] = useState(false);
   const [photoFissionImageRatio, setPhotoFissionImageRatio] =
     useState<PhotoFissionImageRatio>("3:4");
   const [photoFissionResolution, setPhotoFissionResolution] =
@@ -182,6 +187,12 @@ export function LeftPanel({
         : fashionImage;
   const isPoseFission = feature === "pose-fission";
   const isAiFashionPhoto = feature === "ai-fashion-photo";
+
+  useEffect(() => {
+    if (!selectedFaceIdModel) {
+      setPhotoFissionFaceMask(null);
+    }
+  }, [selectedFaceIdModel]);
 
   useEffect(() => {
     if (!fashionRemixRequest) return;
@@ -349,6 +360,10 @@ export function LeftPanel({
         setError("请先上传参考图");
         return;
       }
+      if (selectedFaceIdModel && !photoFissionFaceMask) {
+        setError("请先涂抹主图五官区域");
+        return;
+      }
     } else if (!activeImage) {
       setError("请先上传图片");
       return;
@@ -407,6 +422,55 @@ export function LeftPanel({
       );
     } finally {
       setIsCreating(false);
+    }
+  };
+
+  const uploadPhotoFissionFaceMask = async (maskDataUrl: string) => {
+    if (!photoFissionMainImage) {
+      setError("请先上传主图");
+      return;
+    }
+    setIsUploadingFaceMask(true);
+    setError("");
+    try {
+      const blob = await (await fetch(maskDataUrl)).blob();
+      const formData = new FormData();
+      formData.append(
+        "file",
+        new File([blob], `photo-fission-face-mask-${Date.now()}.png`, {
+          type: "image/png",
+        }),
+      );
+      formData.append("width", String(photoFissionMainImage.width));
+      formData.append("height", String(photoFissionMainImage.height));
+      const response = await fetch("/api/assets/upload", {
+        method: "POST",
+        body: formData,
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(data.error ?? `上传人脸 mask 失败：HTTP ${response.status}`);
+      }
+      const data = (await response.json()) as {
+        assetId: string;
+        url: string;
+        fileName: string;
+        width?: number;
+        height?: number;
+      };
+      setPhotoFissionFaceMask({
+        assetId: data.assetId,
+        preview: data.url,
+        name: data.fileName,
+        width: data.width ?? photoFissionMainImage.width,
+        height: data.height ?? photoFissionMainImage.height,
+      });
+    } catch (maskError) {
+      setError(maskError instanceof Error ? maskError.message : "上传人脸 mask 失败");
+    } finally {
+      setIsUploadingFaceMask(false);
     }
   };
 
@@ -543,6 +607,7 @@ export function LeftPanel({
         shotPlan: [],
         resultCount: photoFissionResultCount,
         faceIdModelId: selectedFaceIdModel?.assetId ?? null,
+        faceMaskAssetId: selectedFaceIdModel ? photoFissionFaceMask?.assetId ?? null : null,
         plannerReasoningEnabled: photoFissionPlannerReasoningEnabled,
       };
     }
@@ -567,31 +632,36 @@ export function LeftPanel({
     throw new Error(`Unknown feature: ${feature}`);
   };
 
-  const submitDisabled = isCreating;
-  const submitLabel = isCreating ? "创建任务中..." : "立即生成";
+  const submitDisabled = isCreating || isUploadingFaceMask;
+  const submitLabel = isCreating
+    ? "创建任务中..."
+    : isUploadingFaceMask
+      ? "正在保存人脸 mask..."
+      : "立即生成";
 
   return (
-    <aside
-      className={cn(
-        "h-screen min-h-0 overflow-hidden bg-card border-r border-border flex flex-col",
-        isAiFashionPhoto ? "w-[460px]" : "w-[320px]",
-      )}
-    >
-      <div className="shrink-0 p-5 border-b border-border">
-        {!isPoseFission && (
-          <p className="text-xs text-muted-foreground">固定 Workflow</p>
-        )}
-        <h2 className="mt-1 text-lg font-semibold text-foreground">
-          {FEATURE_LABELS[feature]}
-        </h2>
-      </div>
-
-      <div
+    <>
+      <aside
         className={cn(
-          "min-h-0 flex-1 overflow-y-auto space-y-6",
-          isAiFashionPhoto ? "p-4" : "p-5",
+          "h-screen min-h-0 overflow-hidden bg-card border-r border-border flex flex-col",
+          isAiFashionPhoto ? "w-[460px]" : "w-[320px]",
         )}
       >
+        <div className="shrink-0 p-5 border-b border-border">
+          {!isPoseFission && (
+            <p className="text-xs text-muted-foreground">固定 Workflow</p>
+          )}
+          <h2 className="mt-1 text-lg font-semibold text-foreground">
+            {FEATURE_LABELS[feature]}
+          </h2>
+        </div>
+
+        <div
+          className={cn(
+            "min-h-0 flex-1 overflow-y-auto space-y-6",
+            isAiFashionPhoto ? "p-4" : "p-5",
+          )}
+        >
         {isPoseFission ? (
           <PoseFissionForm
             mainImage={poseMainImage}
@@ -668,11 +738,14 @@ export function LeftPanel({
                 helperText={helperText}
                 faceIdModels={faceIdModels}
                 selectedFaceIdModel={selectedFaceIdModel}
+                faceMaskImage={photoFissionFaceMask}
+                isUploadingFaceMask={isUploadingFaceMask}
                 onModelChange={setPhotoFissionModel}
                 onCategoryChange={setPhotoFissionCategory}
                 onChildrensCategoryChange={setPhotoFissionChildrensCategory}
                 onMainUploaded={(image) => {
                   setPhotoFissionMainImage(image);
+                  setPhotoFissionFaceMask(null);
                   if (!photoFissionRatioUserOverrideRef.current) {
                     setPhotoFissionImageRatio(
                       inferPhotoFissionRatio(image.width, image.height),
@@ -684,13 +757,18 @@ export function LeftPanel({
                     );
                   }
                 }}
-                onMainRemove={() => setPhotoFissionMainImage(null)}
+                onMainRemove={() => {
+                  setPhotoFissionMainImage(null);
+                  setPhotoFissionFaceMask(null);
+                }}
                 onFrontDetailUploaded={setPhotoFissionFrontDetail}
                 onFrontDetailRemove={() => setPhotoFissionFrontDetail(null)}
                 onBackDetailUploaded={setPhotoFissionBackDetail}
                 onBackDetailRemove={() => setPhotoFissionBackDetail(null)}
                 onSelectFaceIdModel={onChangeSelectedFaceIdModel}
                 onOpenFaceIdLibrary={onOpenFaceIdLibrary}
+                onOpenFaceMaskPainter={() => setIsFaceMaskPainterOpen(true)}
+                onClearFaceMask={() => setPhotoFissionFaceMask(null)}
                 onImageRatioChange={(value) => {
                   photoFissionRatioUserOverrideRef.current = true;
                   setPhotoFissionImageRatio(value);
@@ -708,24 +786,36 @@ export function LeftPanel({
             ) : null}
           </>
         )}
-      </div>
+        </div>
 
-      <div className="shrink-0 p-5 border-t border-border bg-card space-y-3 z-10">
-        {error && (
-          <p className="text-[13px] text-destructive flex items-center gap-1.5">
-            <X className="w-3.5 h-3.5" /> {error}
-          </p>
-        )}
-        <button
-          onClick={handleCreateTask}
-          disabled={submitDisabled}
-          className="w-full h-[40px] bg-primary text-primary-foreground rounded-md text-[13px] font-medium flex items-center justify-center gap-2 transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] hover:bg-primary/90 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
-        >
-          <Sparkles className="w-4 h-4 opacity-90" />
-          <span>{submitLabel}</span>
-        </button>
-      </div>
-    </aside>
+        <div className="shrink-0 p-5 border-t border-border bg-card space-y-3 z-10">
+          {error && (
+            <p className="text-[13px] text-destructive flex items-center gap-1.5">
+              <X className="w-3.5 h-3.5" /> {error}
+            </p>
+          )}
+          <button
+            onClick={handleCreateTask}
+            disabled={submitDisabled}
+            className="w-full h-[40px] bg-primary text-primary-foreground rounded-md text-[13px] font-medium flex items-center justify-center gap-2 transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] hover:bg-primary/90 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
+          >
+            <Sparkles className="w-4 h-4 opacity-90" />
+            <span>{submitLabel}</span>
+          </button>
+        </div>
+      </aside>
+      {photoFissionMainImage && (
+        <FaceMaskPainterDialog
+          open={isFaceMaskPainterOpen}
+          title="涂抹主图五官区域"
+          imageUrl={photoFissionMainImage.preview}
+          imageWidth={photoFissionMainImage.width}
+          imageHeight={photoFissionMainImage.height}
+          onOpenChange={setIsFaceMaskPainterOpen}
+          onComplete={uploadPhotoFissionFaceMask}
+        />
+      )}
+    </>
   );
 }
 
@@ -1495,6 +1585,8 @@ function PhotoFissionForm({
   helperText,
   faceIdModels = [],
   selectedFaceIdModel = null,
+  faceMaskImage = null,
+  isUploadingFaceMask = false,
   onModelChange,
   onCategoryChange,
   onChildrensCategoryChange,
@@ -1506,6 +1598,8 @@ function PhotoFissionForm({
   onBackDetailRemove,
   onSelectFaceIdModel = () => {},
   onOpenFaceIdLibrary = () => {},
+  onOpenFaceMaskPainter = () => {},
+  onClearFaceMask = () => {},
   onImageRatioChange,
   onResolutionChange,
   resultCount,
@@ -1524,6 +1618,8 @@ function PhotoFissionForm({
   helperText: string;
   faceIdModels?: CompanyModel[];
   selectedFaceIdModel?: CompanyModel | null;
+  faceMaskImage?: UploadedImage | null;
+  isUploadingFaceMask?: boolean;
   onModelChange: (value: FashionModelId) => void;
   onCategoryChange: (value: PhotoFissionCategory) => void;
   onChildrensCategoryChange: (value: PhotoFissionChildrensCategory) => void;
@@ -1535,6 +1631,8 @@ function PhotoFissionForm({
   onBackDetailRemove: () => void;
   onSelectFaceIdModel?: (model: CompanyModel | null) => void;
   onOpenFaceIdLibrary?: () => void;
+  onOpenFaceMaskPainter?: () => void;
+  onClearFaceMask?: () => void;
   onImageRatioChange: (value: PhotoFissionImageRatio) => void;
   onResolutionChange: (value: PhotoFissionResolution) => void;
   resultCount: PhotoFissionResultCount;
@@ -1639,6 +1737,54 @@ function PhotoFissionForm({
         onSelectModel={onSelectFaceIdModel}
         onOpenLibrary={onOpenFaceIdLibrary}
       />
+
+      {selectedFaceIdModel && (
+        <div className="rounded-lg border border-border bg-secondary p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm text-foreground">主图五官涂抹</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                手动涂抹主图眉眼鼻嘴区域，系统只按你的 mask 弱化原脸。
+              </p>
+              {faceMaskImage ? (
+                <p className="mt-2 text-xs text-primary">已保存人脸 mask</p>
+              ) : (
+                <p className="mt-2 text-xs text-destructive">生图前必须先涂抹五官区域</p>
+              )}
+            </div>
+            {faceMaskImage && (
+              <img
+                src={faceMaskImage.preview}
+                alt=""
+                className="h-12 w-12 rounded-md border border-border bg-white object-cover"
+              />
+            )}
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              disabled={!mainImage || isUploadingFaceMask}
+              onClick={onOpenFaceMaskPainter}
+              className="h-9 flex-1 rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground hover:border-primary/60 disabled:opacity-50"
+            >
+              {isUploadingFaceMask
+                ? "正在保存..."
+                : faceMaskImage
+                  ? "重新涂抹"
+                  : "涂抹五官区域"}
+            </button>
+            {faceMaskImage && (
+              <button
+                type="button"
+                onClick={onClearFaceMask}
+                className="h-9 rounded-md border border-border bg-card px-3 text-xs text-muted-foreground hover:border-destructive/60 hover:text-destructive"
+              >
+                清除
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <OptionSelector
         label="出图数量"
@@ -1854,7 +2000,7 @@ function inferPhotoFissionResolution(
   if (!Number.isFinite(maxSide) || maxSide <= 0) return "2k";
   if (maxSide >= 3000) return "4k";
   if (maxSide >= 1500) return "2k";
-  return "1k";
+  return "2k";
 }
 
 function FaceIdModelSelect({

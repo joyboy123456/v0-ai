@@ -7,7 +7,10 @@ __v0_jsx-dev-runtime.ts
 .vercel/
 
 # Environment variables
+# 本机开发配置只留在当前设备；在 .env.local 中固定 STORAGE_MODE=local。
+.env.local
 .env*.local
+.env.local.*
 
 # 含 bcrypt 密码 hash 的 seed SQL（每次 hash 不同，不入仓库）
 migrations/*_seed_*.sql

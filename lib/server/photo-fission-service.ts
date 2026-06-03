@@ -41,7 +41,7 @@ import {
   SUIT_STYLE_ANCHOR,
 } from './prompt-templates/suit-planner-system'
 import { appendFlatDetailReferenceLock } from './fission-flat-detail-lock'
-import { blurFaceRegion } from './face-blur'
+import { applyManualFaceMask } from './manual-face-mask'
 import { buildPlannerRulePlan } from './photo-fission-rule-engine'
 import {
   invokeShotPlanner,
@@ -77,6 +77,14 @@ const DRESS_ACTION_HISTORY_GENERATIONS = 3
 const recentSuitActionHistoryByKey = new Map<string, string[][]>()
 const recentDressActionHistoryByKey = new Map<string, string[][]>()
 const DEFAULT_PHOTO_FISSION_CONCURRENCY = 3
+
+function buildFaceIdSimilarityGuard(faceIdImageIndex: number): string {
+  return [
+    `人像小卡相似度是脸部最高优先级：输出人物第一眼必须能被识别为图${faceIdImageIndex}人像小卡里的同一张脸，而不是只保留性别、年龄、肤色或大概气质。`,
+    `不要生成通用 AI 脸、网红脸、娃娃脸、过度美颜脸、成人化脸或“更漂亮但不像图${faceIdImageIndex}”的脸；不要把图1原脸和图${faceIdImageIndex}混合成第三张陌生脸。`,
+    `即使是远景或动作镜头，也要保持图${faceIdImageIndex}的脸型骨架、眼鼻嘴眉比例、下颌线、颧骨和面部立体关系；脸部必须清晰自然，不能糊脸、低清、塑料皮或过度磨皮。`,
+  ].join('\n')
+}
 
 type PlannerPromptCard = {
   role: string
@@ -162,6 +170,13 @@ export function normalizePhotoFissionParams(
     typeof params.faceIdModelId === 'string' && params.faceIdModelId.trim()
       ? params.faceIdModelId.trim()
       : null
+  const faceMaskAssetId =
+    typeof params.faceMaskAssetId === 'string' && params.faceMaskAssetId.trim()
+      ? params.faceMaskAssetId.trim()
+      : null
+  if (faceIdModelId && !faceMaskAssetId) {
+    throw new Error('请先涂抹主图五官区域')
+  }
 
   const expectedAssetCount =
     1 + (hasFrontDetail ? 1 : 0) + (hasBackDetail ? 1 : 0) + (faceIdModelId ? 1 : 0)
@@ -201,6 +216,7 @@ export function normalizePhotoFissionParams(
     resultCount,
     referenceAssetKey: buildPhotoFissionReferenceAssetKey(inputAssetIds),
     faceIdModelId,
+    faceMaskAssetId,
     plannerReasoningEnabled,
   }
 }
@@ -540,6 +556,7 @@ function buildIdentityLockSection(
       '【人物呈现 IDENTITY — 五官脸型锁定模式】',
       '画面中的人物是图1里的同一个人。身材比例、帽子、发型、发色、发饰、头发长度、手持包、服装穿搭、肤色倾向与年龄感与图1保持一致。',
       `图${faceIdImageIndex}人像小卡只提供脸部核心特征，不提供帽子、发型、发饰、服装或穿搭。面部全部特征必须严格参考图${faceIdImageIndex}，但头发、帽子和发饰仍以图1为准。具体复刻维度：`,
+      buildFaceIdSimilarityGuard(faceIdImageIndex),
       `- 脸型：脸的形状（圆脸/方脸/鹅蛋脸/瓜子脸等）、下颌线弧度、颧骨高低、额头宽窄与发际线形状、下巴长短与尖圆、两腮宽窄`,
       `- 五官：眼形（包括双眼皮/单眼皮、眼角方向、眼睛大小与间距）、鼻型（鼻梁高低、鼻头大小、鼻翼宽窄）、嘴形（嘴唇厚薄、嘴角方向、嘴的大小）、眉形（眉毛粗细、弧度、浓淡）、耳朵形状`,
       `- 面部比例：五官在脸上的位置关系（三庭五眼比例）、面部立体感`,
@@ -822,6 +839,9 @@ function buildNegativeSection(
     `不改变这套服装的颜色、版型、材质、图案与 logo；${faceConstraint}画面场景按当前镜头的 SCENE 段执行并保持风格一致。`,
     '不要生成：文字、水印、品牌印章、多余人物、多宫格拼接，不要变成卡通/插画/动漫/3D 渲染风格。',
   ]
+  if (hasFaceIdModel && faceIdImageIndex) {
+    lines.push(buildFaceIdSimilarityGuard(faceIdImageIndex))
+  }
   // 童装二级品类有专属反向提示词时，追加到通用约束之后
   if (isSuitChildrensCategory(category, childrensCategory)) {
     lines.push(SUIT_NEGATIVE_ADDON)
@@ -837,6 +857,7 @@ function buildNegativeSection(
 export interface RunPhotoFissionPipelineOptions {
   taskId: string
   inputImages: string[]
+  faceMaskImage?: string | null
   params: PhotoFissionParams
   apiKey: string
   timeoutMs: number
@@ -850,6 +871,10 @@ export interface RunPhotoFissionPipelineOptions {
    * 不传或空数组时 pipeline 跑完整 shotPlan（向后兼容）。
    */
   targetShotIds?: string[]
+  /**
+   * 追加生成同一 shot 的新版本时使用，避免覆盖原 result asset。
+   */
+  resultAssetIdSuffix?: string
 }
 
 interface ShotRunResult {
@@ -857,6 +882,17 @@ interface ShotRunResult {
   result?: ResultAsset
   error?: string
   providerId?: string
+}
+
+export interface RunPhotoFissionFaceRefineOptions {
+  taskId: string
+  params: PhotoFissionParams
+  sourceResult: ResultAsset
+  baseImage: string
+  faceIdImage: string
+  faceMaskImage: string
+  apiKey: string
+  resultAssetIdSuffix: string
 }
 
 /**
@@ -893,27 +929,29 @@ export async function runPhotoFissionPipeline(
     throw new Error('服装大片裂变缺少参考图')
   }
 
-  // ---- 五官锁定：模糊主图脸部区域 ----
-  // 当选了人像小卡时，对主图（inputImages[0]）的脸部区域做高斯模糊，
-  // 强制图像生成模型只能从人像小卡获取五官信息。
+  // ---- 五官锁定：按用户手动 mask 弱化主图脸部区域 ----
+  // 手动 mask 是唯一脸部定位来源；不再自动识别人脸，避免误遮挡发型/发饰/服装。
   let inputImages = options.inputImages
   if (params.faceIdModelId && inputImages.length > 0) {
+    if (!options.faceMaskImage) {
+      throw new Error('请先涂抹主图五官区域')
+    }
     try {
-      const blurredMain = await blurFaceRegion(inputImages[0])
-      inputImages = [blurredMain, ...inputImages.slice(1)]
+      const maskedMain = await applyManualFaceMask(inputImages[0], options.faceMaskImage)
+      inputImages = [maskedMain, ...inputImages.slice(1)]
       logImageEvent(
         'face.blur',
         { traceId: taskId, taskId },
-        { stage: 'photo-fission', faceId: params.faceIdModelId },
+        { stage: 'photo-fission', faceId: params.faceIdModelId, mode: 'manual-mask' },
       )
-    } catch (blurError) {
-      // 模糊失败不阻塞主流程，降级使用原图
-      const reason = blurError instanceof Error ? blurError.message : String(blurError)
+    } catch (maskError) {
+      const reason = maskError instanceof Error ? maskError.message : String(maskError)
       logImageEvent(
         'face.blur-fallback',
         { traceId: taskId, taskId },
-        { stage: 'photo-fission', reason },
+        { stage: 'photo-fission', reason, mode: 'manual-mask' },
       )
+      throw maskError
     }
   }
 
@@ -983,6 +1021,7 @@ export async function runPhotoFissionPipeline(
         shots: groupShots,
         params,
         inputImages,
+        resultAssetIdSuffix: options.resultAssetIdSuffix,
         apiKey: provider.apiKey || options.apiKey,
         aspectRatio,
         imageSize,
@@ -1051,6 +1090,7 @@ export async function runPhotoFissionPipeline(
               shots,
               params,
               inputImages,
+              resultAssetIdSuffix: options.resultAssetIdSuffix,
               apiKey: provider.apiKey,
               aspectRatio,
               imageSize,
@@ -1084,12 +1124,92 @@ export async function runPhotoFissionPipeline(
   return successResults
 }
 
+export async function runPhotoFissionFaceRefine(
+  options: RunPhotoFissionFaceRefineOptions,
+): Promise<ResultAsset> {
+  if (!options.params.faceIdModelId) {
+    throw new Error('当前任务未选择人像小卡，无法重修脸')
+  }
+
+  const maskedBase = await applyManualFaceMask(options.baseImage, options.faceMaskImage)
+  const prompt = buildFaceRefinePrompt(options.sourceResult)
+  const providers = getAvailableProvidersForModel(options.params.model)
+  if (!providers.length) {
+    throw new Error(getNoAvailableProviderMessage(options.params.model))
+  }
+
+  let lastError: unknown
+  for (const provider of providers) {
+    try {
+      const result = await runImageEditViaProvider({
+        taskId: options.taskId,
+        provider,
+        fallbackApiKey: provider.apiKey || options.apiKey,
+        model: options.params.model,
+        prompt,
+        inputImages: [maskedBase, options.faceIdImage],
+        count: 1,
+        aspectRatio: options.params.imageRatio,
+        imageSize: options.params.resolution.toUpperCase(),
+        traceId: `${options.taskId}_${options.sourceResult.shotId ?? options.sourceResult.assetId}_face_refine`,
+        shotId: options.sourceResult.shotId,
+      })
+      const first = result[0]
+      if (!first) {
+        throw new Error('重修脸未返回图片')
+      }
+      const shotId = options.sourceResult.shotId ?? 'face_refine'
+      return {
+        ...first,
+        assetId: `result_${options.taskId}_${shotId}_${options.resultAssetIdSuffix}`,
+        label: options.sourceResult.label,
+        shotId: options.sourceResult.shotId,
+        finalPrompt: prompt,
+        metadata: {
+          ...(options.sourceResult.metadata ?? {}),
+          variantType: 'face-refine',
+          parentAssetId: options.sourceResult.assetId,
+        },
+      }
+    } catch (error) {
+      lastError = error
+      logImageEvent(
+        'pool.failover',
+        { traceId: options.taskId, taskId: options.taskId, shotId: options.sourceResult.shotId },
+        {
+          stage: 'photo-fission-face-refine',
+          failedProviderId: provider.id,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      )
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('重修脸失败')
+}
+
+function buildFaceRefinePrompt(sourceResult: ResultAsset): string {
+  return [
+    '图1是当前已生成的服装大片结果图，用户已用手动 mask 弱化了需要重修的人脸五官区域；图2是裁剪好的人像小卡。',
+    '只重修图1被 mask 影响的人脸区域，把脸部可识别身份严格修成图2人像小卡里的同一张脸，而不是做普通美颜或只让气质更接近。',
+    '脸部复刻重点：脸型骨架、下颌线、颧骨、额头宽窄、眼形和眼距、鼻梁鼻头鼻翼、嘴唇厚薄和嘴角、眉形、三庭五眼比例、肤色质感和发色倾向都以图2为准。',
+    '图1脸以外的内容必须保持不变：服装、姿势、身体比例、背景、光线、发型轮廓、刘海、头发长度、图1已有配饰和商品展示关系都不要改变。',
+    '只允许发色自然贴近图2；不要复制图2的发型、刘海、发长、服装或背景。',
+    '图1没有的帽子、发饰、头饰、眼镜、耳饰、手持道具绝对不要新增。',
+    '修复后的脸要真实自然，眼睛有清晰眼神光，皮肤保留真实纹理；避免不像图2的通用 AI 脸、网红脸、娃娃脸、过度美颜脸、成人化脸、糊脸、塑料皮、马赛克、圆形修补痕迹、缺牙、多牙、歪嘴和僵硬表情。',
+    sourceResult.finalPrompt ? `原图生成提示词参考：${sourceResult.finalPrompt}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 interface RunShotGroupOptions {
   taskId: string
   provider: ImageProvider
   shots: PhotoFissionShot[]
   params: PhotoFissionParams
   inputImages: string[]
+  resultAssetIdSuffix?: string
   apiKey: string
   aspectRatio: string
   imageSize: string
@@ -1110,6 +1230,7 @@ async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
     shots,
     params,
     inputImages,
+    resultAssetIdSuffix,
     apiKey,
     aspectRatio,
     imageSize,
@@ -1171,7 +1292,9 @@ async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
 
         const enriched: ResultAsset = {
           ...first,
-          assetId: `result_${taskId}_${shot.shotId}`,
+          assetId: `result_${taskId}_${shot.shotId}${
+            resultAssetIdSuffix ? `_${resultAssetIdSuffix}` : ''
+          }`,
           label: shot.label,
           shotId: shot.shotId,
           finalPrompt: shot.prompt,
@@ -1761,27 +1884,28 @@ function appendFaceIdLock(
 
   // 移除 planner 可能残留的"延续参考图"脸部指令，避免与锁定指令冲突
   let cleaned = prompt
-  cleaned = cleaned.replace(/脸型五官和人物身份延续参考图[。；]/g, '面部全部特征以图' + imgRef + '人像小卡为唯一基准。')
-  cleaned = cleaned.replace(/脸型五官延续参考图[。；]/g, '面部全部特征以图' + imgRef + '人像小卡为唯一基准。')
+  cleaned = cleaned.replace(/脸型五官和人物身份延续参考图[。；]/g, '面部全部特征和发色倾向以图' + imgRef + '人像小卡为唯一基准。')
+  cleaned = cleaned.replace(/脸型五官延续参考图[。；]/g, '面部全部特征和发色倾向以图' + imgRef + '人像小卡为唯一基准。')
   cleaned = cleaned.replace(/人物脸部必须严格延续参考图[：:][^。；]+[。；]/g, '')
-  cleaned = cleaned.replace(/脸部延续参考图[，,][^。；]+[。；]/g, '面部全部特征以图' + imgRef + '人像小卡为唯一基准。')
-  cleaned = cleaned.replace(/脸型五官保持一致/g, '脸型五官严格以图' + imgRef + '人像小卡为唯一基准')
-  cleaned = cleaned.replace(/面部仍保持参考图一致/g, '面部全部特征严格以图' + imgRef + '人像小卡为唯一基准')
-  cleaned = cleaned.replace(/脸部若可见仍保持参考图一致/g, '脸部若可见，全部特征严格以图' + imgRef + '人像小卡为唯一基准')
+  cleaned = cleaned.replace(/脸部延续参考图[，,][^。；]+[。；]/g, '面部全部特征和发色倾向以图' + imgRef + '人像小卡为唯一基准。')
+  cleaned = cleaned.replace(/脸型五官保持一致/g, '脸型五官和发色倾向严格以图' + imgRef + '人像小卡为唯一基准')
+  cleaned = cleaned.replace(/面部仍保持参考图一致/g, '面部全部特征和发色倾向严格以图' + imgRef + '人像小卡为唯一基准')
+  cleaned = cleaned.replace(/脸部若可见仍保持参考图一致/g, '脸部若可见，全部特征和发色倾向严格以图' + imgRef + '人像小卡为唯一基准')
   cleaned = cleaned.replace(/人物身份保持一致；TA[^。]*穿着[^。]*这套[^。]*。/g, (match) => {
-    return match + '面部全部特征（脸型+五官）以图' + imgRef + '人像小卡为唯一基准。'
+    return match + '面部全部特征（脸型+五官）和发色倾向以图' + imgRef + '人像小卡为唯一基准。'
   })
 
   // PREPEND：使用 Seedream 官方推荐的多图指令格式
   // 官方文档明确建议："清楚指明不同图像需要编辑/参考的对象及操作"
   // 开头用简洁替换指令，模型对开头指令权重最高
   const prepend = [
-    `多图参考分工：图${imgRef}只提供脸部核心特征（脸型、五官、面部比例、皮肤质感），图1提供帽子、发型、发饰、发色、头发长度、手持包、服装穿搭和场景光线。生成时只把图${imgRef}的脸部核心特征融合到图1人物身上，不要替换图1的帽子、发型、发饰、发色、头发长度、手持包或服装穿搭。面部必须与图${imgRef}一致：脸型形状、下颌线弧度、颧骨、眼形、鼻型、嘴形、眉形、面部三庭五眼比例和真实皮肤质感都以图${imgRef}为准；表情可以自然变化，但脸型骨骼结构和五官细节不改变。\n\n`,
+    `多图参考分工：图${imgRef}只提供脸部身份和发色倾向（脸型、五官、面部比例、皮肤质感、头发颜色倾向），不提供发型轮廓、刘海、发长、帽子、发饰、服装或穿搭。图1提供脸以外的造型和商品信息：发型轮廓、刘海、头发长度、图1已有配饰、服装穿搭、姿势、场景光线。生成时只把图${imgRef}的脸部核心特征和发色倾向融合到图1人物身上；不要复制图${imgRef}的发型、刘海、发饰或服装。图1没有的帽子、发饰、头饰、眼镜、耳饰、手持道具绝对不要新增。面部必须与图${imgRef}一致：脸型形状、下颌线弧度、颧骨、眼形、鼻型、嘴形、眉形、面部三庭五眼比例和真实皮肤质感都以图${imgRef}为准；表情可以自然变化，但脸型骨骼结构和五官细节不改变。\n\n`,
+    `${buildFaceIdSimilarityGuard(faceIdImageIndex)}\n\n`,
   ].join('')
 
   // APPEND：尾部用替换指令格式再次强调
   const append = [
-    `\n\n再次强调多图参考规则：脸部核心特征以图${imgRef}为准；帽子、发型、发饰、发色、头发长度、手持包、服装和穿搭以图1为准。图${imgRef}不能覆盖图1的头部配饰与发型，表情可自然丰富变化，但脸型、五官、面部比例和皮肤质感必须贴近图${imgRef}。`,
+    `\n\n再次强调多图参考规则：脸部核心特征和发色倾向以图${imgRef}为准，生成结果要像图${imgRef}人像小卡里的同一张脸，不能变成陌生的通用漂亮脸；发型轮廓、刘海、头发长度、图1已有配饰、服装、姿势和背景以图1为准。图${imgRef}不能覆盖图1的发型结构、已有头部配饰或穿搭；图1没有的头饰、发饰、眼镜、耳饰和手持道具不得新增。`,
   ].join('')
 
   return `${prepend}${cleaned.trim()}${append}`

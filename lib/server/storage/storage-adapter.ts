@@ -7,9 +7,10 @@
  * 路径约定：
  * - local 模式：
  *   - 默认根目录：`public/generated/{bucket}/{userId}/{filename}`
- *     publicUrl = `/generated/{bucket}/{userId}/{filename}`
+ *     publicUrl = `/local-assets/{bucket}/{userId}/{filename}`
  *   - 设置 `LOCAL_IMAGE_ROOT` 后：`{LOCAL_IMAGE_ROOT}/{bucket}/{userId}/{filename}`
  *     publicUrl = `/local-assets/{bucket}/{userId}/{filename}`
+ *   - 历史 `/generated/...` URL 仍可被服务端读取和兼容路由访问
  *   - 匿名用户不带 `{userId}` 段
  * - oss 模式：
  *   - key = `yibai/{userId}/{bucket}/{filename}`
@@ -100,10 +101,6 @@ function readLocalImageRootDir(): string {
   return path.resolve(workspaceRoot, raw)
 }
 
-function isCustomLocalImageRoot(): boolean {
-  return readLocalImageRootDir() !== publicGeneratedDir
-}
-
 function parseDataUrl(
   dataUrl: string,
 ): { mime: string; buffer: Buffer } | null {
@@ -143,10 +140,7 @@ function buildLocalRelativePath(
 }
 
 function buildLocalPublicUrl(relativePath: string): string {
-  if (isCustomLocalImageRoot()) {
-    return `${localAssetPublicPrefix}/${relativePath}`
-  }
-  return `/generated/${relativePath}`
+  return `${localAssetPublicPrefix}/${relativePath}`
 }
 
 function normalizeLocalImageKey(
