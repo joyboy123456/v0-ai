@@ -17,6 +17,7 @@ import { GoogleImageError } from './google-image-retry'
 import { runQiniuImageEdit } from './qiniu-image-adapter'
 import { runJimengImageEdit } from './jimeng-image-adapter'
 import { runVolcesImageEdit } from './volces-image-adapter'
+import { runLaozhangImageEdit } from './laozhang-image-adapter'
 
 export interface ProviderImageEditInput {
   taskId: string
@@ -48,6 +49,25 @@ export async function runImageEditViaProvider(
 
   try {
     switch (provider.type) {
+      case 'laozhang':
+        return await runLaozhangImageEdit({
+          taskId: input.taskId,
+          apiKey,
+          model: input.model || provider.model || '',
+          timeoutMs,
+          prompt: input.prompt,
+          inputImages: input.inputImages,
+          count: input.count,
+          aspectRatio: input.aspectRatio,
+          imageSize: input.imageSize,
+          traceId: input.traceId,
+          shotId: input.shotId,
+          providerId: provider.id,
+          rateLimitKey,
+          maxIpm: provider.maxIpm,
+          maxRpm: provider.maxRpm,
+        })
+
       case 'qiniu':
         return await runQiniuImageEdit({
           taskId: input.taskId,

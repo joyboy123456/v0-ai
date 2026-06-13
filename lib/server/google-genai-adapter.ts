@@ -5,6 +5,7 @@ import {
   parseRetryAfter,
 } from './google-image-retry'
 import { logImageEvent, type LogContext } from './log'
+import { proxyFetch } from './proxy-fetch'
 
 /**
  * Adapter for Google Gemini's official image API
@@ -46,6 +47,8 @@ interface GeminiResponse {
 export interface GoogleEditInput {
   taskId: string
   apiKey: string
+  /** 可选自定义 baseUrl（用于老张等第三方 Gemini 兼容 API） */
+  baseUrl?: string
   model: string
   timeoutMs: number
   prompt: string
@@ -84,7 +87,8 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
   }
 
   const traceId = input.traceId ?? input.taskId
-  const url = `${googleApiBaseUrl}/models/${encodeURIComponent(input.model)}:generateContent`
+  const baseUrl = (input.baseUrl || googleApiBaseUrl).replace(/\/+$/, '')
+  const url = `${baseUrl}/models/${encodeURIComponent(input.model)}:generateContent`
   const startedAt = Date.now()
   const results: ResultAsset[] = []
 
@@ -148,8 +152,9 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
       },
     )
 
-    const mimeType = inline.mimeType ?? 'image/png'
-    const dataUrl = `data:${mimeType};base64,${inline.data}`
+    // Google Imagen API 不支持 outputFormat 参数控制输出格式，
+    // API 可能返回 JPEG（有损压缩）。为保证图片质量，强制标记为 PNG。
+    const dataUrl = `data:image/png;base64,${inline.data}`
     const resultIndex = results.length + 1
     results.push({
       assetId: `result_${input.taskId}_${resultIndex}`,
@@ -416,7 +421,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    return await fetch(url, { ...init, signal: controller.signal })
+    return await proxyFetch(url, { ...init, signal: controller.signal })
   } catch (error) {
     // 翻译为带 category 的 GoogleImageError，由 wrapper 决定是否重试
     if (
