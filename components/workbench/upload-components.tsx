@@ -21,7 +21,7 @@ interface PreparedGenerationUpload {
   file: File;
   width: number;
   height: number;
-  optimized: boolean;
+  optimized: false; // 始终为 false，不再进行优化
 }
 
 interface LoadedImage {
@@ -31,8 +31,9 @@ interface LoadedImage {
   release: () => void;
 }
 
-const GENERATION_UPLOAD_MAX_SIDE = 1600;
-const GENERATION_UPLOAD_JPEG_QUALITY = 0.8;
+// 以下常量已废弃，保留仅为向后兼容
+const GENERATION_UPLOAD_MAX_SIDE = 2048;
+const GENERATION_UPLOAD_JPEG_QUALITY = 0.98;
 const GENERATION_UPLOAD_MIME_TYPE = "image/jpeg";
 const OPTIMIZABLE_GENERATION_MIME_TYPES = new Set([
   "image/jpeg",
@@ -45,6 +46,7 @@ export async function prepareImageForGenerationUpload(
   file: File,
   optimizeForGeneration = false,
 ): Promise<PreparedGenerationUpload> {
+  // 不再进行任何压缩或优化，直接读取原始尺寸后返回
   const loaded = await loadImageFromFile(file).catch(() => null);
   if (!loaded) {
     return {
@@ -58,94 +60,15 @@ export async function prepareImageForGenerationUpload(
   const { image, width, height, release } = loaded;
 
   try {
-    if (!optimizeForGeneration || !canOptimizeImage(file)) {
-      return {
-        file,
-        width,
-        height,
-        optimized: false,
-      };
-    }
-
-    const canvas = document.createElement("canvas");
-    if (
-      typeof canvas.getContext !== "function" ||
-      typeof canvas.toBlob !== "function"
-    ) {
-      return {
-        file,
-        width,
-        height,
-        optimized: false,
-      };
-    }
-
-    const scale = Math.min(1, GENERATION_UPLOAD_MAX_SIDE / Math.max(width, height));
-    const targetWidth = Math.max(1, Math.round(width * scale));
-    const targetHeight = Math.max(1, Math.round(height * scale));
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return {
-        file,
-        width,
-        height,
-        optimized: false,
-      };
-    }
-
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, targetWidth, targetHeight);
-    context.drawImage(image, 0, 0, targetWidth, targetHeight);
-
-    const blob = await canvasToBlob(
-      canvas,
-      GENERATION_UPLOAD_MIME_TYPE,
-      GENERATION_UPLOAD_JPEG_QUALITY,
-    );
-    if (!blob || blob.size <= 0) {
-      return {
-        file,
-        width,
-        height,
-        optimized: false,
-      };
-    }
-
-    if (blob.size >= file.size && targetWidth === width && targetHeight === height) {
-      return {
-        file,
-        width,
-        height,
-        optimized: false,
-      };
-    }
-
-    const optimizedFile = new File(
-      [blob],
-      replaceFileExtension(file.name, ".jpg"),
-      {
-        type: GENERATION_UPLOAD_MIME_TYPE,
-        lastModified: file.lastModified,
-      },
-    );
-
     return {
-      file: optimizedFile,
-      width: targetWidth,
-      height: targetHeight,
-      optimized: true,
+      file,
+      width,
+      height,
+      optimized: false,
     };
   } finally {
     release();
   }
-}
-
-function canOptimizeImage(file: File) {
-  const mimeType = file.type.toLowerCase();
-  return OPTIMIZABLE_GENERATION_MIME_TYPES.has(mimeType);
 }
 
 function loadImageFromFile(file: File): Promise<LoadedImage> {
@@ -180,21 +103,6 @@ function loadImageFromFile(file: File): Promise<LoadedImage> {
   });
 }
 
-function canvasToBlob(
-  canvas: HTMLCanvasElement,
-  type: string,
-  quality: number,
-): Promise<Blob | null> {
-  return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
-}
-
-function replaceFileExtension(fileName: string, extension: string) {
-  const safeName = fileName.trim() || "image";
-  return /\.[a-z0-9]+$/i.test(safeName)
-    ? safeName.replace(/\.[a-z0-9]+$/i, extension)
-    : `${safeName}${extension}`;
-}
-
 export function UploadBox({
   label,
   helper,
@@ -216,7 +124,8 @@ export function UploadBox({
 
     if (!file) return;
 
-    const sizeError = optimizeForGeneration ? null : validateUploadSize(file);
+    // 始终验证原始文件大小，即使开启了优化
+    const sizeError = validateUploadSize(file);
     if (sizeError) {
       setError(sizeError);
       return;
