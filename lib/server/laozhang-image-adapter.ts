@@ -20,13 +20,13 @@
  * - doubao-seedream-5.0-lite → seedream-4-5-251128 (映射到最新版)
  *
  * 关键：Gemini 模型必须使用 Google adapter（Google 原生格式），
- * GPT/SeeDream 模型使用 Qiniu adapter（OpenAI 格式）。
+ * GPT/SeeDream 模型使用 OpenAI adapter（OpenAI 格式）。
  */
 
 import type { ResultAsset } from '@/lib/types'
-import type { QiniuEditInput } from './qiniu-image-adapter'
+import type { OpenAIEditInput } from './openai-image-adapter'
 import type { GoogleEditInput } from './google-genai-adapter'
-import { runQiniuImageEdit } from './qiniu-image-adapter'
+import { runOpenAIImageEdit } from './openai-image-adapter'
 import { runGoogleImageEdit } from './google-genai-adapter'
 
 const LAOZHANG_GOOGLE_BASE_URL = 'https://api.laozhang.ai/v1beta'
@@ -67,12 +67,19 @@ export interface LaozhangEditInput {
  *
  * 关键：根据模型类型选择正确的 adapter：
  * - Gemini 模型 → runGoogleImageEdit（Google 原生格式，文生图和图生图都走 generateContent 端点）
- * - GPT/SeeDream 模型 → runQiniuImageEdit（OpenAI Images API 格式）
+ * - GPT/SeeDream 模型 → runOpenAIImageEdit（OpenAI Images API 格式）
  */
 export async function runLaozhangImageEdit(input: LaozhangEditInput): Promise<ResultAsset[]> {
   // 映射模型 ID
   const originalModel = input.model.trim().toLowerCase()
   const mappedModel = MODEL_ID_MAPPING[originalModel] || input.model
+
+  console.log('[laozhang-adapter] 进入老张 adapter', {
+    taskId: input.taskId,
+    originalModel,
+    mappedModel,
+    inputImagesCount: input.inputImages.length,
+  })
 
   // 判断模型类型
   const isGeminiModel = mappedModel.startsWith('gemini-')
@@ -100,9 +107,9 @@ export async function runLaozhangImageEdit(input: LaozhangEditInput): Promise<Re
 
     return runGoogleImageEdit(googleInput)
   } else {
-    // GPT/SeeDream 模型：使用 OpenAI Images API 格式（runQiniuImageEdit）
+    // GPT/SeeDream 模型：使用 OpenAI Images API 格式（runOpenAIImageEdit）
     const baseUrl = 'https://api.laozhang.ai'
-    const qiniuInput: QiniuEditInput = {
+    const qiniuInput: OpenAIEditInput = {
       taskId: input.taskId,
       apiKey: input.apiKey,
       baseUrl,
@@ -121,7 +128,7 @@ export async function runLaozhangImageEdit(input: LaozhangEditInput): Promise<Re
       maxRpm: input.maxRpm,
     }
 
-    return runQiniuImageEdit(qiniuInput)
+    return runOpenAIImageEdit(qiniuInput)
   }
 }
 

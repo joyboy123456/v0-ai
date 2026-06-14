@@ -15,7 +15,7 @@
 
 import { logImageEvent } from './log'
 
-export type ImageProviderType = 'google' | 'qiniu' | 'jimeng' | 'volces' | 'laozhang'
+export type ImageProviderType = 'google' | 'openai' | 'jimeng' | 'volces' | 'laozhang'
 
 export interface ImageProvider {
   /** 唯一标识，用于日志、节流桶隔离和配置引用 */
@@ -24,7 +24,7 @@ export interface ImageProvider {
   type: ImageProviderType
   /** API 凭证 */
   apiKey: string
-  /** 可选 API base URL（七牛 Gemini 默认 api.qnaigc.com，GPT 图像默认 openai.qiniu.com） */
+  /** 可选 API base URL（不同模型可能有不同的默认地址） */
   baseUrl?: string
   /** 可选模型覆盖（不传走 env 默认） */
   model?: string
@@ -177,8 +177,8 @@ function buildDefaultQiniuProvider(): ImageProvider | null {
   if (!apiKey) return null
 
   return {
-    id: 'qiniu-default',
-    type: 'qiniu',
+    id: 'openai-default',
+    type: 'openai',
     apiKey,
     baseUrl: process.env.QINIU_IMAGE_BASE_URL,
     model: process.env.QINIU_IMAGE_MODEL ?? 'openai/gpt-image-2',
@@ -405,7 +405,7 @@ export function isImageProviderModelCompatible(
 ): boolean {
   const candidate = model || provider.model
   if (provider.type === 'google') return isGoogleImageModel(candidate)
-  if (provider.type === 'qiniu') {
+  if (provider.type === 'openai') {
     if (!isQiniuImageModel(candidate)) return false
     const requestedFamily = getQiniuModelFamily(model)
     const providerFamily = getQiniuModelFamily(provider.model)
@@ -428,9 +428,31 @@ export function isImageProviderModelCompatible(
 export function getAvailableProvidersForModel(
   model: string | undefined,
 ): ImageProvider[] {
-  return getAvailableProviders().filter((provider) =>
+  const allAvailable = getAvailableProviders()
+  const compatible = allAvailable.filter((provider) =>
     isImageProviderModelCompatible(provider, model),
   )
+
+  // 调试日志：记录 provider 匹配情况
+  console.log('[provider-pool] getAvailableProvidersForModel', {
+    model,
+    allAvailableCount: allAvailable.length,
+    allAvailable: allAvailable.map(p => ({
+      id: p.id,
+      type: p.type,
+      model: p.model,
+      hasApiKey: Boolean(p.apiKey),
+      compatible: isImageProviderModelCompatible(p, model)
+    })),
+    compatibleCount: compatible.length,
+    compatible: compatible.map(p => ({ id: p.id, type: p.type })),
+  })
+
+  if (compatible.length === 0 && allAvailable.length > 0) {
+    console.warn('[provider-pool] 模型匹配失败，无可用 provider')
+  }
+
+  return compatible
 }
 
 export function getNoAvailableProviderMessage(model: string | undefined): string {
@@ -439,14 +461,14 @@ export function getNoAvailableProviderMessage(model: string | undefined): string
   const lower = model.trim().toLowerCase()
   if (lower.startsWith('gpt-image-') || lower.startsWith('openai/gpt-image-')) {
     const providers = getAllProviders()
-    const qiniuProviders = providers.filter((provider) => provider.type === 'qiniu')
+    const qiniuProviders = providers.filter((provider) => provider.type === 'openai')
     const availableQiniuProviders = getAvailableProviders().filter(
-      (provider) => provider.type === 'qiniu',
+      (provider) => provider.type === 'openai',
     )
 
     return [
       `没有可用的生图渠道支持模型 ${model}`,
-      'GPT Image 2 只走七牛云 qiniu 渠道，也不能落到 Google 官方 adapter',
+      'GPT Image 2 只走 OpenAI 格式的渠道（qiniu type），不能落到 Google 官方 adapter',
       '请确认 IMAGE_PROVIDERS 中至少有一个 type="qiniu" 且 apiKey 不为空的 provider，或配置 QINIU_IMAGE_API_KEY',
       `当前已加载 qiniu provider ${qiniuProviders.length} 个，可用 ${availableQiniuProviders.length} 个`,
       '如果刚修改过 .env.local，请重启 pnpm dev 让 Next.js 重新读取环境变量',

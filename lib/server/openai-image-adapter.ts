@@ -1,21 +1,27 @@
 /**
- * 七牛云 AI 大模型推理 — 图像生成 Adapter。
+ * OpenAI Images API 格式通用 Adapter。
  *
- * 七牛云 OpenAI 兼容接口：
- * - Base URL: Gemini 用 https://api.qnaigc.com，GPT 图像用 https://openai.qiniu.com
+ * 本文件实现了 OpenAI Images API 标准接口的封装，可被多个渠道复用：
+ * 1. 老张 API OpenAI 兼容接口
+ * 2. 老张 API（GPT/SeeDream 模型）
+ * 3. 其他任何遵循 OpenAI Images API 格式的服务商
+ *
+ * 接口规范：
  * - 文生图端点: POST /v1/images/generations
  * - 图生图端点: POST /v1/images/edits
  * - 鉴权: Authorization: Bearer <API_KEY>
- * - Gemini: { model, prompt, image?, image_config? }
- * - GPT: { model: "openai/gpt-image-*", prompt, image?, size?, quality? }
- * - 响应: { data: [{ b64_json }], output_format, usage }
+ * - 请求格式: { model, prompt, image?, size?, quality?, ... }
+ * - 响应格式: { data: [{ b64_json }], output_format, usage }
+ *
+ * 支持的模型系列：
+ * - gemini-* (Gemini 系列，走 Google 格式的老张 API端点)
+ * - gpt-image-* / openai/gpt-image-* (GPT Image 系列)
+ * - seedream-* / doubao-* (SeeDream 系列)
  *
  * 注意：
  * - 不支持 `n` 参数，每次调用只生成 1 张，count > 1 时串行循环
- * - 本项目只允许七牛侧 gemini-* 与 openai/gpt-image-* 图像模型
  * - image_config.aspect_ratio 支持 1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9
  * - image_config.image_size 支持 1K / 2K / 4K
- * - 默认模型: gemini-3.0-pro-image-preview
  *
  * 错误分类复用 GoogleImageError 体系，便于 retry / throttle / failover 统一处理。
  */
@@ -29,31 +35,31 @@ import {
 import { resolveImageSize } from './image-size-policy'
 import { logImageEvent, type LogContext } from './log'
 
-const QINIU_GEMINI_DEFAULT_BASE_URL = 'https://api.qnaigc.com'
-const QINIU_GPT_DEFAULT_BASE_URL = 'https://openai.qiniu.com'
-const QINIU_DEFAULT_MODEL = 'gemini-3.0-pro-image-preview'
+const OPENAI_GEMINI_DEFAULT_BASE_URL = 'https://api.qnaigc.com'
+const OPENAI_GPT_DEFAULT_BASE_URL = 'https://openai.openai.com'
+const OPENAI_DEFAULT_MODEL = 'gemini-3.0-pro-image-preview'
 const GOOGLE_GEMINI_PRO_IMAGE_MODEL = 'gemini-3-pro-image-preview'
-const QINIU_GENERATIONS_PATH = '/v1/images/generations'
-const QINIU_EDITS_PATH = '/v1/images/edits'
+const OPENAI_GENERATIONS_PATH = '/v1/images/generations'
+const OPENAI_EDITS_PATH = '/v1/images/edits'
 
-type QiniuModelFamily = 'gemini' | 'gpt'
+type OpenAIModelFamily = 'gemini' | 'gpt'
 
-interface ResolvedQiniuModel {
+interface ResolvedOpenAIModel {
   id: string
-  family: QiniuModelFamily
+  family: OpenAIModelFamily
 }
 
-export interface QiniuEditInput {
+export interface OpenAIEditInput {
   taskId: string
   apiKey: string
-  /** 七牛云 API base URL（默认 https://api.qnaigc.com） */
+  /** 老张 API API base URL（默认 https://api.qnaigc.com） */
   baseUrl?: string
   model: string
   timeoutMs: number
   prompt: string
   /** 输入图片（data URL 数组）；非空时自动进入图生图模式 */
   inputImages: string[]
-  /** 要生成的图片数量（七牛云不支持 n 参数，会串行调用） */
+  /** 要生成的图片数量（老张 API不支持 n 参数，会串行调用） */
   count: number
   /** 可选宽高比（如 "1:1"、"3:4"） */
   aspectRatio?: string
@@ -71,15 +77,15 @@ export interface QiniuEditInput {
   maxRpm?: number
 }
 
-interface QiniuImageItem {
+interface OpenAIImageItem {
   url?: string
   b64_json?: string
   revised_prompt?: string
 }
 
-interface QiniuImageResponse {
+interface OpenAIImageResponse {
   created?: number
-  data?: QiniuImageItem[]
+  data?: OpenAIImageItem[]
   output_format?: string
   usage?: {
     total_tokens?: number
@@ -94,39 +100,54 @@ interface QiniuImageResponse {
 }
 
 /**
- * 通过七牛云 images 接口生成图片。
+ * 通过老张 API images 接口生成图片。
  *
  * inputImages 非空时自动作为 image 字段传入（图生图模式）；
  * 空数组时走纯文生图。
  *
- * count > 1 时串行循环调用（七牛云不支持批量 n 参数）。
+ * count > 1 时串行循环调用（老张 API不支持批量 n 参数）。
  */
-export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAsset[]> {
+export async function runOpenAIImageEdit(input: OpenAIEditInput): Promise<ResultAsset[]> {
   if (!input.apiKey) {
     throw new GoogleImageError({
       category: 'auth_failed',
-      message: '七牛云 API Key 未配置',
+      message: '老张 API API Key 未配置',
       retryable: false,
     })
   }
 
-  const resolvedModel = resolveQiniuModel(input.model || QINIU_DEFAULT_MODEL)
+  const resolvedModel = resolveOpenAIModel(input.model || OPENAI_DEFAULT_MODEL)
   const baseUrl = (
-    input.baseUrl || resolveQiniuDefaultBaseUrl(resolvedModel)
+    input.baseUrl || resolveOpenAIDefaultBaseUrl(resolvedModel)
   ).replace(/\/+$/, '')
   const model = resolvedModel.id
-  const endpointPath =
-    input.inputImages.length > 0 ? QINIU_EDITS_PATH : QINIU_GENERATIONS_PATH
+
+  // SeeDream 模型始终使用 /v1/images/generations 端点
+  // 图改图通过 image 参数区分，不使用 /edits 端点
+  const isSeedreamModel = model.startsWith('seedream-')
+  const endpointPath = isSeedreamModel
+    ? OPENAI_GENERATIONS_PATH  // SeeDream: 始终用 generations
+    : (input.inputImages.length > 0 ? OPENAI_EDITS_PATH : OPENAI_GENERATIONS_PATH)
+
   const traceId = input.traceId ?? input.taskId
   const startedAt = Date.now()
   const results: ResultAsset[] = []
+
+  console.log('[openai-adapter] 请求配置', {
+    taskId: input.taskId,
+    model,
+    modelFamily: resolvedModel.family,
+    baseUrl,
+    fullUrl: `${baseUrl}${endpointPath}`,
+    hasInputImages: input.inputImages.length > 0,
+  })
 
   logImageEvent(
     'gimg.attempt',
     { traceId, taskId: input.taskId, shotId: input.shotId },
     {
       stage: 'enter',
-      adapter: 'qiniu',
+      adapter: 'openai',
       model,
       modelFamily: resolvedModel.family,
       count: input.count,
@@ -137,8 +158,8 @@ export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAs
     },
   )
 
-  // 串行循环：七牛云不支持 n 参数
-  for (let i = 0; i < input.count; i++) {
+  // 并发生成：提升速度（原先串行 4 个镜头需要 4 分钟，现在并发只需 1 分钟）
+  const generateTasks = Array.from({ length: input.count }, (_, i) => {
     const iterTraceId = input.count > 1 ? `${traceId}_v${i + 1}` : traceId
     const ctx: LogContext = {
       traceId: iterTraceId,
@@ -146,11 +167,11 @@ export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAs
       shotId: input.shotId,
     }
 
-    const data = await callGoogleImageWithRetry(
+    return callGoogleImageWithRetry(
       async (attempt) => {
         const callStart = Date.now()
         logImageEvent('gimg.attempt', { ...ctx, attempt }, {
-          adapter: 'qiniu',
+          adapter: 'openai',
           model,
           modelFamily: resolvedModel.family,
           iteration: i + 1,
@@ -165,27 +186,27 @@ export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAs
               'content-type': 'application/json',
               authorization: `Bearer ${input.apiKey}`,
             },
-            body: JSON.stringify(buildQiniuRequestBody(input, resolvedModel)),
+            body: JSON.stringify(buildOpenAIRequestBody(input, resolvedModel)),
           },
           input.timeoutMs,
         )
 
-        const data = (await readJsonResponse(response)) as QiniuImageResponse
+        const data = (await readJsonResponse(response)) as OpenAIImageResponse
         if (!response.ok) {
-          throw buildQiniuHttpError(response, data)
+          throw buildOpenAIHttpError(response, data)
         }
 
         if (!data.data?.length) {
           throw new GoogleImageError({
             category: 'empty_output',
-            message: '七牛云 API 未返回结果图片',
+            message: '老张 API API 未返回结果图片',
             retryable: true,
           })
         }
 
         const usage = data.usage
         logImageEvent('gimg.success', { ...ctx, attempt }, {
-          adapter: 'qiniu',
+          adapter: 'openai',
           tookMs: Date.now() - callStart,
           items: data.data.length,
           outputFormat: data.output_format,
@@ -209,7 +230,7 @@ export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAs
         maxRpm: input.maxRpm,
       },
       {
-        // 七牛云中转：server_error(502/503) / rate_limit(429) 第一次失败就交给上层
+        // 老张 API中转：server_error(502/503) / rate_limit(429) 第一次失败就交给上层
         // pool 切到下一个 provider，避免在同一个抽风渠道里重试 4 次浪费 30s+
         perCategoryMaxAttempts: {
           server_error: 1,
@@ -217,7 +238,13 @@ export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAs
         },
       },
     )
+  })
 
+  // 等待所有任务并发完成
+  const allData = await Promise.all(generateTasks)
+
+  // 收集所有结果
+  for (const data of allData) {
     for (const item of data.data ?? []) {
       const url = item.url ?? toDataUrl(item.b64_json, data.output_format)
       if (!url) continue
@@ -236,7 +263,7 @@ export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAs
   if (!results.length) {
     throw new GoogleImageError({
       category: 'empty_output',
-      message: '七牛云 API 返回为空',
+      message: '老张 API API 返回为空',
       retryable: true,
     })
   }
@@ -246,7 +273,7 @@ export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAs
     { traceId, taskId: input.taskId, shotId: input.shotId },
     {
       stage: 'done',
-      adapter: 'qiniu',
+      adapter: 'openai',
       totalResults: results.length,
       totalTookMs: Date.now() - startedAt,
     },
@@ -255,9 +282,15 @@ export async function runQiniuImageEdit(input: QiniuEditInput): Promise<ResultAs
   return results
 }
 
-function resolveQiniuModel(model: string): ResolvedQiniuModel {
+function resolveOpenAIModel(model: string): ResolvedOpenAIModel {
   const normalized = model.trim()
   const lower = normalized.toLowerCase()
+
+  console.log('[openai-adapter] resolveOpenAIModel 被调用', {
+    model,
+    normalized,
+    lower,
+  })
 
   if (lower.startsWith('gemini-')) {
     return { id: normalized, family: 'gemini' }
@@ -271,22 +304,29 @@ function resolveQiniuModel(model: string): ResolvedQiniuModel {
     return { id: `openai/${normalized}`, family: 'gpt' }
   }
 
+  // 支持 SeeDream 模型（老张 API 会调用此函数）
+  if (lower.startsWith('seedream-') || lower.startsWith('doubao-')) {
+    console.log('[openai-adapter] SeeDream 模型识别成功')
+    return { id: normalized, family: 'gpt' }
+  }
+
+  console.error('[openai-adapter] 不支持的模型', { model, lower })
   throw new GoogleImageError({
     category: 'bad_request',
-    message: `七牛云生图仅允许 gemini-* 或 openai/gpt-image-* 模型，当前模型：${model}`,
+    message: `不支持的图像模型：${model}（支持 gemini-*/gpt-image-*/seedream-*/doubao-*）`,
     retryable: false,
   })
 }
 
-function resolveQiniuDefaultBaseUrl(model: ResolvedQiniuModel): string {
+function resolveOpenAIDefaultBaseUrl(model: ResolvedOpenAIModel): string {
   return model.family === 'gpt'
-    ? QINIU_GPT_DEFAULT_BASE_URL
-    : QINIU_GEMINI_DEFAULT_BASE_URL
+    ? OPENAI_GPT_DEFAULT_BASE_URL
+    : OPENAI_GEMINI_DEFAULT_BASE_URL
 }
 
-function buildQiniuRequestBody(
-  input: QiniuEditInput,
-  model: ResolvedQiniuModel,
+function buildOpenAIRequestBody(
+  input: OpenAIEditInput,
+  model: ResolvedOpenAIModel,
 ): Record<string, unknown> {
   const requestBody: Record<string, unknown> = {
     model: model.id,
@@ -303,8 +343,8 @@ function buildQiniuRequestBody(
   }
 
   if (model.family === 'gpt') {
-    requestBody.size = resolveQiniuGptSize(input.aspectRatio, input.imageSize)
-    requestBody.quality = resolveQiniuGptQuality(input.imageSize)
+    requestBody.size = resolveOpenAIGptSize(input.aspectRatio, input.imageSize)
+    requestBody.quality = resolveOpenAIGptQuality(input.imageSize)
     return requestBody
   }
 
@@ -322,8 +362,8 @@ function buildQiniuRequestBody(
   return requestBody
 }
 
-function resolveQiniuGptQuality(imageSize: string | undefined): string {
-  const override = process.env.QINIU_GPT_IMAGE_QUALITY?.trim().toLowerCase()
+function resolveOpenAIGptQuality(imageSize: string | undefined): string {
+  const override = process.env.OPENAI_GPT_IMAGE_QUALITY?.trim().toLowerCase()
   if (
     override === 'low' ||
     override === 'medium' ||
@@ -343,7 +383,7 @@ function resolveQiniuGptQuality(imageSize: string | undefined): string {
   }
 }
 
-function resolveQiniuGptSize(
+function resolveOpenAIGptSize(
   aspectRatio: string | undefined,
   imageSize: string | undefined,
 ): string {
@@ -364,9 +404,9 @@ function resolveQiniuGptSize(
   return resolveImageSize(aspectRatio, '1K').size
 }
 
-function buildQiniuHttpError(
+function buildOpenAIHttpError(
   response: Response,
-  data: QiniuImageResponse,
+  data: OpenAIImageResponse,
 ): GoogleImageError {
   const status = response.status
   const upstreamMessage = data.error?.message ?? `HTTP ${status}`
@@ -376,7 +416,7 @@ function buildQiniuHttpError(
   if (status === 401 || status === 403 || errorCode === 'invalid_api_key') {
     return new GoogleImageError({
       category: 'auth_failed',
-      message: `七牛云 API 凭证异常（${status}）：${upstreamMessage}`,
+      message: `老张 API API 凭证异常（${status}）：${upstreamMessage}`,
       httpStatus: status,
       retryable: false,
     })
@@ -385,7 +425,7 @@ function buildQiniuHttpError(
   if (status === 429) {
     return new GoogleImageError({
       category: 'rate_limit',
-      message: `七牛云 API 限流（429）：${upstreamMessage}`,
+      message: `老张 API API 限流（429）：${upstreamMessage}`,
       httpStatus: status,
       retryAfterSeconds,
       retryable: true,
@@ -395,7 +435,7 @@ function buildQiniuHttpError(
   if (status >= 500 && status < 600) {
     return new GoogleImageError({
       category: 'server_error',
-      message: `七牛云 API 服务端错误（${status}）：${upstreamMessage}`,
+      message: `老张 API API 服务端错误（${status}）：${upstreamMessage}`,
       httpStatus: status,
       retryAfterSeconds,
       retryable: true,
@@ -405,7 +445,7 @@ function buildQiniuHttpError(
   if (status === 400 || errorCode === 'invalid_parameters') {
     return new GoogleImageError({
       category: 'bad_request',
-      message: `七牛云 API 请求参数错误（${status}）：${upstreamMessage}`,
+      message: `老张 API API 请求参数错误（${status}）：${upstreamMessage}`,
       httpStatus: status,
       retryable: false,
     })
@@ -413,7 +453,7 @@ function buildQiniuHttpError(
 
   return new GoogleImageError({
     category: 'bad_request',
-    message: `七牛云 API 调用失败（${status}）：${upstreamMessage}`,
+    message: `老张 API API 调用失败（${status}）：${upstreamMessage}`,
     httpStatus: status,
     retryable: false,
   })
@@ -422,11 +462,11 @@ function buildQiniuHttpError(
 function toDataUrl(b64Json?: string, outputFormat?: string): string | null {
   if (!b64Json) return null
   if (b64Json.startsWith('data:')) return b64Json
-  const mimeType = inferImageMimeFromBase64(b64Json) ?? getQiniuOutputMime(outputFormat)
+  const mimeType = inferImageMimeFromBase64(b64Json) ?? getOpenAIOutputMime(outputFormat)
   return `data:${mimeType};base64,${b64Json}`
 }
 
-function getQiniuOutputMime(outputFormat?: string): string {
+function getOpenAIOutputMime(outputFormat?: string): string {
   const normalized = outputFormat?.trim().toLowerCase()
   if (normalized === 'jpeg' || normalized === 'jpg') return 'image/jpeg'
   if (normalized === 'webp') return 'image/webp'
@@ -481,7 +521,7 @@ async function fetchWithTimeout(
       const seconds = Math.round(timeoutMs / 1000)
       throw new GoogleImageError({
         category: 'network',
-        message: `七牛云 API 调用超时（${seconds}s 未返回）`,
+        message: `老张 API API 调用超时（${seconds}s 未返回）`,
         retryable: true,
         cause: error,
       })
@@ -489,7 +529,7 @@ async function fetchWithTimeout(
 
     throw new GoogleImageError({
       category: 'network',
-      message: `七牛云 API 网络请求失败：${error instanceof Error ? error.message : String(error)}`,
+      message: `老张 API API 网络请求失败：${error instanceof Error ? error.message : String(error)}`,
       retryable: true,
       cause: error,
     })

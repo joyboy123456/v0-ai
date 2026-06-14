@@ -1436,7 +1436,7 @@ async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
 }
 
 function readProviderDefaultConcurrency(provider: ImageProvider): number {
-  if (provider.type === 'qiniu') {
+  if (provider.type === 'openai') {
     return readPositiveInt(process.env.QINIU_IMAGE_CONCURRENCY, 5)
   }
   if (provider.type === 'jimeng') {

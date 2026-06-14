@@ -14,7 +14,7 @@ import {
   type ImageProvider,
 } from './image-provider-pool'
 import { GoogleImageError } from './google-image-retry'
-import { runQiniuImageEdit } from './qiniu-image-adapter'
+import { runOpenAIImageEdit } from './openai-image-adapter'
 import { runJimengImageEdit } from './jimeng-image-adapter'
 import { runVolcesImageEdit } from './volces-image-adapter'
 import { runLaozhangImageEdit } from './laozhang-image-adapter'
@@ -68,8 +68,8 @@ export async function runImageEditViaProvider(
           maxRpm: provider.maxRpm,
         })
 
-      case 'qiniu':
-        return await runQiniuImageEdit({
+      case 'openai':
+        return await runOpenAIImageEdit({
           taskId: input.taskId,
           apiKey,
           baseUrl: provider.baseUrl,
