@@ -15,7 +15,7 @@
 
 import { logImageEvent } from './log'
 
-export type ImageProviderType = 'google' | 'qiniu' | 'jimeng' | 'volces'
+export type ImageProviderType = 'google' | 'qiniu' | 'jimeng' | 'volces' | 'laozhang'
 
 export interface ImageProvider {
   /** 唯一标识，用于日志、节流桶隔离和配置引用 */
@@ -380,6 +380,18 @@ export function isVolcesImageModel(model: string | undefined): boolean {
   return lower.startsWith('doubao') || lower.startsWith('seedream') || lower.startsWith('volces')
 }
 
+export function isLaozhangImageModel(model: string | undefined): boolean {
+  if (!model) return true
+  const lower = model.trim().toLowerCase()
+  return (
+    lower.startsWith('gemini-') ||
+    lower.startsWith('gpt-image-') ||
+    lower.startsWith('openai/gpt-image-') ||
+    lower.startsWith('doubao') ||
+    lower.startsWith('seedream')
+  )
+}
+
 function normalizeVolcesModelId(model: string | undefined): string {
   const lower = model?.trim().toLowerCase() ?? ''
   if (lower === 'doubao-seedream-4.5') return 'doubao-seedream-4-5-251128'
@@ -399,6 +411,7 @@ export function isImageProviderModelCompatible(
     const providerFamily = getQiniuModelFamily(provider.model)
     return !requestedFamily || !providerFamily || requestedFamily === providerFamily
   }
+  if (provider.type === 'laozhang') return isLaozhangImageModel(candidate)
   if (provider.type === 'jimeng') return isJimengImageModel(candidate)
   if (provider.type === 'volces') {
     if (!isVolcesImageModel(candidate)) return false

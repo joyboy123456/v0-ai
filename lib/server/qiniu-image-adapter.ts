@@ -32,6 +32,7 @@ import { logImageEvent, type LogContext } from './log'
 const QINIU_GEMINI_DEFAULT_BASE_URL = 'https://api.qnaigc.com'
 const QINIU_GPT_DEFAULT_BASE_URL = 'https://openai.qiniu.com'
 const QINIU_DEFAULT_MODEL = 'gemini-3.0-pro-image-preview'
+const GOOGLE_GEMINI_PRO_IMAGE_MODEL = 'gemini-3-pro-image-preview'
 const QINIU_GENERATIONS_PATH = '/v1/images/generations'
 const QINIU_EDITS_PATH = '/v1/images/edits'
 
@@ -421,8 +422,45 @@ function buildQiniuHttpError(
 function toDataUrl(b64Json?: string, outputFormat?: string): string | null {
   if (!b64Json) return null
   if (b64Json.startsWith('data:')) return b64Json
-  const mimeType = outputFormat === 'jpeg' ? 'image/jpeg' : 'image/png'
+  const mimeType = inferImageMimeFromBase64(b64Json) ?? getQiniuOutputMime(outputFormat)
   return `data:${mimeType};base64,${b64Json}`
+}
+
+function getQiniuOutputMime(outputFormat?: string): string {
+  const normalized = outputFormat?.trim().toLowerCase()
+  if (normalized === 'jpeg' || normalized === 'jpg') return 'image/jpeg'
+  if (normalized === 'webp') return 'image/webp'
+  if (normalized === 'png' || !normalized) return 'image/png'
+  // 七牛 Gemini 文档标记默认 PNG；未知格式不降级成 JPEG，避免误存原图。
+  return 'image/png'
+}
+
+function inferImageMimeFromBase64(b64Json: string): string | null {
+  try {
+    const buffer = Buffer.from(b64Json.slice(0, 64), 'base64')
+    if (
+      buffer.length >= 8 &&
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47 &&
+      buffer[4] === 0x0d &&
+      buffer[5] === 0x0a &&
+      buffer[6] === 0x1a &&
+      buffer[7] === 0x0a
+    ) {
+      return 'image/png'
+    }
+    if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+      return 'image/jpeg'
+    }
+    if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+      return 'image/webp'
+    }
+  } catch {
+    return null
+  }
+  return null
 }
 
 async function fetchWithTimeout(

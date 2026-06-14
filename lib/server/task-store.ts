@@ -214,9 +214,12 @@ async function storeResultFromResultAsset(
   if (!response.ok) {
     throw new Error(`生成图归档失败：HTTP ${response.status}（${result.url}）`)
   }
-  const mimeType = response.headers.get('content-type') ?? 'image/jpeg'
   const buffer = Buffer.from(await response.arrayBuffer())
-  const dimensions = await readImageDimensionsFromBuffer(buffer)
+  const imageMetadata = await readImageMetadataFromBuffer(buffer)
+  const mimeType =
+    imageMetadata.mimeType ??
+    normalizeImageMime(response.headers.get('content-type')) ??
+    'image/png'
   const persisted = await storage().putImage({
     userId: userId === defaultUserId ? null : userId,
     bucket: 'results',
@@ -224,21 +227,50 @@ async function storeResultFromResultAsset(
     body: buffer,
     contentType: mimeType,
   })
-  return { url: persisted.publicUrl, bytes: persisted.bytes, mimeType, ...dimensions }
+  return {
+    url: persisted.publicUrl,
+    bytes: persisted.bytes,
+    mimeType,
+    width: imageMetadata.width,
+    height: imageMetadata.height,
+  }
 }
 
 async function readImageDimensionsFromBuffer(
   buffer: Buffer,
 ): Promise<{ width?: number; height?: number }> {
+  const metadata = await readImageMetadataFromBuffer(buffer)
+  return { width: metadata.width, height: metadata.height }
+}
+
+async function readImageMetadataFromBuffer(
+  buffer: Buffer,
+): Promise<{ width?: number; height?: number; mimeType?: string }> {
   try {
     const metadata = await sharp(buffer).metadata()
     return {
       width: metadata.width,
       height: metadata.height,
+      mimeType: sharpFormatToMime(metadata.format),
     }
   } catch {
     return {}
   }
+}
+
+function sharpFormatToMime(format: string | undefined): string | undefined {
+  if (format === 'jpeg' || format === 'jpg') return 'image/jpeg'
+  if (format === 'png') return 'image/png'
+  if (format === 'webp') return 'image/webp'
+  if (format === 'gif') return 'image/gif'
+  return undefined
+}
+
+function normalizeImageMime(contentType: string | null): string | null {
+  const mime = contentType?.split(';')[0]?.trim().toLowerCase()
+  if (!mime?.startsWith('image/')) return null
+  if (mime === 'image/jpg') return 'image/jpeg'
+  return mime
 }
 
 function extractDataUrlMime(dataUrl: string): string | null {
