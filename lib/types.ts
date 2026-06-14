@@ -163,18 +163,33 @@ export interface PhotoFissionShot {
 }
 
 /**
+ * LLM 导演输出的结构化图像提示词对象。
+ */
+export interface StructuredImagePrompt {
+  scene: string
+  subject: string
+  pose: string
+  expression: string
+  clothing: string
+  background: string
+  framing: string
+  quality: string
+}
+
+/**
  * 通用 Fission Prompt Planner 产物：单个计划卡片。
  *
  * `shotId` 在底座里表示「当前 fission item 的稳定 id」：
  * - photo-fission 使用 `shot_1` ~ `shot_9`
  * - pose-fission 未来可使用姿势模板 id
  *
- * `imagePrompt` 是最终直接传给出图模型的自然语言提示词。
+ * `imagePrompt` 可以是字符串（兼容旧版）或结构化对象（新版）。
+ * 后端会把结构化对象转换为 JSON 格式传给出图模型。
  */
 export interface FissionPromptCard {
   shotId: string
   role: string
-  imagePrompt: string
+  imagePrompt: string | StructuredImagePrompt
 }
 
 /**

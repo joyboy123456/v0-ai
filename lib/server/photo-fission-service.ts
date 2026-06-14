@@ -88,7 +88,7 @@ function buildFaceIdSimilarityGuard(faceIdImageIndex: number): string {
 
 type PlannerPromptCard = {
   role: string
-  imagePrompt: string
+  imagePrompt: string | import('@/lib/types').StructuredImagePrompt
 }
 
 const SUIT_LEG_VARIATION_FALLBACKS = [
@@ -328,69 +328,157 @@ interface BuildShotPromptInput {
 }
 
 function buildShotPrompt(input: BuildShotPromptInput): string {
-  const orientation = getCompositionOrientation(input.imageRatio)
-  const sections: string[] = [
-    buildTaskSection({
-      label: input.label,
-      orientation,
-      shotScene: input.shotScene,
-      category: input.category,
-      childrensCategory: input.childrensCategory,
-      hasFaceIdModel: input.hasFaceIdModel,
-    }),
-    '',
-    buildReferenceImagesSection({
-      hasFrontDetail: input.hasFrontDetail,
-      hasBackDetail: input.hasBackDetail,
-      shotScene: input.shotScene,
-      category: input.category,
-      childrensCategory: input.childrensCategory,
-      hasFaceIdModel: input.hasFaceIdModel,
-      faceIdImageIndex: input.faceIdImageIndex,
-    }),
-    '',
-    buildIdentityLockSection(input.hasFaceIdModel, input.faceIdImageIndex),
-    '',
-    buildWardrobeLockSection(),
-    '',
-    buildSceneLockSection(orientation, input.shotScene, input.category, input.childrensCategory),
-    '',
-    buildLightingLockSection(input.shotScene, input.category, input.childrensCategory),
-    '',
-    buildStyleLockSection(
-      input.shotDescription,
-      input.shotScene,
-      input.category,
-      input.childrensCategory,
-    ),
-    '',
-    buildAngleControlSection(input.category, input.childrensCategory),
-    '',
-    buildShotSection(input.label, input.shotDescription),
-    '',
-    buildCategoryLockSection(input.category, input.childrensCategory),
-    '',
-    buildAnatomySection(),
-    '',
-    buildOutputParamsSection(
-      input.category,
-      input.childrensCategory,
-      input.imageRatio,
-      input.resolution,
-      orientation,
-    ),
-    '',
-    buildNegativeSection(input.category, input.childrensCategory, input.hasFaceIdModel, input.faceIdImageIndex),
+  const faceIdImageIndex = input.hasFaceIdModel ? input.faceIdImageIndex : undefined
+
+  // 构建 JSON 结构化提示词
+  const jsonPrompt = {
+    generation_request: {
+      meta_data: {
+        tool: "Gemini Image Generation",
+        task_type: "ecommerce_fashion_photo",
+        language: "zh-CN",
+        priority: "highest"
+      },
+      input: {
+        mode: "image_to_image",
+        reference_image_usage: "maximum",
+        preserve_identity: true,
+        preserve_clothing: true,
+        notes: input.shotDescription
+      },
+      identity_lock: input.hasFaceIdModel ? {
+        face_priority: "absolute",
+        face_geometry_lock: true,
+        bone_structure_lock: true,
+        face_reference_index: faceIdImageIndex,
+        no_beautification: true,
+        note: `图${faceIdImageIndex}提供脸部身份（脸型、五官、皮肤质感、发色），图1提供发型、刘海、帽子、发饰、服装。脸型骨骼严格以图${faceIdImageIndex}为准。`
+      } : {
+        face_reference: "图1",
+        preserve_facial_features: true
+      },
+      output_settings: {
+        aspect_ratio: input.imageRatio,
+        resolution_target: input.resolution,
+        num_images: 1,
+        orientation: getCompositionOrientation(input.imageRatio),
+        sharpness: "editorial_crisp"
+      },
+      scene: buildSceneConfig(input),
+      wardrobe: {
+        description: "这套服装",
+        color_source: input.hasFrontDetail || input.hasBackDetail ? "细节图为准" : "图1为准",
+        material_source: "参考图中真实存在的材质特征",
+        rules: [
+          "完整延续版型、图案、logo、纽扣、口袋、领口、袖口、下摆",
+          "不增加、不减少、不替换任何服装元素",
+          "图1已有配饰必须保留"
+        ]
+      },
+      shot: {
+        label: input.label,
+        description: input.shotDescription,
+        angle_control: buildAngleControlConfig(input.category, input.childrensCategory)
+      },
+      category_requirements: buildCategoryConfig(input.category, input.childrensCategory),
+      anatomy_and_hands: {
+        hands_priority: "maximum",
+        finger_count: "5_per_hand",
+        avoid: ["extra_fingers", "missing_fingers", "warped_wrists", "反关节"]
+      },
+      quality_control: {
+        surface_quality: "必须干净清晰",
+        avoid: [
+          "横向扫描线", "横向条纹伪影", "摩尔纹", "水波纹",
+          "密集平行线", "屏幕纹", "压缩噪声", "马赛克",
+          "色块", "条带状失真", "规则重复线条",
+          "text", "watermark", "cartoon", "anime", "3D渲染"
+        ],
+        texture_requirement: "布料纹理必须是真实自然的织物质感，不是像素级规则线条"
+      },
+      negative_prompt: buildNegativeArray(input.category, input.childrensCategory, input.hasFaceIdModel, faceIdImageIndex)
+    }
+  }
+
+  return JSON.stringify(jsonPrompt, null, 2)
+}
+
+function buildSceneConfig(input: BuildShotPromptInput) {
+  const isDressOutdoor = isDressChildrensOutdoorShot(input.category, input.childrensCategory, input.shotScene)
+  const isSuitOutdoor = isSuitChildrensOutdoorShot(input.category, input.childrensCategory, input.shotScene)
+
+  if (isDressOutdoor) {
+    return {
+      environment: "无云蓝天草地外景",
+      lighting: { style: "明亮柔和户外自然光", shadow: "自然接触阴影" },
+      camera: { look: "童装连衣裙电商外景补充图" }
+    }
+  }
+  if (isSuitOutdoor) {
+    return {
+      environment: "晴朗夏日蓝天绿草地真实外景",
+      lighting: { style: "柔和自然户外散射光", shadow: "清楚自然接触阴影" },
+      camera: { look: "童装套装电商外景补充图" }
+    }
+  }
+  return {
+    environment: "沿用图1的背景、环境、陈设",
+    lighting: { style: "柔和均匀自然光", direction: "沿用图1光源方向、色温" },
+    camera: { look: "电商主图调性" }
+  }
+}
+
+function buildAngleControlConfig(category: PhotoFissionCategory, childrensCategory?: PhotoFissionChildrensCategory): string | null {
+  if (isSuitChildrensCategory(category, childrensCategory)) {
+    return SUIT_ACTION_CONTROL
+  }
+  if (category === 'childrens' && childrensCategory) {
+    return getChildrensCategoryAngleControl(childrensCategory) ?? null
+  }
+  return null
+}
+
+function buildCategoryConfig(category: PhotoFissionCategory, childrensCategory?: PhotoFissionChildrensCategory) {
+  const config: Record<string, unknown> = {
+    primary: categoryRequirementMap[category]
+  }
+  if (category === 'childrens' && childrensCategory) {
+    config.secondary = childrensCategoryRequirementMap[childrensCategory]
+  }
+  config.shoe_requirement = "图1主图如有鞋子，所有生成图中必须保留同款鞋子"
+  return config
+}
+
+function buildNegativeArray(
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+  hasFaceIdModel?: boolean,
+  faceIdImageIndex?: number
+): string[] {
+  const negatives = [
+    "文字", "水印", "品牌印章", "多余人物", "多宫格拼接",
+    "cartoon", "插画", "动漫", "3D渲染",
+    "横向扫描线", "横向条纹", "摩尔纹", "水波纹", "网格纹",
+    "屏幕纹", "密集平行细线", "规则重复线条", "压缩噪声",
+    "马赛克", "色块", "条带状失真"
   ]
 
-  // 过滤掉条件性 section 返回空字符串的占位（保持 prompt 紧凑）
-  return sections.filter((line, index, arr) => {
-    if (line !== '') return true
-    // 空行只在前后都有非空内容时保留
-    const prev = arr[index - 1]
-    const next = arr[index + 1]
-    return prev !== '' && next !== undefined && next !== ''
-  }).join('\n')
+  if (hasFaceIdModel && faceIdImageIndex) {
+    negatives.push(
+      "通用AI脸", "网红脸", "娃娃脸", "过度美颜脸", "成人化脸",
+      "糊脸", "低清", "塑料皮", "过度磨皮",
+      `不像图${faceIdImageIndex}的脸`, "陌生脸", "混合脸"
+    )
+  }
+
+  if (isSuitChildrensCategory(category, childrensCategory)) {
+    negatives.push(...SUIT_NEGATIVE_ADDON.split('；'))
+  } else if (category === 'childrens' && childrensCategory) {
+    const addon = getChildrensCategoryNegativeAddon(childrensCategory)
+    if (addon) negatives.push(...addon.split('；'))
+  }
+
+  return negatives
 }
 
 /**
@@ -511,15 +599,15 @@ function buildReferenceImagesSection(input: {
   let mainImageLine: string
   if (hasFaceIdModel) {
     mainImageLine = isDressOutdoorShot
-      ? '- 图1：主图基准（这套连衣裙的视觉锚点，承载穿搭比例、发型、发饰、服装款式、面料质感与商品细节；五官特征不从此图读取，以人像小卡为准）'
+      ? '- 图1：主图基准（这套连衣裙的视觉锚点，承载穿搭比例、发型、发饰、服装款式、材质类别与商品结构；五官特征不从此图读取，以人像小卡为准）'
       : isSuitOutdoorShot
-        ? '- 图1：主图基准（这套童装套装的视觉锚点，承载穿搭比例、发型、发饰、上衣裤装成套关系、面料质感与商品细节；五官特征不从此图读取，以人像小卡为准）'
+        ? '- 图1：主图基准（这套童装套装的视觉锚点，承载穿搭比例、发型、发饰、上衣裤装成套关系、材质类别与商品结构；五官特征不从此图读取，以人像小卡为准）'
         : '- 图1：主图基准（这套服装的视觉锚点，承载穿搭比例、发型、发饰、服装细节、场景与光线；五官特征不从此图读取，以人像小卡为准）'
   } else {
     mainImageLine = isDressOutdoorShot
-      ? '- 图1：主图基准（这套连衣裙与这位小女孩的视觉锚点，承载人物身份、服装款式、面料质感与商品细节；当前镜头抽中无云蓝天草地外景卡，场景不能出现云）'
+      ? '- 图1：主图基准（这套连衣裙与这位小女孩的视觉锚点，承载人物身份、服装款式、材质类别与商品结构；当前镜头抽中无云蓝天草地外景卡，场景不能出现云）'
       : isSuitOutdoorShot
-        ? '- 图1：主图基准（这套童装套装与这位模特的视觉锚点，承载人物身份、上衣裤装成套关系、面料质感与商品细节；当前镜头抽中晴朗夏日蓝天绿草地真实外景补充卡，场景不出现白云）'
+        ? '- 图1：主图基准（这套童装套装与这位模特的视觉锚点，承载人物身份、上衣裤装成套关系、材质类别与商品结构；当前镜头抽中晴朗夏日蓝天绿草地真实外景补充卡，场景不出现白云）'
         : '- 图1：主图基准（这套服装与这位模特的视觉锚点，承载身份、服装、场景、光线的全部细节）'
   }
   const lines: string[] = [
@@ -529,13 +617,13 @@ function buildReferenceImagesSection(input: {
   let nextIndex = 2
   if (hasFrontDetail) {
     lines.push(
-      `- 图${nextIndex}：这套服装的正面细节参考（颜色、材质、面料质感、领口、扣件、logo、图案、纽扣、口袋细节以此为准）`,
+      `- 图${nextIndex}：这套服装的正面细节参考（颜色、材质类别、主要图案、领口、扣件、logo、纽扣、口袋和正面结构以此为准）`,
     )
     nextIndex += 1
   }
   if (hasBackDetail) {
     lines.push(
-      `- 图${nextIndex}：这套服装的背面细节参考（背部颜色、材质、面料质感、剪裁、印花、肩线、背部扣件以此为准）`,
+      `- 图${nextIndex}：这套服装的背面细节参考（背部颜色、材质类别、主要图案、剪裁、印花、肩线、背部扣件和背面结构以此为准）`,
     )
     nextIndex += 1
   }
@@ -577,9 +665,12 @@ function buildIdentityLockSection(
 function buildWardrobeLockSection(): string {
   return [
     '【服装呈现 WARDROBE】',
+    '图像质量要求：服装表面必须干净清晰，绝对禁止生成横向扫描线、横向条纹伪影、摩尔纹、水波纹、密集平行线、屏幕纹、压缩噪声、马赛克、色块、条带状伪影或任何规则重复的横向/纵向纹理失真。布料纹理必须是真实自然的织物质感，不是像素级规则线条。',
     '人物穿着这套服装，完整延续这套服装的版型、图案、logo、纽扣、口袋、领口、袖口与下摆细节。',
-    '颜色、材质、面料质感的参考优先级：如果有正面/背面细节图，颜色、材质、面料质感以细节图为准；如果没有细节图，才以图1主图为准。',
-    '衣物纹理、面料质感、印花与配饰清晰可见，不增加、不减少、不替换任何服装元素。',
+    '颜色、材质类别、主要图案和商品结构的参考优先级：如果有正面/背面细节图，颜色、材质类别、主要图案和商品结构以细节图为准；如果没有细节图，才以图1主图为准。',
+    '参考图中真实存在的材质特征才保留；参考图没有的棉麻肌理、纱层、粗织纹、针织纹或额外纹理不得新增。',
+    '服装版型、拼布色块、主要图案、领口、腰线、下摆与配饰清晰可见，不增加、不减少、不替换任何服装元素；微细纹理不作为强制复刻目标。',
+    '布料表面质感要求：参考真实摄影作品中的自然布料纹理，避免 AI 生成常见的横向扫描伪影、规则重复线条、数字噪声和失真纹理。服装表面应当光滑自然或具有真实织物肌理，不应出现像透过屏幕拍摄产生的摩尔纹或扫描设备产生的条带。',
     '如果图1主图里已有手拿小包、单肩包、草帽、眼镜、咖啡杯 / 饮品杯、花束、发饰等随身配饰或小道具，必须作为原始穿搭搭配保留，延续参考图中的佩戴/拿取关系；可为避免遮挡服装而放到身体侧边、手部低位或画面边缘，但不能让这些已有配饰消失。',
   ].join('\n')
 }
@@ -698,8 +789,8 @@ function buildStyleLockSection(
       childrensCategory,
       shotScene,
     )
-      ? '专业儿童电商时尚外景摄影，4K 超清质感，自然明亮的户外柔光均匀打亮人物和服装；画面清爽干净，面料质感、商品细节和裙身轮廓清楚，整体像可直接上架的童装连衣裙外景补充素材。'
-      : '专业儿童电商时尚摄影，4K 超清质感，影棚柔和柔光，光线均匀打亮人物和服装；画面干净柔和，面料质感、商品细节和裙身轮廓清楚，整体像可直接上架的童装连衣裙商品素材。'
+      ? '专业儿童电商时尚外景摄影，清晰但自然的商品摄影质感，自然明亮的户外柔光均匀打亮人物和服装；画面清爽干净，商品结构、主要图案和裙身轮廓清楚，整体像可直接上架的童装连衣裙外景补充素材。'
+      : '专业儿童电商时尚摄影，清晰但自然的商品摄影质感，影棚柔和柔光，光线均匀打亮人物和服装；画面干净柔和，商品结构、主要图案和裙身轮廓清楚，整体像可直接上架的童装连衣裙商品素材。'
     const lines = [
       '【画面质感 STYLE】',
       styleSummary,
@@ -716,8 +807,8 @@ function buildStyleLockSection(
       childrensCategory,
       shotScene,
     )
-      ? '专业儿童电商套装真实外景摄影，4K 清晰但柔和的质感，自然户外散射光均匀打亮人物和套装；晴朗夏日蓝天和真实绿草地只作为清爽低存在感陪衬，场景不出现白云，草地避免塑料草坪、假草皮、重复贴图和过饱和荧光绿，上衣廓形、下摆、裤长、裤脚、鞋型和成套比例清楚，整体像可直接用于淘宝轮播图或详情页的童装套装外景补充素材。'
-      : '专业电商套装摄影，4K 超清质感，背景、光线和画面风格沿用图1；通过姿态和构图突出上衣廓形、裤装轮廓、裤长裤脚、鞋子和成套比例，整体像可直接上架的套装商品素材。'
+      ? '专业儿童电商套装真实外景摄影，清晰但柔和的商品摄影质感，自然户外散射光均匀打亮人物和套装；晴朗夏日蓝天和真实绿草地只作为清爽低存在感陪衬，场景不出现白云，草地避免塑料草坪、假草皮、重复贴图和过饱和荧光绿，上衣廓形、下摆、裤长、裤脚、鞋型和成套比例清楚，整体像可直接用于淘宝轮播图或详情页的童装套装外景补充素材。'
+      : '专业电商套装摄影，清晰但自然的商品摄影质感，背景、光线和画面风格沿用图1；通过姿态和构图突出上衣廓形、裤装轮廓、裤长裤脚、鞋子和成套比例，整体像可直接上架的套装商品素材。'
     return [
       '【画面质感 STYLE】',
       styleSummary,
@@ -726,7 +817,7 @@ function buildStyleLockSection(
   }
   const lines = [
     '【画面质感 STYLE】',
-    `${cinematicPrefix}写实风格摄影，色彩饱和度适中，细节丰富，衣物纹理与面料质感清晰可见，具有电影感的逼真渲染效果，整体氛围接近时尚杂志的经典大片风格。`,
+    `${cinematicPrefix}写实风格摄影，色彩饱和度适中，主体清晰自然，服装结构与主要图案清晰可见，真实材质特征自然保留，具有电影感的逼真渲染效果，整体氛围接近时尚杂志的经典大片风格。`,
   ]
   // 童装二级品类有专属灵性气质锚点时，追加到 STYLE 段尾部
   if (category === 'childrens' && childrensCategory) {
@@ -836,8 +927,10 @@ function buildNegativeSection(
     : '不改变人物的脸部特征与发型；'
   const lines = [
     '【关键约束】',
-    `不改变这套服装的颜色、版型、材质、图案与 logo；${faceConstraint}画面场景按当前镜头的 SCENE 段执行并保持风格一致。`,
+    '【最高优先级 - 绝对禁止的图像伪影】横向扫描线、横向条纹、摩尔纹、水波纹、网格纹、屏幕纹、密集平行细线、规则重复的横向或纵向线条、压缩噪声、马赛克、色块、条带状失真。服装和皮肤表面必须干净自然，不能有任何规则的人工线条纹理、扫描痕迹或数字伪影。',
+    `不改变这套服装的颜色、版型、材质、图案与 logo；${faceConstraint}画面场景与背景严格沿用参考图原本拍摄环境，保持风格、色调、光线方向一致，不随意替换或新增场景元素。`,
     '不要生成：文字、水印、品牌印章、多余人物、多宫格拼接，不要变成卡通/插画/动漫/3D 渲染风格。',
+    '参考图已有的手持物（包包、花束、帽子、眼镜、饮品杯等随身搭配）必须在大部分生成图中保留：可以拿在手里、挎在肩上作为正常穿搭，或放置在地面远处（远离模特身体、靠近画面边缘、只作为环境点缀，不能紧贴腿部、裤脚或鞋子）。手持物必须保持真实尺寸比例、极低存在感、不抢服装主体、不遮挡服装关键部位（领口、腰线、版型结构、裤脚、裙摆、鞋子）、不影响人物姿态和商品展示。只有极少数图片（2张模式中1张、4张模式中1-2张、9/10张模式中1-2张）可以完全不出现手持物。',
   ]
   if (hasFaceIdModel && faceIdImageIndex) {
     lines.push(buildFaceIdSimilarityGuard(faceIdImageIndex))
@@ -1471,7 +1564,7 @@ function getRecentDressActionHints(params: PhotoFissionParams): string[] {
 
 function rememberSuitActionHints(
   params: PhotoFissionParams,
-  shots: ReadonlyArray<{ role: string; imagePrompt: string }>,
+  shots: ReadonlyArray<{ role: string; imagePrompt: string | import('@/lib/types').StructuredImagePrompt }>,
 ): void {
   if (!isSuitChildrensCategory(params.category, params.childrensCategory)) {
     return
@@ -1488,7 +1581,7 @@ function rememberSuitActionHints(
 
 function rememberDressActionHints(
   params: PhotoFissionParams,
-  shots: ReadonlyArray<{ role: string; imagePrompt: string }>,
+  shots: ReadonlyArray<{ role: string; imagePrompt: string | import('@/lib/types').StructuredImagePrompt }>,
 ): void {
   if (!isDressChildrensCategory(params.category, params.childrensCategory)) {
     return
@@ -1518,11 +1611,14 @@ function buildDressActionHistoryKey(params: PhotoFissionParams): string {
 }
 
 function extractSuitActionHints(
-  shots: ReadonlyArray<{ role: string; imagePrompt: string }>,
+  shots: ReadonlyArray<{ role: string; imagePrompt: string | import('@/lib/types').StructuredImagePrompt }>,
 ): string[] {
   const hints = new Set<string>()
   for (const shot of shots) {
-    const text = `${shot.role} ${shot.imagePrompt}`
+    const promptText = typeof shot.imagePrompt === 'string'
+      ? shot.imagePrompt
+      : `${shot.imagePrompt.pose} ${shot.imagePrompt.expression}`
+    const text = `${shot.role} ${promptText}`
     for (const [pattern, hint] of SUIT_ACTION_HINT_PATTERNS) {
       if (pattern.test(text)) {
         hints.add(hint)
@@ -1533,11 +1629,14 @@ function extractSuitActionHints(
 }
 
 function extractDressActionHints(
-  shots: ReadonlyArray<{ role: string; imagePrompt: string }>,
+  shots: ReadonlyArray<{ role: string; imagePrompt: string | import('@/lib/types').StructuredImagePrompt }>,
 ): string[] {
   const hints = new Set<string>()
   for (const shot of shots) {
-    const text = `${shot.role} ${shot.imagePrompt}`
+    const promptText = typeof shot.imagePrompt === 'string'
+      ? shot.imagePrompt
+      : `${shot.imagePrompt.pose} ${shot.imagePrompt.expression}`
+    const text = `${shot.role} ${promptText}`
     for (const [pattern, hint] of DRESS_ACTION_HINT_PATTERNS) {
       if (pattern.test(text)) {
         hints.add(hint)
@@ -1588,6 +1687,10 @@ function refineSuitPlannerCard(
   card: PlannerPromptCard,
   shotIndex: number,
 ): PlannerPromptCard {
+  // 结构化 JSON 格式直接返回，不需要 refine
+  if (typeof card.imagePrompt !== 'string') {
+    return card
+  }
   const role = sanitizeSuitExpressionText(card.role).trim()
   let imagePrompt = sanitizeSuitExpressionText(card.imagePrompt).trim()
   imagePrompt = sanitizeSuitLegText(imagePrompt)
@@ -1597,6 +1700,10 @@ function refineSuitPlannerCard(
 }
 
 function refineDressPlannerCard(card: PlannerPromptCard): PlannerPromptCard {
+  // 结构化 JSON 格式直接返回，不需要 refine
+  if (typeof card.imagePrompt !== 'string') {
+    return card
+  }
   const role = sanitizeDressPoseText(card.role).trim()
   const imagePrompt = appendDressPoseFaceQualityGuard(
     sanitizeDressPoseText(card.imagePrompt).trim(),
@@ -1776,30 +1883,39 @@ async function applyShotPlannerOverride(
       : isDressTask
         ? refineDressPlannerCard(card)
         : card
-    let next = appendFlatDetailReferenceLock(
-      plannerCard.imagePrompt,
-      params,
-      `${plannerCard.role} ${plannerCard.imagePrompt}`,
-    ).trim()
-    if (!next) continue
-    // Face ID lock: force-inject identity lock paragraph after planner rewrite
-    next = appendFaceIdLock(next, params)
+
+    // 将 imagePrompt 转换为最终格式
+    let finalPrompt: string
+    if (typeof plannerCard.imagePrompt === 'string') {
+      // 兼容旧版文本格式
+      finalPrompt = appendFlatDetailReferenceLock(
+        plannerCard.imagePrompt,
+        params,
+        `${plannerCard.role} ${plannerCard.imagePrompt}`,
+      ).trim()
+    } else {
+      // 新版结构化 JSON 格式：转换为 JSON 字符串 + 追加约束
+      finalPrompt = convertStructuredPromptToJson(plannerCard.imagePrompt, params)
+    }
+
+    if (!finalPrompt) continue
+
     const nextLabel = plannerCard.role.trim()
     fullPlan[idx] = {
       ...fullPlan[idx],
       label: nextLabel || fullPlan[idx].label,
-      prompt: next,
+      prompt: finalPrompt,
     }
     if (isSuitTask) {
       rememberedSuitShots.push({
         role: nextLabel || fullPlan[idx].label,
-        imagePrompt: next,
+        imagePrompt: finalPrompt,
       })
     }
     if (isDressTask) {
       rememberedDressShots.push({
         role: nextLabel || fullPlan[idx].label,
-        imagePrompt: next,
+        imagePrompt: finalPrompt,
       })
     }
     overridden += 1
@@ -1857,6 +1973,106 @@ async function applyShotPlannerOverride(
 }
 
 /**
+ * 将 LLM 导演输出的结构化 imagePrompt 对象转换为 JSON 字符串格式。
+ * 同时追加关键的反伪影约束和服装细节锁定规则。
+ */
+function convertStructuredPromptToJson(
+  structured: import('@/lib/types').StructuredImagePrompt,
+  params: PhotoFissionParams,
+): string {
+  const faceIdImageIndex = params.faceIdModelId
+    ? 1 + (params.hasFrontDetail ? 1 : 0) + (params.hasBackDetail ? 1 : 0) + 1
+    : undefined
+
+  const jsonPrompt = {
+    generation_request: {
+      meta_data: {
+        tool: "Gemini Image Generation",
+        task_type: "ecommerce_childrens_fashion_photo",
+        language: "zh-CN",
+        priority: "highest"
+      },
+      scene: {
+        description: structured.scene,
+        environment: structured.background,
+        framing: structured.framing
+      },
+      subject: {
+        description: structured.subject,
+        pose: structured.pose,
+        expression: structured.expression,
+        clothing: structured.clothing
+      },
+      identity_lock: faceIdImageIndex ? {
+        face_priority: "absolute",
+        face_reference_index: faceIdImageIndex,
+        note: `图${faceIdImageIndex}提供脸型、五官、皮肤质感、发色；图1提供发型、刘海、帽子、发饰、服装`
+      } : {
+        face_reference: "图1",
+        note: "延续参考图人物身份与面部特征"
+      },
+      wardrobe: {
+        color_source: params.hasFrontDetail || params.hasBackDetail ? "细节图为准" : "图1为准",
+        rules: [
+          "完整延续版型、图案、logo、纽扣、口袋、领口、袖口、下摆",
+          "参考图中真实存在的材质特征才保留",
+          "图1已有配饰必须保留"
+        ]
+      },
+      quality_control: {
+        texture_requirement: structured.quality,
+        surface_quality: "必须干净清晰",
+        avoid: [
+          "横向扫描线", "横向条纹伪影", "摩尔纹", "水波纹",
+          "密集平行线", "屏幕纹", "压缩噪声", "马赛克",
+          "色块", "条带状失真", "规则重复线条"
+        ],
+        note: "布料纹理必须是真实自然的织物质感，不是像素级规则线条"
+      },
+      negative_prompt: buildNegativeArray(
+        params.category,
+        params.childrensCategory,
+        params.faceIdModelId ? true : false,
+        faceIdImageIndex
+      )
+    }
+  }
+
+  return JSON.stringify(jsonPrompt, null, 2)
+}
+
+/**
+ * 强制追加关键约束段落（WARDROBE + NEGATIVE），防止 planner 丢失反伪影指令。
+ *
+ * LLM 导演只负责动作、表情、构图，不管图像质量。这个函数确保每个 shot 的 prompt
+ * 都包含完整的服装约束和反伪影禁令，避免生成横向扫描线、摩尔纹等常见伪影。
+ */
+function appendCriticalConstraints(
+  prompt: string,
+  params: PhotoFissionParams,
+): string {
+  const faceIdImageIndex = params.faceIdModelId
+    ? 1 + (params.hasFrontDetail ? 1 : 0) + (params.hasBackDetail ? 1 : 0) + 1
+    : undefined
+
+  const constraints = [
+    '',
+    '【服装质感约束】服装表面必须干净清晰，绝对禁止横向扫描线、横向条纹伪影、摩尔纹、水波纹、密集平行线、屏幕纹、压缩噪声、马赛克或规则重复线条。布料纹理必须是真实自然的织物质感。',
+    '',
+    '【关键禁令】绝对禁止的图像伪影：横向扫描线、横向条纹、摩尔纹、水波纹、网格纹、屏幕纹、密集平行细线、规则重复的横向或纵向线条、压缩噪声、马赛克、色块、条带状失真。服装和皮肤表面必须干净自然，不能有任何规则的人工线条纹理。',
+  ]
+
+  if (params.faceIdModelId && faceIdImageIndex) {
+    constraints.push(
+      '',
+      `【脸部锁定】脸型骨骼、五官细节、皮肤质感严格复刻图${faceIdImageIndex}；不生成通用 AI 脸、网红脸、娃娃脸、过度美颜脸、糊脸、塑料皮。`,
+    )
+  }
+
+  return prompt.trim() + '\n' + constraints.join('\n')
+}
+
+/**
  * Append face ID identity lock paragraph to a planner-rewritten prompt.
  *
  * Similar to `appendFlatDetailReferenceLock`: the LLM Planner fully rewrites each shot's prompt
@@ -1882,33 +2098,19 @@ function appendFaceIdLock(
 
   const imgRef = String(faceIdImageIndex)
 
-  // 移除 planner 可能残留的"延续参考图"脸部指令，避免与锁定指令冲突
+  // 移除 planner 可能残留的"延续参考图"脸部指令
   let cleaned = prompt
-  cleaned = cleaned.replace(/脸型五官和人物身份延续参考图[。；]/g, '面部全部特征和发色倾向以图' + imgRef + '人像小卡为唯一基准。')
-  cleaned = cleaned.replace(/脸型五官延续参考图[。；]/g, '面部全部特征和发色倾向以图' + imgRef + '人像小卡为唯一基准。')
+  cleaned = cleaned.replace(/脸型五官和人物身份延续参考图[。；]/g, '')
+  cleaned = cleaned.replace(/脸型五官延续参考图[。；]/g, '')
   cleaned = cleaned.replace(/人物脸部必须严格延续参考图[：:][^。；]+[。；]/g, '')
-  cleaned = cleaned.replace(/脸部延续参考图[，,][^。；]+[。；]/g, '面部全部特征和发色倾向以图' + imgRef + '人像小卡为唯一基准。')
-  cleaned = cleaned.replace(/脸型五官保持一致/g, '脸型五官和发色倾向严格以图' + imgRef + '人像小卡为唯一基准')
-  cleaned = cleaned.replace(/面部仍保持参考图一致/g, '面部全部特征和发色倾向严格以图' + imgRef + '人像小卡为唯一基准')
-  cleaned = cleaned.replace(/脸部若可见仍保持参考图一致/g, '脸部若可见，全部特征和发色倾向严格以图' + imgRef + '人像小卡为唯一基准')
-  cleaned = cleaned.replace(/人物身份保持一致；TA[^。]*穿着[^。]*这套[^。]*。/g, (match) => {
-    return match + '面部全部特征（脸型+五官）和发色倾向以图' + imgRef + '人像小卡为唯一基准。'
-  })
+  cleaned = cleaned.replace(/脸部延续参考图[，,][^。；]+[。；]/g, '')
+  cleaned = cleaned.replace(/面部仍保持参考图一致/g, '')
+  cleaned = cleaned.replace(/脸部若可见仍保持参考图一致/g, '')
 
-  // PREPEND：使用 Seedream 官方推荐的多图指令格式
-  // 官方文档明确建议："清楚指明不同图像需要编辑/参考的对象及操作"
-  // 开头用简洁替换指令，模型对开头指令权重最高
-  const prepend = [
-    `多图参考分工：图${imgRef}只提供脸部身份和发色倾向（脸型、五官、面部比例、皮肤质感、头发颜色倾向），不提供发型轮廓、刘海、发长、帽子、发饰、服装或穿搭。图1提供脸以外的造型和商品信息：发型轮廓、刘海、头发长度、图1已有配饰、服装穿搭、姿势、场景光线。生成时只把图${imgRef}的脸部核心特征和发色倾向融合到图1人物身上；不要复制图${imgRef}的发型、刘海、发饰或服装。图1没有的帽子、发饰、头饰、眼镜、耳饰、手持道具绝对不要新增。面部必须与图${imgRef}一致：脸型形状、下颌线弧度、颧骨、眼形、鼻型、嘴形、眉形、面部三庭五眼比例和真实皮肤质感都以图${imgRef}为准；表情可以自然变化，但脸型骨骼结构和五官细节不改变。\n\n`,
-    `${buildFaceIdSimilarityGuard(faceIdImageIndex)}\n\n`,
-  ].join('')
+  // 精简版 Face ID 锁定指令（只在开头声明一次，避免重复）
+  const prepend = `【多图参考分工】图${imgRef}提供脸部身份（脸型、五官、面部比例、皮肤质感、发色），图1提供发型、刘海、发长、帽子、发饰、服装、姿势、场景。生成时把图${imgRef}的脸融合到图1人物身上，不复制图${imgRef}的发型或服装。脸型骨骼、五官细节严格以图${imgRef}为准；表情可自然变化。图1已有配饰必须保留，不新增图1没有的头饰、眼镜、耳饰。\n\n`
 
-  // APPEND：尾部用替换指令格式再次强调
-  const append = [
-    `\n\n再次强调多图参考规则：脸部核心特征和发色倾向以图${imgRef}为准，生成结果要像图${imgRef}人像小卡里的同一张脸，不能变成陌生的通用漂亮脸；发型轮廓、刘海、头发长度、图1已有配饰、服装、姿势和背景以图1为准。图${imgRef}不能覆盖图1的发型结构、已有头部配饰或穿搭；图1没有的头饰、发饰、眼镜、耳饰和手持道具不得新增。`,
-  ].join('')
-
-  return `${prepend}${cleaned.trim()}${append}`
+  return `${prepend}${cleaned.trim()}`
 }
 
 /**
