@@ -2474,19 +2474,9 @@ function TaskHistory({
   onToggleImageSelection: (assetId: string, url: string, downloadUrl: string) => void;
 }) {
   if (!tasks.length) {
-    if (tasksLoading) {
-      return (
-        <div className="flex-1 overflow-y-auto p-5">
-          <div className="min-h-[520px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8">
-            <div className="w-8 h-8 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin mb-4" />
-            <p className="text-[13px] text-muted-foreground">正在加载历史记录...</p>
-          </div>
-        </div>
-      );
-    }
     return (
       <div className="flex-1 overflow-y-auto p-5">
-        <EmptyState />
+        {!tasksLoading && <EmptyState />}
       </div>
     );
   }
