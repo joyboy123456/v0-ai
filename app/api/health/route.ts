@@ -63,7 +63,7 @@ async function probeOss(): Promise<ServiceStatus> {
 export async function GET() {
   const payload: HealthResponse = {
     ok: true,
-    storageMode: STORAGE_MODE === 'cloud' ? 'local' : STORAGE_MODE,
+    storageMode: STORAGE_MODE,
     services: {
       oss: 'skipped',
     },

@@ -87,19 +87,11 @@ export async function POST(request: Request) {
     })
     return response
   } catch (error) {
-    if (error instanceof AuthError) {
-      if (error.code === 'INVALID_CREDENTIALS') {
-        return NextResponse.json(
-          { ok: false, error: 'INVALID_CREDENTIALS' },
-          { status: 401 },
-        )
-      }
-      if (error.code === 'CONFIG_ERROR') {
-        return NextResponse.json(
-          { ok: false, error: 'CONFIG_ERROR', message: error.message },
-          { status: 500 },
-        )
-      }
+    if (error instanceof AuthError && error.code === 'INVALID_CREDENTIALS') {
+      return NextResponse.json(
+        { ok: false, error: 'INVALID_CREDENTIALS' },
+        { status: 401 },
+      )
     }
     // eslint-disable-next-line no-console
     console.error('[auth/login] unexpected error:', error)

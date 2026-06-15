@@ -36,12 +36,6 @@ export async function GET() {
     }
     return NextResponse.json({ ok: true, user })
   } catch (error) {
-    if (error instanceof AuthError && error.code === 'CONFIG_ERROR') {
-      return NextResponse.json(
-        { ok: false, error: 'CONFIG_ERROR', message: error.message },
-        { status: 500 },
-      )
-    }
     // eslint-disable-next-line no-console
     console.error('[auth/me] unexpected error:', error)
     return NextResponse.json(
