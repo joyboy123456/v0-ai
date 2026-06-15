@@ -57,6 +57,11 @@ export function assertOssConfigured(): void {
       message: `OSS 调用前缺少 env：${missing.join(', ')}`,
     })
   }
+
+  // 警告：OSS_REGION 使用默认值，可能不是预期的配置
+  if (!process.env.OSS_REGION?.trim()) {
+    console.warn('[oss-client] OSS_REGION 未设置，使用默认值 oss-cn-hangzhou。如果部署在其他区域，请设置 OSS_REGION 环境变量。')
+  }
 }
 
 let cachedClient: OSS | null = null

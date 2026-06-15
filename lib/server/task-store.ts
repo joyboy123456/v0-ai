@@ -925,22 +925,76 @@ async function writeStoreFile(): Promise<void> {
  * So whenever an asset only has a relative fileUrl, we read the file from disk and
  * inline it as a data URL.
  *
- * PR3 注：cloud 模式 `fileUrl` 是 R2 公共 URL（https://pub-xxx.r2.dev/...），
- * 走分支 2（http(s)）直接由 third-party API 远端拉取，本函数无需改动。
- * 仅 local 模式才进入本地 URL 磁盘读取分支。
+ * PR3 修正：cloud 模式 `fileUrl` 是 OSS 公共 URL，
+ * 需要通过 storage adapter 认证下载后转换为 dataURL（Google Gemini API 需要 base64 inline data）。
  */
 async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null> {
   const { fileUrl, fileType } = asset
 
   if (!fileUrl) return null
   if (fileUrl.startsWith('data:')) return fileUrl
+
+  // HTTP/HTTPS URL：OSS 模式需要通过 storage adapter 认证下载
   if (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')) {
-    return fileUrl
+    try {
+      // 尝试从 OSS publicUrl 提取 key 并通过认证方式下载
+      const ossKey = extractOssKeyFromUrl(fileUrl)
+      if (ossKey) {
+        const image = await storage().getImage(ossKey)
+        if (!image) return null
+        const buffer = Buffer.from(image.body)
+        const mimeType = fileType?.startsWith('image/')
+          ? fileType
+          : (image.contentType ?? `image/${getExtension(fileType ?? 'image/png')}`)
+        return `data:${mimeType};base64,${buffer.toString('base64')}`
+      }
+
+      // 非 OSS URL 或无法提取 key 时，尝试直接 fetch（兼容其他存储服务）
+      // 添加超时限制（30秒）和大小限制（20MB）防止 SSRF 和内存溢出
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 30_000)
+
+      const response = await fetch(fileUrl, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'YibaiFission/1.0',
+        },
+      })
+      clearTimeout(timeoutId)
+
+      if (!response.ok) return null
+
+      // 检查 Content-Length 头（如果存在）
+      const contentLength = response.headers.get('content-length')
+      if (contentLength && parseInt(contentLength, 10) > 20 * 1024 * 1024) {
+        console.warn('[task-store] 外部图片超过 20MB 限制，跳过：', fileUrl)
+        return null
+      }
+
+      const buffer = Buffer.from(await response.arrayBuffer())
+
+      // 再次检查实际大小（防止 Content-Length 缺失或不准确）
+      if (buffer.byteLength > 20 * 1024 * 1024) {
+        console.warn('[task-store] 外部图片实际大小超过 20MB 限制，跳过：', fileUrl)
+        return null
+      }
+
+      const mimeType = fileType?.startsWith('image/')
+        ? fileType
+        : (response.headers.get('content-type') ?? `image/${getExtension(fileType ?? 'image/png')}`)
+      return `data:${mimeType};base64,${buffer.toString('base64')}`
+    } catch (error) {
+      console.warn('[task-store] 解析外部图片 URL 失败，跳过：', fileUrl, error)
+      return null
+    }
   }
 
   if (fileUrl.startsWith('/generated/') || fileUrl.startsWith('/local-assets/')) {
     const image = await getLocalImageForPublicUrl(fileUrl)
-    if (!image) return null
+    if (!image) {
+      console.warn('[task-store] 本地图片不存在，跳过：', fileUrl)
+      return null
+    }
     const buffer = Buffer.from(image.body)
     const mimeType = fileType?.startsWith('image/')
       ? fileType
@@ -948,7 +1002,20 @@ async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null>
     return `data:${mimeType};base64,${buffer.toString('base64')}`
   }
 
+  console.warn('[task-store] 未知的图片 URL 格式，跳过：', fileUrl)
   return null
+}
+
+/**
+ * 从 OSS publicUrl 中提取 object key。
+ * OSS publicUrl 格式：`https://bucket.oss-region.aliyuncs.com/yibai/userId/bucket/filename`
+ * 提取后：`yibai/userId/bucket/filename`
+ */
+function extractOssKeyFromUrl(url: string): string | null {
+  const ossPublicUrl = process.env.OSS_PUBLIC_URL?.trim()?.replace(/\/$/, '')
+  if (!ossPublicUrl) return null
+  if (!url.startsWith(ossPublicUrl + '/')) return null
+  return url.slice(ossPublicUrl.length + 1)
 }
 
 function getExtension(mimeType: string) {
@@ -1541,11 +1608,14 @@ export async function deleteResultFromTask(
   }
   await persistStore()
 
-  // 物理文件删除是 best-effort：磁盘/R2 上图缺失也不影响列表正确性。
-  // PR3：用 storage-adapter 屏蔽 local（unlink）/ cloud（R2 DELETE）差异。
+  // 物理文件删除是 best-effort：磁盘/OSS 上图缺失也不影响列表正确性。
+  // PR3：用 storage-adapter 屏蔽 local（unlink）/ cloud（OSS DELETE）差异。
   if (targetResult?.url) {
     try {
-      await storage().deleteImage(targetResult.url)
+      // OSS 模式：需要从 publicUrl 提取 key，而不是直接传递完整 URL
+      const ossKey = extractOssKeyFromUrl(targetResult.url)
+      const deleteKey = ossKey || targetResult.url
+      await storage().deleteImage(deleteKey)
     } catch {
       // 文件不存在/权限问题/并发删除：忽略
     }
