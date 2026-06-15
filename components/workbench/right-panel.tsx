@@ -2474,9 +2474,41 @@ function TaskHistory({
   onToggleImageSelection: (assetId: string, url: string, downloadUrl: string) => void;
 }) {
   if (!tasks.length) {
+    if (tasksLoading) {
+      return (
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className="space-y-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div
+                key={i}
+                className="w-full rounded-lg border border-border bg-card p-4 animate-pulse"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="h-5 w-16 rounded bg-secondary" />
+                  <div className="h-3 w-28 rounded bg-secondary" />
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <div className="h-4 w-20 rounded bg-secondary" />
+                  <div className="h-4 w-12 rounded-full bg-secondary" />
+                </div>
+                <div className="mt-1 h-3 w-24 rounded bg-secondary" />
+                <div className="mt-3 grid grid-cols-4 gap-1.5">
+                  {Array.from({ length: 4 }).map((_, j) => (
+                    <div
+                      key={j}
+                      className="aspect-[3/4] rounded bg-secondary"
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex-1 overflow-y-auto p-5">
-        {!tasksLoading && <EmptyState />}
+        <EmptyState />
       </div>
     );
   }
