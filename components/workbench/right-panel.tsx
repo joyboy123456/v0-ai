@@ -18,7 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { cn, validateUploadSize } from "@/lib/utils";
+import { cn, getOssThumbnailUrl, validateUploadSize } from "@/lib/utils";
 import { EnhancedImageTaskCard } from "./image-task-card";
 import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
 import {
@@ -1008,7 +1008,7 @@ function ResultImageCard({
       }}
       className="group relative aspect-[3/4] overflow-hidden rounded-md border border-border bg-card transition-colors hover:border-primary/60"
     >
-      <img src={image.url} alt="" className="h-full w-full object-cover" />
+      <img src={getOssThumbnailUrl(image.url)} alt="" className="h-full w-full object-cover" />
       <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           type="button"
@@ -1144,7 +1144,7 @@ function AiFashionMasonryGallery({
                   className="group relative overflow-hidden glass-card glass-card-hover break-inside-avoid mb-2 inline-block w-full text-left"
                 >
                   <img
-                    src={image.url}
+                    src={getOssThumbnailUrl(image.url)}
                     alt=""
                     className="w-full h-auto block bg-secondary"
                   />
@@ -1544,7 +1544,7 @@ function GenerationDetailDialog({
                 aria-label="查看这张结果图"
               >
                 <img
-                  src={resultImage.url}
+                  src={getOssThumbnailUrl(resultImage.url)}
                   alt=""
                   className="h-full w-full object-cover"
                 />
@@ -2707,7 +2707,7 @@ function TaskHistoryCard({
                 )}
               >
                 <img
-                  src={image.url}
+                  src={getOssThumbnailUrl(image.url)}
                   alt=""
                   className="h-full w-full object-cover"
                 />

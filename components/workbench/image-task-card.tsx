@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Heart, Download } from "lucide-react";
 import type { GenerationTask, ResultAsset } from "@/lib/types";
+import { getOssThumbnailUrl } from "@/lib/utils";
 
 // 扩展的内部状态，用于动画控制
 type InternalImageStatus = "loading" | "loaded";
@@ -96,7 +97,7 @@ function ImageSlotCard({
       )}
 
       <motion.img
-        src={image.url}
+        src={getOssThumbnailUrl(image.url)}
         alt={image.finalPrompt ?? ""}
         draggable={false}
         onLoad={() => onImageLoad(image.assetId, slot.index)}

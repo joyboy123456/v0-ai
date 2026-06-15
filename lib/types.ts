@@ -108,6 +108,8 @@ export interface ResultAsset {
   shotId?: string
   finalPrompt?: string
   metadata?: Record<string, unknown>
+  /** 缩略图 URL，列表/网格视图使用，减少流量 */
+  thumbnailUrl?: string
 }
 
 export interface GenerationTask {
