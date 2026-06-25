@@ -23,6 +23,7 @@ import {
   getNoAvailableProviderMessage,
   type ImageProvider,
 } from './image-provider-pool'
+import { GoogleImageError } from './google-image-retry'
 import { logImageEvent } from './log'
 import {
   getChildrensCategoryAngleControl,
@@ -974,6 +975,8 @@ interface ShotRunResult {
   shot: PhotoFissionShot
   result?: ResultAsset
   error?: string
+  /** 失败错误类别。payload_too_large 时不应跨渠道 failover（请求体恒定，换渠道必然同样失败）。 */
+  errorCategory?: string
   providerId?: string
 }
 
@@ -1136,7 +1139,9 @@ export async function runPhotoFissionPipeline(
         (
           entry,
         ): entry is { result: ShotRunResult; shot: PhotoFissionShot } =>
-          Boolean(entry.result?.error && !entry.result.result),
+          Boolean(entry.result?.error && !entry.result.result) &&
+          // payload_too_large：请求体恒定，换渠道必然同样失败，跳过 failover。
+          entry.result.errorCategory !== 'payload_too_large',
       )
 
     if (failedShots.length > 0) {
@@ -1421,10 +1426,13 @@ async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : '未知错误'
+        const errorCategory =
+          error instanceof GoogleImageError ? error.category : undefined
         // wrapper 已经在 gimg.fail 里打过结构化日志，这里仅记录 shot 级 result 供上层 partial 判定
         allShotResults[globalIndex] = {
           shot,
           error: message,
+          errorCategory,
           providerId: provider.id,
         }
       }

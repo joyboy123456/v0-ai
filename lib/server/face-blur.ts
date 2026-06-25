@@ -19,6 +19,35 @@ import { detectFace, calculateMaskRegion } from './face-detection'
 const EDGE_BLUR_SIGMA = 6
 
 /**
+ * 将图像源解析为 Buffer。
+ * 支持 data URL 和 HTTP/HTTPS URL（OSS 等远程存储）。
+ */
+async function resolveImageToBuffer(imageUrl: string): Promise<{ buffer: Buffer; mime: string }> {
+  // data URL 格式
+  const dataMatch = imageUrl.match(/^data:image\/(\w+);base64,(.+)$/)
+  if (dataMatch) {
+    return {
+      buffer: Buffer.from(dataMatch[2], 'base64'),
+      mime: dataMatch[1],
+    }
+  }
+
+  // HTTP/HTTPS URL（OSS 等远程存储）
+  if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+    const response = await fetch(imageUrl)
+    if (!response.ok) {
+      throw new Error(`下载图片失败: HTTP ${response.status}`)
+    }
+    const buffer = Buffer.from(await response.arrayBuffer())
+    const contentType = response.headers.get('content-type') ?? 'image/jpeg'
+    const mime = contentType.replace('image/', '').replace('jpeg', 'jpeg').replace('jpg', 'jpeg')
+    return { buffer, mime }
+  }
+
+  throw new Error(`不支持的图片格式: ${imageUrl.slice(0, 60)}...`)
+}
+
+/**
  * 完全遮挡图像中的人脸区域。
  *
  * 使用肤色检测自动定位人脸位置，然后在检测到的区域绘制纯色椭圆遮挡。
@@ -26,18 +55,11 @@ const EDGE_BLUR_SIGMA = 6
  *
  * 遮挡区域只覆盖五官核心，不覆盖帽子、发型、发饰或肩颈服装。
  *
- * @param imageUrl - data URL 格式的图像
+ * @param imageUrl - data URL 或 HTTP/HTTPS URL 格式的图像
  * @returns 处理后的 data URL
  */
 export async function blurFaceRegion(imageUrl: string): Promise<string> {
-  const match = imageUrl.match(/^data:image\/(\w+);base64,(.+)$/)
-  if (!match) {
-    throw new Error('无效的 data URL 格式')
-  }
-
-  const mime = match[1]
-  const base64Data = match[2]
-  const buffer = Buffer.from(base64Data, 'base64')
+  const { buffer, mime } = await resolveImageToBuffer(imageUrl)
 
   try {
     const image = sharp(buffer)

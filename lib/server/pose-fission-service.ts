@@ -25,6 +25,7 @@ import {
   type ImageProvider,
 } from './image-provider-pool'
 import { appendFlatDetailReferenceLock } from './fission-flat-detail-lock'
+import { GoogleImageError } from './google-image-retry'
 import { logImageEvent } from './log'
 import { runImageEditViaProvider } from './provider-image-router'
 
@@ -236,6 +237,8 @@ interface PoseRunResult {
   template: PoseTemplate
   result?: ResultAsset
   error?: string
+  /** 失败错误类别。payload_too_large 时不应跨渠道 failover（请求体恒定，换渠道必然同样失败）。 */
+  errorCategory?: string
   providerId?: string
 }
 
@@ -355,7 +358,9 @@ export async function runPoseFissionPipeline(
         (
           entry,
         ): entry is { result: PoseRunResult; template: PoseTemplate } =>
-          Boolean(entry.result?.error && !entry.result.result),
+          Boolean(entry.result?.error && !entry.result.result) &&
+          // payload_too_large：请求体恒定，换渠道必然同样失败，跳过 failover。
+          entry.result.errorCategory !== 'payload_too_large',
       )
 
     if (failedPoses.length > 0) {
@@ -548,9 +553,12 @@ async function runPoseGroup(options: RunPoseGroupOptions): Promise<void> {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : '未知错误'
+        const errorCategory =
+          error instanceof GoogleImageError ? error.category : undefined
         allPoseResults[globalIndex] = {
           template,
           error: message,
+          errorCategory,
           providerId: provider.id,
         }
       }

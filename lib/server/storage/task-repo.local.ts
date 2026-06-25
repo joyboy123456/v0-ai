@@ -140,6 +140,7 @@ function assetToRow(asset: AssetRecord): AssetRow {
     width: asset.width ?? null,
     height: asset.height ?? null,
     createdAt: createdMs,
+    favorited: asset.favorited ?? false,
   }
 }
 
@@ -155,6 +156,7 @@ function rowToAsset(row: AssetRow): AssetRecord {
     height: row.height ?? 1365,
     createdAt: new Date(row.createdAt).toISOString(),
     taskId: row.taskId ?? null,
+    favorited: row.favorited ?? false,
   }
 }
 

@@ -95,6 +95,11 @@ export interface AssetRecord {
    * 按 taskId 过滤。
    */
   taskId?: string | null
+  /**
+   * 是否被用户收藏。收藏的资产不会被自动清理。
+   * 默认 false（未收藏），由 PATCH /api/assets/[assetId]/favorite 设置。
+   */
+  favorited?: boolean
 }
 
 export interface ResultAsset {

@@ -13,9 +13,13 @@
  *   - 历史 `/generated/...` URL 仍可被服务端读取和兼容路由访问
  *   - 匿名用户不带 `{userId}` 段
  * - oss 模式：
- *   - key = `yibai/{userId}/{bucket}/{filename}`
+ *   - key = `yibai/{bucket}/{userId}/{filename}`
+ *     （bucket 在 userId 之前，使 OSS Lifecycle 能用 `yibai/results/` 固定前缀
+ *      精确匹配所有用户的生成图，做兜底自动删除；上传素材 `yibai/assets/` 不受影响）
  *   - publicUrl = `OSS_PUBLIC_URL + '/' + key`
  *   - userId 为空直接抛出 NotAuthorized（oss 不允许匿名）
+ *   - 注意：历史对象（路径调整前）仍是 `yibai/{userId}/{bucket}/...`，
+ *     读取/删除都按数据库里存的完整 publicUrl 走，不依赖本函数，故旧图不受影响。
  *
  * 流式持久化契约：
  * 本 adapter 是同步 put 单文件，符合「每个 shot 成功立即写盘」的预期；
@@ -62,6 +66,8 @@ export interface PutImageResult {
   /** 可对外公开访问的 URL：local 是本应用本地 URL，cloud 是 R2 公共 URL */
   publicUrl: string
   bytes: number
+  /** 缩略图 URL（400px WebP），列表/网格视图使用 */
+  thumbnailUrl?: string
 }
 
 export interface PutImageFromDataUrlResult extends PutImageResult {
@@ -284,7 +290,9 @@ function buildOssKey(
   filename: string,
 ): string {
   const safeUser = sanitizeUserSegment(userId)
-  return `yibai/${safeUser}/${bucket}/${filename}`
+  // bucket 段放在 userId 之前：让 OSS Lifecycle 可用 `yibai/results/` 固定前缀
+  // 精确匹配生成图做兜底清理，同时保留 `yibai/assets/` 下的上传素材。
+  return `yibai/${bucket}/${safeUser}/${filename}`
 }
 
 const ossAdapter: StorageAdapter = {

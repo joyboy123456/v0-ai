@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Heart, Download } from "lucide-react";
+import { Star, Download } from "lucide-react";
 import type { GenerationTask, ResultAsset } from "@/lib/types";
 import { getOssThumbnailUrl } from "@/lib/utils";
 
@@ -148,7 +148,7 @@ function ImageSlotCard({
               aria-label={isFavorite ? "取消收藏" : "收藏"}
               className="flex h-6 w-6 items-center justify-center rounded-full bg-background/85"
             >
-              <Heart
+              <Star
                 className={`h-3.5 w-3.5 ${
                   isFavorite
                     ? "fill-yellow-400 text-yellow-400"

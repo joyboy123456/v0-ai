@@ -147,6 +147,7 @@ function buildAssetRow(
     width: asset.width ?? null,
     height: asset.height ?? null,
     createdAt: createdMs,
+    favorited: asset.favorited ?? false,
   }
 }
 
@@ -191,7 +192,7 @@ async function storeAssetFromDataUrl(
 async function storeResultFromResultAsset(
   result: ResultAsset,
   userId: string,
-): Promise<{ url: string; bytes?: number; mimeType: string; width?: number; height?: number }> {
+): Promise<{ url: string; bytes?: number; mimeType: string; width?: number; height?: number; thumbnailUrl?: string }> {
   if (result.url.startsWith('data:')) {
     const mimeType = extractDataUrlMime(result.url) ?? 'image/png'
     const persisted = await storage().putImageFromDataUrl({
@@ -203,7 +204,13 @@ async function storeResultFromResultAsset(
     const dimensions = await readImageDimensionsFromBuffer(
       Buffer.from(result.url.split(',')[1] ?? '', 'base64'),
     )
-    return { url: persisted.publicUrl, bytes: persisted.bytes, mimeType, ...dimensions }
+    // 生成缩略图
+    const thumbnailUrl = await generateAndUploadThumbnail(
+      Buffer.from(result.url.split(',')[1] ?? '', 'base64'),
+      result.assetId,
+      userId,
+    )
+    return { url: persisted.publicUrl, bytes: persisted.bytes, mimeType, ...dimensions, thumbnailUrl }
   }
 
   if (!result.url.startsWith('http')) {
@@ -227,12 +234,44 @@ async function storeResultFromResultAsset(
     body: buffer,
     contentType: mimeType,
   })
+  // 生成缩略图
+  const thumbnailUrl = await generateAndUploadThumbnail(buffer, result.assetId, userId)
   return {
     url: persisted.publicUrl,
     bytes: persisted.bytes,
     mimeType,
     width: imageMetadata.width,
     height: imageMetadata.height,
+    thumbnailUrl,
+  }
+}
+
+/**
+ * 生成 400px 宽的 WebP 缩略图并上传到 OSS。
+ * 缩略图 key 为原图 key 的 _thumb.webp 后缀版本。
+ */
+async function generateAndUploadThumbnail(
+  sourceBuffer: Buffer,
+  assetId: string,
+  userId: string,
+): Promise<string | undefined> {
+  try {
+    const thumbnailBuffer = await sharp(sourceBuffer)
+      .resize({ width: 400, withoutEnlargement: true })
+      .webp({ quality: 80 })
+      .toBuffer()
+
+    const persisted = await storage().putImage({
+      userId: userId === defaultUserId ? null : userId,
+      bucket: 'results',
+      filename: `${assetId}_thumb.webp`,
+      body: thumbnailBuffer,
+      contentType: 'image/webp',
+    })
+    return persisted.publicUrl
+  } catch (error) {
+    console.warn('[thumbnail] 缩略图生成失败，降级使用原图', error)
+    return undefined
   }
 }
 
@@ -655,6 +694,7 @@ async function persistOneResult(
   result.downloadUrl = persisted.url
   result.width = persisted.width ?? result.width
   result.height = persisted.height ?? result.height
+  result.thumbnailUrl = persisted.thumbnailUrl
 
   const asset: AssetRecord = {
     assetId: result.assetId,
@@ -781,6 +821,7 @@ async function saveResults(
     result.downloadUrl = resultUrl
     result.width = persistedResult.width ?? result.width
     result.height = persistedResult.height ?? result.height
+    result.thumbnailUrl = persistedResult.thumbnailUrl
     const asset: AssetRecord = {
       assetId: result.assetId,
       userId: ownerUserId,
@@ -940,16 +981,22 @@ async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null>
       // 尝试从 OSS publicUrl 提取 key 并通过认证方式下载
       const ossKey = extractOssKeyFromUrl(fileUrl)
       if (ossKey) {
-        const image = await storage().getImage(ossKey)
-        if (!image) return null
-        const buffer = Buffer.from(image.body)
-        const mimeType = fileType?.startsWith('image/')
-          ? fileType
-          : (image.contentType ?? `image/${getExtension(fileType ?? 'image/png')}`)
-        return `data:${mimeType};base64,${buffer.toString('base64')}`
+        try {
+          const image = await storage().getImage(ossKey)
+          if (image) {
+            const buffer = Buffer.from(image.body)
+            const mimeType = fileType?.startsWith('image/')
+              ? fileType
+              : (image.contentType ?? `image/${getExtension(fileType ?? 'image/png')}`)
+            return `data:${mimeType};base64,${buffer.toString('base64')}`
+          }
+          console.warn('[task-store] OSS 图片不存在，改用公共 URL 拉取：', fileUrl)
+        } catch (ossError) {
+          console.warn('[task-store] OSS 图片认证下载失败，改用公共 URL 拉取：', fileUrl, ossError)
+        }
       }
 
-      // 非 OSS URL 或无法提取 key 时，尝试直接 fetch（兼容其他存储服务）
+      // 非 OSS URL、无法提取 key，或认证下载失败时，尝试直接 fetch（兼容其他存储服务）
       // 添加超时限制（30秒）和大小限制（20MB）防止 SSRF 和内存溢出
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 30_000)
@@ -1016,6 +1063,21 @@ function extractOssKeyFromUrl(url: string): string | null {
   if (!ossPublicUrl) return null
   if (!url.startsWith(ossPublicUrl + '/')) return null
   return url.slice(ossPublicUrl.length + 1)
+}
+
+/**
+ * 从原图的存储 key 推导缩略图 key。
+ * 缩略图命名规则（见 generateAndUploadThumbnail）：`{assetId}.{ext}` → `{assetId}_thumb.webp`。
+ * 同时适用于 OSS key（`yibai/uid/results/asset_x.png`）与 local publicUrl
+ * （`/local-assets/results/asset_x.png`）。
+ */
+function deriveThumbnailKey(key: string): string | null {
+  // 已经是缩略图则不处理
+  if (key.endsWith('_thumb.webp')) return null
+  // 去掉最后一段扩展名，加上 _thumb.webp 后缀
+  const withoutExt = key.replace(/\.[^./]+$/, '')
+  if (withoutExt === key) return null // 没有扩展名，无法推导
+  return `${withoutExt}_thumb.webp`
 }
 
 function getExtension(mimeType: string) {
@@ -1534,6 +1596,232 @@ export async function retryPoseFissionShots(
 
   const refreshed = store.tasks.get(taskId)
   return hydrateTaskInputAssets(refreshed ?? finalTask)
+}
+
+/**
+ * 设置资产收藏状态。收藏的资产不会被自动清理。
+ */
+export async function setAssetFavorite(
+  assetId: string,
+  favorited: boolean,
+  userId?: string,
+): Promise<boolean> {
+  await ensureStoreReady()
+  const asset = store.assets.get(assetId)
+  if (!asset) return false
+
+  if (
+    userId &&
+    userId.trim() &&
+    !shouldBypassOwnership(userId) &&
+    (asset.userId ?? defaultUserId) !== userId.trim()
+  ) {
+    return false
+  }
+
+  const updated = { ...asset, favorited }
+  store.assets.set(assetId, updated)
+  try {
+    await taskRepo().insertAsset(
+      buildAssetRow(updated, {
+        kind: updated.fileUrl?.includes('/results/') ? 'generated' : 'upload',
+      }),
+    )
+  } catch (error) {
+    console.error('[task-store] setAssetFavorite repo sync 失败：', error)
+  }
+  await persistStore()
+  return true
+}
+
+/**
+ * 批量设置资产收藏状态。
+ *
+ * 用于历史收藏数据从 localStorage 迁移到服务端：前端首次加载时把本地
+ * `fashion_favorites` 里的 assetId 列表一次性同步到后端，避免清理误删
+ * 用户已收藏但服务端未记录的老图。
+ *
+ * - 跳过不存在 / 非本人 / 已是目标状态的资产
+ * - 只持久化一次（避免 N 次写盘）
+ *
+ * @returns { updated: 实际改动的资产数, missing: 未找到/无权的 assetId 列表 }
+ */
+export async function setAssetsFavoriteBatch(
+  assetIds: string[],
+  favorited: boolean,
+  userId?: string,
+): Promise<{ updated: number; missing: string[] }> {
+  await ensureStoreReady()
+  const trimmedUser = userId?.trim()
+  const bypass = userId ? shouldBypassOwnership(userId) : false
+
+  let updated = 0
+  const missing: string[] = []
+
+  for (const assetId of assetIds) {
+    const asset = store.assets.get(assetId)
+    if (!asset) {
+      missing.push(assetId)
+      continue
+    }
+    if (
+      trimmedUser &&
+      !bypass &&
+      (asset.userId ?? defaultUserId) !== trimmedUser
+    ) {
+      missing.push(assetId)
+      continue
+    }
+    if ((asset.favorited ?? false) === favorited) continue
+
+    const next = { ...asset, favorited }
+    store.assets.set(assetId, next)
+    updated++
+    try {
+      await taskRepo().insertAsset(
+        buildAssetRow(next, {
+          kind: next.fileUrl?.includes('/results/') ? 'generated' : 'upload',
+        }),
+      )
+    } catch (error) {
+      console.error('[task-store] setAssetsFavoriteBatch repo sync 失败：', error)
+    }
+  }
+
+  if (updated > 0) {
+    await persistStore()
+  }
+
+  return { updated, missing }
+}
+
+/**
+ * 自动清理过期资产：删除超过 maxAgeMs 且未被收藏的「AI 生成结果图」+ 缩略图。
+ *
+ * 清理范围（重要）：
+ * - **仅清理生成图**（kind=generated，fileUrl 含 `/results/`），即历史记录里的成品图。
+ * - **保留用户上传的素材图**（kind=upload，assets bucket），避免影响「同款 / 重新生成」
+ *   等依赖原图的功能。
+ * - 生成图的缩略图（`{assetId}_thumb.webp`）会随原图一起删除，避免孤儿对象占用空间。
+ *
+ * 策略：
+ * 1. 遍历 store.assets，找出生成图中 createdAt 超过 maxAgeMs 且 favorited !== true 的资产
+ * 2. 逐个删除 OSS 对象（原图 + 缩略图，best-effort）
+ * 3. 从 store.assets 和 taskRepo 中移除记录
+ * 4. 清理关联 task 中已空的 task
+ *
+ * @returns 清理统计
+ */
+export async function cleanupExpiredAssets(
+  maxAgeMs: number = 48 * 60 * 60 * 1000,
+): Promise<{
+  deletedAssets: number
+  deletedObjects: number
+  errors: number
+  details: Array<{ assetId: string; key: string; error?: string }>
+}> {
+  await ensureStoreReady()
+  const now = Date.now()
+  const expired: AssetRecord[] = []
+
+  for (const asset of store.assets.values()) {
+    if (asset.favorited) continue
+    // 仅清理生成图（kind=generated）；保留用户上传的素材图。
+    if (!asset.fileUrl?.includes('/results/')) continue
+    const createdMs = parseTimestampMs(asset.createdAt)
+    if (createdMs === null) continue
+    if (now - createdMs > maxAgeMs) {
+      expired.push(asset)
+    }
+  }
+
+  let deletedAssets = 0
+  let deletedObjects = 0
+  let errors = 0
+  const details: Array<{ assetId: string; key: string; error?: string }> = []
+
+  for (const asset of expired) {
+    const ossKey = extractOssKeyFromUrl(asset.fileUrl)
+    const deleteKey = ossKey ?? asset.fileUrl
+
+    // 删除 OSS/local 物理文件（原图 + 缩略图）
+    if (deleteKey && deleteKey !== '/placeholder.jpg') {
+      // 1. 原图
+      try {
+        await storage().deleteImage(deleteKey)
+        deletedObjects++
+        details.push({ assetId: asset.assetId, key: deleteKey })
+      } catch (error) {
+        errors++
+        details.push({
+          assetId: asset.assetId,
+          key: deleteKey,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+
+      // 2. 缩略图（`{assetId}.{ext}` → `{assetId}_thumb.webp`）
+      const thumbnailKey = deriveThumbnailKey(deleteKey)
+      if (thumbnailKey) {
+        try {
+          await storage().deleteImage(thumbnailKey)
+          deletedObjects++
+          details.push({ assetId: asset.assetId, key: thumbnailKey })
+        } catch {
+          // 缩略图可能不存在（生成失败时降级用原图），忽略
+        }
+      }
+    }
+
+    // 从 store 移除
+    store.assets.delete(asset.assetId)
+    deletedAssets++
+
+    // 从 repo 移除
+    try {
+      await taskRepo().deleteAsset(asset.assetId)
+    } catch (error) {
+      console.error('[task-store] cleanup deleteAsset 失败：', error)
+    }
+
+    // 清理关联 task 中的 resultAssetIds / results 引用
+    if (asset.taskId) {
+      const task = store.tasks.get(asset.taskId)
+      if (task) {
+        const updatedResultAssetIds = task.resultAssetIds.filter(
+          (id) => id !== asset.assetId,
+        )
+        const updatedResults = task.results.filter(
+          (r) => r.assetId !== asset.assetId,
+        )
+        if (updatedResults.length === 0 && updatedResultAssetIds.length === 0) {
+          store.tasks.delete(asset.taskId)
+          try {
+            await taskRepo().deleteTask(asset.taskId)
+          } catch (error) {
+            console.error('[task-store] cleanup deleteTask 失败：', error)
+          }
+        } else {
+          store.tasks.set(asset.taskId, {
+            ...task,
+            results: updatedResults,
+            resultAssetIds: updatedResultAssetIds,
+          })
+        }
+      }
+    }
+  }
+
+  if (deletedAssets > 0) {
+    await persistStore()
+  }
+
+  console.log(
+    `[task-store] cleanupExpiredAssets: 删除 ${deletedAssets} 条资产记录，` +
+    `${deletedObjects} 个存储对象，${errors} 个错误`,
+  )
+
+  return { deletedAssets, deletedObjects, errors, details }
 }
 
 /**

@@ -26,6 +26,7 @@ const PUBLIC_PATH_PREFIXES = [
   '/api/auth/logout',
   '/api/auth/me',
   '/api/health',
+  '/api/cleanup',
   '/_next',
   '/favicon.ico',
   '/icon',

@@ -45,6 +45,7 @@ export interface AssetRow {
   width: number | null
   height: number | null
   createdAt: number
+  favorited: boolean
 }
 
 export interface TaskRepo {

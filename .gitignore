@@ -8,6 +8,7 @@ __v0_jsx-dev-runtime.ts
 
 # Environment variables
 # 本机开发配置只留在当前设备；在 .env.local 中固定 STORAGE_MODE=local。
+.env
 .env.local
 .env*.local
 .env.local.*

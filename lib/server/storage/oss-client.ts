@@ -193,3 +193,70 @@ export function buildOssPublicUrl(key: string): string {
   const normalizedKey = key.replace(/^\//, '')
   return `${env.publicUrl}/${normalizedKey}`
 }
+
+export interface OssListObject {
+  key: string
+  size: number
+  lastModified: Date
+}
+
+/**
+ * 列出指定前缀下的 OSS 对象。
+ * 用于清理脚本扫描过期对象（兜底机制）。
+ */
+export async function ossListByPrefix(
+  prefix: string,
+  opts?: { maxKeys?: number },
+): Promise<OssListObject[]> {
+  const client = getClient()
+  const normalizedPrefix = prefix.replace(/^\//, '')
+  const maxKeys = opts?.maxKeys ?? 1000
+
+  const results: OssListObject[] = []
+  let continuationToken: string | undefined
+
+  do {
+    const response = await client.list({
+      prefix: normalizedPrefix,
+      'max-keys': maxKeys,
+      'continuation-token': continuationToken,
+    }, {})
+    const objects = response.objects ?? []
+    for (const obj of objects) {
+      results.push({
+        key: obj.name,
+        size: obj.size,
+        lastModified: new Date(obj.lastModified),
+      })
+    }
+    continuationToken = response.nextContinuationToken
+  } while (continuationToken)
+
+  return results
+}
+
+/**
+ * 批量删除 OSS 对象。
+ * OSS 单次最多删除 1000 个 key。
+ */
+export async function ossDeleteMulti(keys: string[]): Promise<void> {
+  if (keys.length === 0) return
+  const client = getClient()
+  const normalizedKeys = keys.map((k) => k.replace(/^\//, ''))
+
+  // 分批，每批最多 1000 个
+  const batchSize = 1000
+  for (let i = 0; i < normalizedKeys.length; i += batchSize) {
+    const batch = normalizedKeys.slice(i, i + batchSize)
+    try {
+      await client.deleteMulti(batch)
+    } catch (cause: unknown) {
+      const err = cause as { code?: string; message?: string }
+      throw new OssError({
+        code: err.code || 'DELETE_MULTI_FAILED',
+        message: `OSS 批量删除失败：${err.message || String(cause)}`,
+        cause,
+      })
+    }
+  }
+}

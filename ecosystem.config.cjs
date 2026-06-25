@@ -14,6 +14,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: '3000',
+        CRON_SECRET: '28031576aa57db3a4c00cec10a74cdcaf1c9e9afeca6281d',
       },
       autorestart: true,
       max_restarts: 10,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   CheckCircle2,
@@ -239,6 +239,46 @@ export function RightPanel({
       // ignore quota errors
     }
   }, [favorites, favoritesHydrated]);
+
+  // 首次加载后把 localStorage 里的历史收藏一次性同步到服务端，
+  // 避免自动清理误删用户已收藏但服务端未记录的老图。本次会话只同步一次。
+  const historyFavoritesSyncedRef = useRef(false);
+  useEffect(() => {
+    if (!favoritesHydrated) return;
+    if (historyFavoritesSyncedRef.current) return;
+    const ids = Array.from(favorites);
+    if (ids.length === 0) return;
+    historyFavoritesSyncedRef.current = true;
+    fetch("/api/assets/favorites/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assetIds: ids }),
+    }).catch(() => {
+      // best-effort：同步失败时允许下次加载重试
+      historyFavoritesSyncedRef.current = false;
+    });
+  }, [favoritesHydrated, favorites]);
+
+  const handleToggleFavorite = useCallback((assetId: string) => {
+    setFavorites((current) => {
+      const next = new Set(current);
+      const willFavorite = !next.has(assetId);
+      if (willFavorite) {
+        next.add(assetId);
+      } else {
+        next.delete(assetId);
+      }
+      // fire-and-forget server sync
+      fetch(`/api/assets/${encodeURIComponent(assetId)}/favorite`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ favorited: willFavorite }),
+      }).catch(() => {
+        // best-effort: localStorage 仍保留本地状态
+      });
+      return next;
+    });
+  }, []);
 
   const isPoseFission = feature === "pose-fission";
   const isAiFashionPhoto = feature === "ai-fashion-photo";
@@ -789,17 +829,7 @@ export function RightPanel({
           batchSelectMode={batchSelectMode}
           selectedAssetIds={selectedAssets}
           onSelectTask={onSelectTask}
-          onToggleFavorite={(assetId) => {
-            setFavorites((current) => {
-              const next = new Set(current);
-              if (next.has(assetId)) {
-                next.delete(assetId);
-              } else {
-                next.add(assetId);
-              }
-              return next;
-            });
-          }}
+          onToggleFavorite={handleToggleFavorite}
           onPreviewImage={(image, task) => setPreviewResult({ image, task })}
           onToggleImageSelection={(assetId, url, downloadUrl) =>
             toggleImageSelection(assetId, url, downloadUrl)
@@ -818,17 +848,7 @@ export function RightPanel({
           onPreviewImage={(image, task) => setPreviewResult({ image, task })}
           onUseSameStyle={handleUseSameStyle}
           onDeleteResult={handleDeleteResult}
-          onToggleFavorite={(assetId) => {
-            setFavorites((current) => {
-              const next = new Set(current);
-              if (next.has(assetId)) {
-                next.delete(assetId);
-              } else {
-                next.add(assetId);
-              }
-              return next;
-            });
-          }}
+          onToggleFavorite={handleToggleFavorite}
         />
       ) : (
         <div className="flex-1 overflow-y-auto p-5">
@@ -859,15 +879,7 @@ export function RightPanel({
                         actionDisabled={isFaceVariantRunning}
                         onClick={() => setPreviewResult({ image, task: visibleTask })}
                         onToggleFavorite={() => {
-                          setFavorites((current) => {
-                            const next = new Set(current);
-                            if (next.has(image.assetId)) {
-                              next.delete(image.assetId);
-                            } else {
-                              next.add(image.assetId);
-                            }
-                            return next;
-                          });
+                          handleToggleFavorite(image.assetId);
                         }}
                         onRefineFace={() =>
                           openFaceRefine(visibleTask, image)
@@ -902,17 +914,7 @@ export function RightPanel({
             <GenerationDetailDialog
               preview={previewResult}
               favorites={favorites}
-              onToggleFavorite={(assetId) => {
-                setFavorites((current) => {
-                  const next = new Set(current);
-                  if (next.has(assetId)) {
-                    next.delete(assetId);
-                  } else {
-                    next.add(assetId);
-                  }
-                  return next;
-                });
-              }}
+              onToggleFavorite={handleToggleFavorite}
               onSelectPreview={(image, task) =>
                 setPreviewResult({ image, task })
               }

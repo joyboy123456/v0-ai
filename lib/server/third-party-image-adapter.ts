@@ -15,6 +15,7 @@ import {
   getNoAvailableProviderMessage,
   type ImageProvider,
 } from './image-provider-pool'
+import { GoogleImageError } from './google-image-retry'
 import { logImageEvent } from './log'
 import { runPhotoFissionPipeline } from './photo-fission-service'
 import { runImageEditViaProvider } from './provider-image-router'
@@ -163,6 +164,14 @@ async function runGoogleProviderEdits(input: ThirdPartyWorkflowInput) {
       })
     } catch (error) {
       lastError = error
+      // payload_too_large：请求体过大且大小恒定，换渠道也是同样的请求体，
+      // 必然同样失败。直接中断 failover 链，立即抛出，避免空跑后续渠道。
+      if (
+        error instanceof GoogleImageError &&
+        error.category === 'payload_too_large'
+      ) {
+        throw error
+      }
       const nextProvider = providerChain[index + 1]
       if (nextProvider) {
         logImageEvent(

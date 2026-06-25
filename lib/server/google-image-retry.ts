@@ -22,6 +22,7 @@ export type GoogleImageErrorCategory =
   | 'prohibited'
   | 'empty_output'
   | 'bad_request'
+  | 'payload_too_large'
   | 'auth_failed'
   | 'api_error'
   | 'unknown'
@@ -46,6 +47,7 @@ const defaultRetryableByCategory: Record<GoogleImageErrorCategory, boolean> = {
   prohibited: false,
   empty_output: true,
   bad_request: false,
+  payload_too_large: false,
   auth_failed: false,
   api_error: false,
   unknown: true,
