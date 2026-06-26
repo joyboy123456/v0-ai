@@ -157,6 +157,28 @@ export function Workbench() {
     [],
   )
 
+  const handleCancelTask = useCallback(
+    async (taskId: string) => {
+      const response = await fetch(`/api/tasks/${taskId}/cancel`, {
+        method: 'POST',
+      })
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string
+        }
+        throw new Error(data.error ?? `取消任务失败：HTTP ${response.status}`)
+      }
+
+      const task = (await response.json()) as GenerationTask
+      setTasks((currentTasks) =>
+        currentTasks.map((item) =>
+          item.taskId === task.taskId ? task : item,
+        ),
+      )
+    },
+    [],
+  )
+
   const loadTask = useCallback(async (taskId: string) => {
     const response = await fetch(`/api/tasks/${taskId}`, { cache: 'no-store' })
     if (response.status === 401) {
@@ -541,6 +563,7 @@ export function Workbench() {
         onSelectPhotoFissionCase={handleSelectPhotoFissionCase}
         onSelectTask={setActiveTaskId}
         onRefreshTasks={loadTasks}
+        onCancelTask={handleCancelTask}
         onDeleteTaskResult={handleDeleteTaskResult}
       />
       <PoseLibraryDialog

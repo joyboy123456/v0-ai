@@ -14,6 +14,7 @@ import type {
   PhotoFissionResultCount,
   PhotoFissionShotCard,
   PhotoFissionShotPlannerOutput,
+  StructuredImagePrompt,
 } from '@/lib/types'
 import {
   FissionPromptPlannerError,
@@ -23,10 +24,21 @@ import {
 
 const VALID_SHOT_COUNTS = new Set<number>([2, 4, 9, 10])
 
+const StructuredImagePromptSchema = z.object({
+  scene: z.string().min(1),
+  subject: z.string().min(1),
+  pose: z.string().min(1),
+  expression: z.string().min(1),
+  clothing: z.string().min(1),
+  background: z.string().min(1),
+  framing: z.string().min(1),
+  quality: z.string().min(1),
+}) satisfies z.ZodType<StructuredImagePrompt>
+
 const ShotCardSchema = z.object({
   shotId: z.string().min(1),
   role: z.string().min(1),
-  imagePrompt: z.string().min(20),
+  imagePrompt: z.union([z.string().min(20), StructuredImagePromptSchema]),
 }) satisfies z.ZodType<PhotoFissionShotCard>
 
 function buildShotPlannerOutputSchema(shotCount: number) {

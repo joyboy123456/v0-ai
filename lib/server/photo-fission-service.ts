@@ -13,6 +13,7 @@ import {
   type PhotoFissionParams,
   type PhotoFissionResolution,
   type PhotoFissionResultCount,
+  type PantsMainHandVisibility,
   type PhotoFissionShot,
   type ResultAsset,
 } from '@/lib/types'
@@ -41,7 +42,32 @@ import {
   SUIT_OUTDOOR_SCENE,
   SUIT_STYLE_ANCHOR,
 } from './prompt-templates/suit-planner-system'
+import {
+  getPantsAssignedPoseForShot,
+  getPantsShotBlueprintForCount,
+  PANTS_CATEGORY_REQUIREMENT,
+} from './prompt-templates/pants-planner-system'
+import {
+  buildPantsAssignedPoseInstruction,
+  getPantsPoseCardById,
+  getPantsPoseDirectionRule,
+  PANTS_FORBIDDEN_BILATERAL_HANDS_DOWN_PATTERN,
+  PANTS_MAIN_EVIDENCE_RULE,
+  PANTS_POSE_HISTORY_PATTERNS,
+  type PantsPoseCard,
+  type PantsPoseView,
+} from './prompt-templates/pants-pose-library'
 import { appendFlatDetailReferenceLock } from './fission-flat-detail-lock'
+import {
+  getPantsAngleLabel,
+  getPantsReferenceAngleForView,
+  getPantsShotDetailAvailability,
+  getPantsShotInputImageLabels,
+  getPantsShotReferenceSlots,
+  sanitizePantsPlannerReferenceText,
+  selectPantsShotInputImages,
+  type PantsDetailAvailability,
+} from './pants-reference-policy'
 import { applyManualFaceMask } from './manual-face-mask'
 import { buildPlannerRulePlan } from './photo-fission-rule-engine'
 import {
@@ -75,8 +101,14 @@ const photoFissionChildrensCategoryLabelMap = new Map(
 
 const SUIT_ACTION_HISTORY_GENERATIONS = 3
 const DRESS_ACTION_HISTORY_GENERATIONS = 3
+const PANTS_POSE_RESTRICTED_GENERATIONS = 3
+const PANTS_POSE_CYCLE_LENGTH = 8
 const recentSuitActionHistoryByKey = new Map<string, string[][]>()
 const recentDressActionHistoryByKey = new Map<string, string[][]>()
+const pantsPoseHistoryByKey = new Map<
+  string,
+  { generationCount: number; generations: string[][] }
+>()
 const DEFAULT_PHOTO_FISSION_CONCURRENCY = 3
 
 function buildFaceIdSimilarityGuard(faceIdImageIndex: number): string {
@@ -131,6 +163,7 @@ const childrensCategoryRequirementMap: Record<
   dress:
     '童装连衣裙品类规则：这是一张可直接用于淘宝/天猫上架的童装连衣裙商品图，连衣裙是画面第一主体；保持连衣裙结构，有明确上身与裙身连接关系，裙长、腰线、裙摆弧度、下摆层次、自然蓬度和整体廓形清楚可见，不能生成成裤装、瑜伽裤、紧身裤或贴腿包裹的下装。动作常量：正面全身站立、三分之二站姿、轻拉裙摆、轻提裙摆、坐姿铺开裙摆；动作轻柔克制，只服务商品展示。人物手臂、头发、腿脚、道具和任何参考图已有配饰都不能遮挡连衣裙主体，不能挡住领口、腰线、版型结构、裙摆弧度、下摆层次和面料细节；图1已有手拿小包、单肩包、草帽、眼镜、咖啡杯 / 饮品杯、花束或发饰时，作为原始穿搭搭配保留并放低存在感，不能凭空消失。表情常量：自然甜美、可爱亲切、看镜头浅笑，避免夸张表演。',
   suit: SUIT_CATEGORY_REQUIREMENT,
+  pants: PANTS_CATEGORY_REQUIREMENT,
 }
 
 export function normalizePhotoFissionParams(
@@ -153,11 +186,47 @@ export function normalizePhotoFissionParams(
     false,
     '服装大片裂变正面细节图参数无效',
   )
+  const hasSideDetail =
+    childrensCategory === 'pants' &&
+    readOptionalBoolean(
+      params.hasSideDetail,
+      false,
+      '服装大片裂变侧面细节图参数无效',
+    )
   const hasBackDetail = readOptionalBoolean(
     params.hasBackDetail,
     false,
     '服装大片裂变背面细节图参数无效',
   )
+  const maxDetailCount = childrensCategory === 'pants' ? 2 : 1
+  const frontDetailCount = readPhotoFissionDetailCount(
+    params.frontDetailCount,
+    hasFrontDetail,
+    maxDetailCount,
+    '服装大片裂变正面参考图数量无效',
+  )
+  const sideDetailCount =
+    childrensCategory === 'pants'
+      ? readPhotoFissionDetailCount(
+          params.sideDetailCount,
+          hasSideDetail,
+          2,
+          '服装大片裂变侧面参考图数量无效',
+        )
+      : 0
+  const backDetailCount = readPhotoFissionDetailCount(
+    params.backDetailCount,
+    hasBackDetail,
+    maxDetailCount,
+    '服装大片裂变背面参考图数量无效',
+  )
+  if (
+    hasFrontDetail !== (frontDetailCount > 0) ||
+    hasSideDetail !== (sideDetailCount > 0) ||
+    hasBackDetail !== (backDetailCount > 0)
+  ) {
+    throw new Error('服装大片裂变细节图数量与上传状态不一致')
+  }
   const imageRatio = readPhotoFissionImageRatio(params.imageRatio)
   const resolution = readPhotoFissionResolution(params.resolution)
   const resultCount = readResultCount(params.resultCount)
@@ -166,34 +235,55 @@ export function normalizePhotoFissionParams(
     false,
     '服装大片裂变推理模式参数无效',
   )
+  const pantsMainHandVisibility =
+    childrensCategory === 'pants'
+      ? readPantsMainHandVisibility(params.pantsMainHandVisibility)
+      : undefined
 
-  const faceIdModelId =
+  const rawFaceIdModelId =
     typeof params.faceIdModelId === 'string' && params.faceIdModelId.trim()
       ? params.faceIdModelId.trim()
       : null
-  const faceMaskAssetId =
+  const rawFaceMaskAssetId =
     typeof params.faceMaskAssetId === 'string' && params.faceMaskAssetId.trim()
       ? params.faceMaskAssetId.trim()
       : null
+  const faceIdModelId = childrensCategory === 'pants' ? null : rawFaceIdModelId
+  const faceMaskAssetId = childrensCategory === 'pants' ? null : rawFaceMaskAssetId
   if (faceIdModelId && !faceMaskAssetId) {
     throw new Error('请先涂抹主图五官区域')
   }
 
   const expectedAssetCount =
-    1 + (hasFrontDetail ? 1 : 0) + (hasBackDetail ? 1 : 0) + (faceIdModelId ? 1 : 0)
+    1 +
+    frontDetailCount +
+    sideDetailCount +
+    backDetailCount +
+    (faceIdModelId ? 1 : 0)
   if (inputAssetCount !== expectedAssetCount) {
     throw new Error('服装大片裂变素材数量与细节图参数不一致')
   }
 
+  const referenceAssetKey = buildPhotoFissionReferenceAssetKey(inputAssetIds)
+  const pantsPoseDrawSeed =
+    childrensCategory === 'pants'
+      ? `${referenceAssetKey ?? 'unknown-reference'}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+      : undefined
   const shotPlan = buildPhotoFissionShotPlan({
     category,
     childrensCategory,
     imageRatio,
     resolution,
     hasFrontDetail,
+    hasSideDetail,
     hasBackDetail,
+    frontDetailCount,
+    sideDetailCount,
+    backDetailCount,
+    pantsMainHandVisibility,
     resultCount,
     hasFaceIdModel: Boolean(faceIdModelId),
+    pantsPoseDrawSeed,
   })
 
   // R6 输入预检：每条 shot.prompt 不应超过 30000 字（v3 实测 1400-1500 字，远低于上限，加 guard）
@@ -210,12 +300,17 @@ export function normalizePhotoFissionParams(
     category,
     childrensCategory,
     hasFrontDetail,
+    hasSideDetail,
     hasBackDetail,
+    frontDetailCount,
+    sideDetailCount,
+    backDetailCount,
+    pantsMainHandVisibility,
     imageRatio,
     resolution,
     shotPlan,
     resultCount,
-    referenceAssetKey: buildPhotoFissionReferenceAssetKey(inputAssetIds),
+    referenceAssetKey,
     faceIdModelId,
     faceMaskAssetId,
     plannerReasoningEnabled,
@@ -228,10 +323,17 @@ export interface PhotoFissionShotPlanInput {
   imageRatio: PhotoFissionImageRatio
   resolution: PhotoFissionResolution
   hasFrontDetail: boolean
+  hasSideDetail: boolean
   hasBackDetail: boolean
+  frontDetailCount?: number
+  sideDetailCount?: number
+  backDetailCount?: number
+  pantsMainHandVisibility?: PantsMainHandVisibility
   resultCount: PhotoFissionResultCount
   /** Whether a portrait card (face ID model) is selected for facial feature locking */
   hasFaceIdModel: boolean
+  /** 每个裤子任务独立的加权姿势抽卡种子。 */
+  pantsPoseDrawSeed?: string
 }
 
 type PhotoFissionShotScene = 'reference' | 'outdoor'
@@ -252,6 +354,7 @@ export function buildPhotoFissionShotPlan(
   let activeBlueprint: ReadonlyArray<{
     label: string
     description: string
+    view?: PantsPoseView
     scene?: PhotoFissionShotScene
   }> | undefined
 
@@ -260,7 +363,9 @@ export function buildPhotoFissionShotPlan(
       throw new Error('服装大片裂变童装品类无效')
     }
     // 优先使用按数量构建的 blueprint
-    if (input.childrensCategory === 'suit') {
+    if (input.childrensCategory === 'pants') {
+      activeBlueprint = getPantsShotBlueprintForCount(input.resultCount)
+    } else if (input.childrensCategory === 'suit') {
       activeBlueprint = getSuitShotBlueprintForCount(input.resultCount)
     } else {
       const countAwareBlueprint = getChildrensCategoryShotBlueprintForCount(
@@ -279,14 +384,54 @@ export function buildPhotoFissionShotPlan(
   }
 
   // Face ID image is always the last item in inputImages.
-  // Image index = 1(main) + (front?1:0) + (back?1:0) + 1
+  // Image index = 1(main) + (front?1:0) + (side?1:0) + (back?1:0) + 1
   const faceIdImageIndex = input.hasFaceIdModel
-    ? 1 + (input.hasFrontDetail ? 1 : 0) + (input.hasBackDetail ? 1 : 0) + 1
+    ? 1 +
+      (input.frontDetailCount ?? (input.hasFrontDetail ? 1 : 0)) +
+      (input.sideDetailCount ?? (input.hasSideDetail ? 1 : 0)) +
+      (input.backDetailCount ?? (input.hasBackDetail ? 1 : 0)) +
+      1
     : undefined
 
   return activeBlueprint.map((blueprint, index) => {
     const shotId = `shot_${index + 1}`
     const order = index + 1
+    const pantsView =
+      input.category === 'childrens' && input.childrensCategory === 'pants'
+        ? (blueprint.view ?? 'front')
+        : undefined
+    const pantsMainHandVisibility = pantsView
+      ? input.pantsMainHandVisibility ?? 'hidden'
+      : undefined
+    const pantsAssignedPose = pantsView
+      ? getPantsAssignedPoseForShot(
+          input.resultCount,
+          shotId,
+          input.pantsPoseDrawSeed,
+          pantsMainHandVisibility,
+        )
+      : undefined
+    const shotDetailAvailability =
+      pantsView
+        ? getPantsShotDetailAvailability(
+            {
+              hasFrontDetail: input.hasFrontDetail,
+              hasSideDetail: input.hasSideDetail,
+              hasBackDetail: input.hasBackDetail,
+              frontDetailCount: input.frontDetailCount,
+              sideDetailCount: input.sideDetailCount,
+              backDetailCount: input.backDetailCount,
+            },
+            pantsView,
+          )
+        : {
+            hasFrontDetail: input.hasFrontDetail,
+            hasSideDetail: input.hasSideDetail,
+            hasBackDetail: input.hasBackDetail,
+            frontDetailCount: input.frontDetailCount,
+            sideDetailCount: input.sideDetailCount,
+            backDetailCount: input.backDetailCount,
+          }
     const prompt = buildShotPrompt({
       label: blueprint.label,
       shotDescription: blueprint.description,
@@ -296,17 +441,35 @@ export function buildPhotoFissionShotPlan(
       childrensCategory: input.childrensCategory,
       imageRatio: input.imageRatio,
       resolution: input.resolution,
-      hasFrontDetail: input.hasFrontDetail,
-      hasBackDetail: input.hasBackDetail,
+      resultCount: input.resultCount,
+      hasFrontDetail: shotDetailAvailability.hasFrontDetail,
+      hasSideDetail: shotDetailAvailability.hasSideDetail,
+      hasBackDetail: shotDetailAvailability.hasBackDetail,
+      frontDetailCount: shotDetailAvailability.frontDetailCount,
+      sideDetailCount: shotDetailAvailability.sideDetailCount,
+      backDetailCount: shotDetailAvailability.backDetailCount,
+      pantsView,
+      pantsAssignedPose,
+      pantsMainHandVisibility,
       hasFaceIdModel: input.hasFaceIdModel,
       faceIdImageIndex,
     })
+
+    const pantsFields = pantsAssignedPose
+      ? {
+          pantsPoseCardId: pantsAssignedPose.id,
+          pantsMainHandVisibility,
+          pantsMayRevealHandsWhenMainHidden:
+            pantsMainHandVisibility === 'visible',
+        }
+      : {}
 
     return {
       shotId,
       label: blueprint.label,
       prompt,
       order,
+      ...pantsFields,
     }
   })
 }
@@ -320,8 +483,16 @@ interface BuildShotPromptInput {
   childrensCategory?: PhotoFissionChildrensCategory
   imageRatio: PhotoFissionImageRatio
   resolution: PhotoFissionResolution
+  resultCount: PhotoFissionResultCount
   hasFrontDetail: boolean
+  hasSideDetail: boolean
   hasBackDetail: boolean
+  frontDetailCount?: number
+  sideDetailCount?: number
+  backDetailCount?: number
+  pantsView?: PantsPoseView
+  pantsAssignedPose?: PantsPoseCard
+  pantsMainHandVisibility?: PantsMainHandVisibility
   /** Whether a portrait card is selected for facial feature locking */
   hasFaceIdModel: boolean
   /** 1-based image index of the portrait card in inputImages */
@@ -329,6 +500,10 @@ interface BuildShotPromptInput {
 }
 
 function buildShotPrompt(input: BuildShotPromptInput): string {
+  if (isPantsChildrensCategory(input.category, input.childrensCategory)) {
+    return buildCompactPantsShotPrompt(input)
+  }
+
   const faceIdImageIndex = input.hasFaceIdModel ? input.faceIdImageIndex : undefined
 
   // 构建 JSON 结构化提示词
@@ -480,6 +655,260 @@ function buildNegativeArray(
   }
 
   return negatives
+}
+
+function getFaceIdImageIndexFromParams(
+  params: PhotoFissionParams,
+): number | undefined {
+  if (!params.faceIdModelId) return undefined
+  return (
+    1 +
+    (params.frontDetailCount ?? (params.hasFrontDetail ? 1 : 0)) +
+    (params.sideDetailCount ?? (params.hasSideDetail ? 1 : 0)) +
+    (params.backDetailCount ?? (params.hasBackDetail ? 1 : 0)) +
+    1
+  )
+}
+
+function buildCompactPantsShotPrompt(input: BuildShotPromptInput): string {
+  const orientation = getCompositionOrientation(input.imageRatio)
+  const pantsMainHandVisibility = input.pantsMainHandVisibility ?? 'hidden'
+  const isLowerBodyOnlyPants = pantsMainHandVisibility === 'hidden'
+  const shotDescription = compactPantsPromptText(
+    sanitizePantsCropText(
+      isLowerBodyOnlyPants
+        ? sanitizePantsHiddenHandText(input.shotDescription)
+        : input.shotDescription,
+    ),
+    420,
+  )
+  const poseInstruction = input.pantsAssignedPose
+    ? buildPantsAssignedPoseInstruction(input.pantsAssignedPose, {
+        mainHandVisibility: pantsMainHandVisibility,
+      })
+    : '按当前镜头说明执行腿部、重心、脚掌落点和方向变化；裤子版型、裤长基准、裤脚宽度、上衣、背景和光线继续跟随图1，允许指定姿势造成裤脚垂坠、褶皱和鞋脚露出程度自然变化。'
+  const handRule =
+    pantsMainHandVisibility === 'visible'
+      ? '主图露手：按图1保留可见手部数量、手臂范围、袖长、袖口和上衣款式，只执行姿势卡里的手部候选。'
+      : '本镜头保持下半身商品图模式，不上移镜头，不扩展成完整人像。'
+  const angleInstruction = buildPantsAngleInstruction(
+    input.pantsView,
+    input.shotIndex,
+    input.resultCount,
+  )
+  const taskLine = isLowerBodyOnlyPants
+    ? `生成同一条裤子的【${input.label}】单张下半身电商商品图，${orientation}。图1主图只锁定商品外观、穿着版型、下半身比例、构图边界、背景、图1边界内已有上衣局部和鞋子；腿脚站法不跟随主图，只执行本镜头唯一指定姿势。输出单张完整图片，不要多宫格。`
+    : `生成同一条裤子的【${input.label}】单张电商商品图，${orientation}。图1主图只锁定商品外观、穿着版型、人物比例、构图、背景、上衣和鞋子；腿脚站法不跟随主图，只执行本镜头唯一指定姿势。输出单张完整图片，不要多宫格。`
+  const productFrameLines = isLowerBodyOnlyPants
+    ? [
+        '裤子的穿着版型、裤型、宽松度、裤长基准和裤脚宽度以图1为准，不改造成其它裤型。指定腿脚姿势可以让裤脚垂坠、自然褶皱、裤脚高度投影、鞋子露出多少和脚部遮挡关系跟随动作发生真实变化。正面、侧面、背面细节图只校准对应可见局部真实存在的颜色、材质、纹理、图案、logo、刺绣、贴布、拼接、口袋、裤脚和侧缝；没有参考证据的结构不要生成，也不要凭常见裤装经验补口袋、装饰或图案。',
+        '商品结构红线：右腿可见 logo 或图案只能在右腿对应可见区域出现，左侧没有证据就不生成左侧 logo，背面没有证据就不生成背面图案、logo 或口袋；局部放大图只证明拍到的局部存在，不能扩展成其它面、另一条腿或整条裤子的结构。',
+        '图1已有的上衣局部颜色与图案、鞋子按同款保留，图1边界内露出多少上衣就保留多少；图1没有的内容不新增。画面边界、相机距离、主体大小和画面上边缘与图1一致，不上移镜头，不扩展成完整人像。以上锁定范围不包含腿脚站法，腿脚站法只执行本张唯一指定姿势。',
+        PANTS_LOWER_BODY_PRODUCT_FRAME_RULE,
+      ]
+    : [
+        '裤子的穿着版型、裤型、宽松度、裤长基准和裤脚宽度以图1为准，不改造成其它裤型。指定腿脚姿势可以让裤脚垂坠、自然褶皱、裤脚高度投影、鞋子露出多少和脚部遮挡关系跟随动作发生真实变化。正面、侧面、背面细节图只校准对应可见局部真实存在的颜色、材质、纹理、图案、logo、刺绣、贴布、拼接、口袋、裤脚和侧缝；没有参考证据的结构不要生成，也不要凭常见裤装经验补口袋、装饰或图案。',
+        '商品结构红线：右腿可见 logo 或图案只能在右腿对应可见区域出现，左侧没有证据就不生成左侧 logo，背面没有证据就不生成背面图案、logo 或口袋；局部放大图只证明拍到的局部存在，不能扩展成其它面、另一条腿或整条裤子的结构。',
+        '图1已有的上衣颜色与图案、鞋子按同款保留，图1露出多少上衣就保留多少上衣；图1没有的内容不新增。画面边界、相机距离、人物大小、胸口以上裁切和画面上边缘与图1一致。以上锁定范围不包含腿脚站法，腿脚站法只执行本张唯一指定姿势。',
+      ]
+
+  const sections = [
+    [
+      '【任务】',
+      taskLine,
+    ].join('\n'),
+    [
+      '【唯一指定姿势｜最高优先级】',
+      '本段是本张唯一的姿势与腿脚来源，优先级高于其它所有段落。商品参考图只控制裤子外观和结构，不控制腿脚站法。若参考图姿势或任何参考描述与本段冲突，一律以本段为准。指定姿势可以自然改变裤脚垂坠、褶皱、鞋子露出程度和脚部遮挡关系。',
+      angleInstruction,
+      poseInstruction,
+      handRule,
+    ].join('\n'),
+    buildCompactPantsReferenceSection(input),
+    [
+      '【商品与构图锁定】',
+      ...productFrameLines,
+    ].join('\n'),
+    [
+      '【本张镜头】',
+      `${input.label}：${shotDescription}。本段只描述当前方向家族与商品展示，不得新增或改写任何腿部、脚掌、重心或支撑物动作，腿脚和角度一律以上方【唯一指定姿势】为准。`,
+    ].join('\n'),
+    [
+      '【禁止】',
+      isLowerBodyOnlyPants
+        ? '不要改变裤子款式、裤型、裤长基准、裤脚宽度、上衣局部、鞋子款式、背景、光线、相机距离和主体大小；不要复制参考图腿脚站法，不要把指定姿势退化成参考图普通站姿，不要为了保持图1鞋脚遮挡而取消脚尖点地、屈膝、行走、交叉步或台阶高低层次。不要扩展图1上边缘以外的画面，不要补齐画面外身体结构，不要新增文字、水印、品牌印章、多余人物、多宫格、卡通、插画或 3D 风格；不要让裤子图案、logo、刺绣、贴布、拼接、口袋和真实结构与对应参考图不一致，不要换腿、换面、镜像或移动位置。'
+        : '不要改变裤子款式、裤型、裤长基准、裤脚宽度、上衣、鞋子款式、背景、光线、相机距离和人物大小；不要复制参考图腿脚站法，不要把指定姿势退化成参考图普通站姿，不要为了保持图1鞋脚遮挡而取消脚尖点地、屈膝、行走、交叉步或台阶高低层次。不要扩展图1上边缘以外的画面、不要新增文字、水印、品牌印章、多余人物、多宫格、卡通、插画或 3D 风格；不要让裤子图案、logo、刺绣、贴布、拼接、口袋和真实结构与对应参考图不一致，不要换腿、换面、镜像或移动位置。',
+    ].join('\n'),
+    [
+      '【输出参数】',
+      `画面比例：${input.imageRatio}；分辨率档位：${input.resolution}；品类：裤子。`,
+    ].join('\n'),
+  ]
+
+  return sections.join('\n\n')
+}
+
+function sanitizePantsHiddenHandText(text: string): string {
+  return text
+    .replace(/手部是否出现严格服从主图露手证据，主图不露手则本镜头不露手，/g, '上衣可见范围与主图一致，')
+    .replace(/手部和腿部严格执行本镜头指定姿势卡/g, '腿部严格执行本镜头指定姿势卡')
+    .replace(/完整手部动作和完整腿部动作/g, '完整腿部动作')
+    .replace(/不同手部动作、腿脚站位、重心和微侧幅度/g, '不同腿脚站位、重心和微侧幅度')
+    .replace(/低位手部动作/g, '腿脚动作')
+    .replace(/人物大小/g, '主体大小')
+    .replace(/人物比例/g, '下半身比例')
+    .replace(/模特/g, '下半身主体')
+    .replace(/胸口以上区域不进入画面，?/g, '')
+}
+
+const PANTS_LOWER_BODY_PRODUCT_FRAME_RULE =
+  '下半身商品图模式：图1如果只上传腰胯以下或下半身局部，输出必须保持同类下半身裁切；主体限定为腰胯、裤身、膝盖、小腿、脚踝、鞋子和图1边界内已有上衣局部；不要扩展成完整人像，不要根据人体常识补齐画面外身体结构。'
+
+function buildPantsAngleInstruction(
+  view: PantsPoseView | undefined,
+  shotIndex: number,
+  resultCount: PhotoFissionResultCount,
+): string {
+  if (view === 'front') {
+    return '身体角度：正面为主要可见面，可微左或微右0°-15°，不能变成明确侧面或背面。'
+  }
+  if (view === 'back') {
+    return '身体角度：背面为主要可见面，可微左或微右0°-15°，不能变成正面或明确侧面。'
+  }
+  if (view === 'side') {
+    return '身体角度：明确侧面，可朝向左侧或右侧约60°，允许45°-75°，不能变成纯正面或纯背面。'
+  }
+  if (view !== 'left' && view !== 'right') return ''
+
+  const direction = view === 'left' ? '左侧' : '右侧'
+  const baseAngle = getPantsSideBaseAngle(view, shotIndex, resultCount)
+  const rangeText = getPantsAngleRangeText(baseAngle)
+  const directionAnchor =
+    view === 'left'
+      ? '鞋尖、膝盖、裤侧缝和裤腿外轮廓整体朝画面左侧；不能为了显示正面 logo 把左侧画成右侧或正面，右腿/正面 logo 没有左侧证据时应变窄、转到边缘或不可见。'
+      : '鞋尖、膝盖、裤侧缝和裤腿外轮廓整体朝画面右侧；不能为了显示正面 logo 把右侧画成左侧或正面，左腿/正面 logo 没有右侧证据时应变窄、转到边缘或不可见。'
+  return `身体角度：朝向${direction}约${baseAngle}°，允许${rangeText}，与同批其它${direction}镜头形成可见角度差。${directionAnchor}`
+}
+
+function getPantsSideBaseAngle(
+  view: Extract<PantsPoseView, 'left' | 'right'>,
+  shotIndex: number,
+  resultCount: PhotoFissionResultCount,
+): 30 | 60 | 90 {
+  if (resultCount === 10) {
+    const angles = [30, 60, 90] as const
+    const startIndex = view === 'left' ? 4 : 7
+    return angles[shotIndex - startIndex] ?? 60
+  }
+  if (resultCount === 9) {
+    const startIndex = view === 'left' ? 4 : 7
+    const angles =
+      view === 'left'
+        ? ([30, 60, 90] as const)
+        : ([60, 90] as const)
+    return angles[shotIndex - startIndex] ?? 60
+  }
+  return 60
+}
+
+function getPantsAngleRangeText(baseAngle: 30 | 60 | 90): string {
+  if (baseAngle === 30) return '15°-45°'
+  if (baseAngle === 60) return '45°-75°'
+  return '75°-95°（最高不超过95°）'
+}
+
+function buildCompactPantsReferenceSection(input: BuildShotPromptInput): string {
+  const targetView = input.pantsView ?? 'front'
+  const isLowerBodyOnlyPants =
+    (input.pantsMainHandVisibility ?? 'hidden') === 'hidden'
+  const targetAngle = getPantsReferenceAngleForView(targetView)
+  const targetLabel =
+    targetView === 'left'
+      ? '左侧'
+      : targetView === 'right'
+        ? '右侧'
+        : getPantsAngleLabel(targetAngle)
+  const referenceSlots = getPantsShotReferenceSlots(
+    {
+      hasFrontDetail: input.hasFrontDetail,
+      hasSideDetail: input.hasSideDetail,
+      hasBackDetail: input.hasBackDetail,
+      frontDetailCount: input.frontDetailCount,
+      sideDetailCount: input.sideDetailCount,
+      backDetailCount: input.backDetailCount,
+    },
+    targetView,
+  )
+  const lines = [
+    '【参考图】',
+    isLowerBodyOnlyPants
+      ? `参考图里的腿脚站姿必须被忽略，只锁定裤子外观、结构和图案。图1主图是下半身裁切基准，只锁定商品外观、穿着版型、下半身比例、构图边界、背景、图1边界内已有上衣局部和鞋子；腿脚站法不跟随主图，只执行本镜头唯一指定姿势。${PANTS_LOWER_BODY_PRODUCT_FRAME_RULE}`
+      : '参考图里的人物站姿必须被忽略，只锁定裤子外观、结构和图案。图1主图只锁定商品外观、穿着版型、人物比例、构图、背景、上衣和鞋子；腿脚站法不跟随主图，只执行本镜头唯一指定姿势。',
+  ]
+
+  if (referenceSlots.length === 0) {
+    lines.push(
+      `本镜头没有可用${targetLabel}细节图，${targetLabel}商品元素只按图1清楚可见证据保守呈现；不得从其它角度推测或迁移 logo、图案、口袋、刺绣、贴布和拼接。`,
+    )
+    return lines.join('\n')
+  }
+
+  const grouped = referenceSlots.reduce<Record<string, number>>((acc, slot) => {
+    const label = getPantsAngleLabel(slot.angle)
+    acc[label] = (acc[label] ?? 0) + 1
+    return acc
+  }, {})
+  const summary = Object.entries(grouped)
+    .map(([label, count]) => `${count} 张${label}参考`)
+    .join('、')
+  const targetCount = referenceSlots.filter(
+    (slot) => slot.angle === targetAngle,
+  ).length
+
+  lines.push(
+    `本镜头可用商品细节图：${summary}。${targetLabel}细节图只锁定图中清楚可见的颜色、材质、纹理、图案、logo、刺绣、贴布、拼接、口袋、裤脚或侧缝；不控制腿脚姿势、身体朝向、构图边界、主体大小或完整裤身轮廓。`,
+  )
+  lines.push(
+    targetCount > 0
+      ? `当前共有 ${targetCount} 张${targetLabel}细节图；局部放大图只证明拍到的局部存在，不能扩展成另一条腿、另一侧、背面或整条裤子的结构。logo、图案、刺绣、贴布、拼接和口袋不得换腿、换面、镜像或移动位置。`
+      : `当前没有${targetLabel}细节图，${targetLabel}商品元素只按图1清楚可见证据保守呈现；其它角度不能代替${targetLabel}结构证据。`,
+  )
+  if (targetAngle === 'back') {
+    lines.push('背面细节图没有明确后袋、袋盖、贴袋轮廓、logo、图案或口袋缝线时，背面保持连续整片面料，禁止新增或从其它角度迁移。')
+  }
+  return lines.join('\n')
+}
+
+function compactPantsPromptText(text: string, maxLength: number): string {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLength) return normalized
+
+  const sentenceBoundary = Math.max(
+    normalized.lastIndexOf('。', maxLength),
+    normalized.lastIndexOf('；', maxLength),
+    normalized.lastIndexOf('.', maxLength),
+  )
+  if (sentenceBoundary >= Math.floor(maxLength * 0.6)) {
+    return normalized.slice(0, sentenceBoundary + 1)
+  }
+  return `${normalized.slice(0, maxLength).trim()}。`
+}
+
+function buildPantsAssignedPoseSection(
+  assignedPose: PantsPoseCard,
+  pantsMainHandVisibility: PantsMainHandVisibility,
+): string {
+  const handRule =
+    pantsMainHandVisibility === 'visible'
+      ? '主图露手模式：按图1保留可见手部数量、手臂可见范围、上衣袖长、袖口和上衣款式，只执行上述手部候选。'
+      : PANTS_LOWER_BODY_PRODUCT_FRAME_RULE
+  return [
+    '【本镜头唯一指定姿势｜最高优先级】',
+    buildPantsAssignedPoseInstruction(assignedPose, {
+      mainHandVisibility: pantsMainHandVisibility,
+    }),
+    `必须执行上述腿部、重心、脚掌落点和肉眼可见差异点；${handRule}不得参考其它姿势库或创造相似替代动作。姿势引起的自然褶皱、裤脚高度投影和鞋脚遮挡变化可以存在，但裤长、裤型、裤脚宽度、上衣和商品结构保持不变。`,
+  ].join('\n')
 }
 
 /**
@@ -775,6 +1204,49 @@ function isDressChildrensCategory(
   return category === 'childrens' && childrensCategory === 'dress'
 }
 
+function isPantsChildrensCategory(
+  category: PhotoFissionCategory,
+  childrensCategory?: PhotoFissionChildrensCategory,
+): childrensCategory is 'pants' {
+  return category === 'childrens' && childrensCategory === 'pants'
+}
+
+function getPantsDetailAvailability(
+  params: PhotoFissionParams,
+): PantsDetailAvailability {
+  return {
+    hasFrontDetail: params.hasFrontDetail,
+    hasSideDetail: Boolean(params.hasSideDetail),
+    hasBackDetail: params.hasBackDetail,
+    frontDetailCount:
+      params.frontDetailCount ?? (params.hasFrontDetail ? 1 : 0),
+    sideDetailCount:
+      params.sideDetailCount ?? (params.hasSideDetail ? 1 : 0),
+    backDetailCount:
+      params.backDetailCount ?? (params.hasBackDetail ? 1 : 0),
+  }
+}
+
+function getPantsShotReferenceText(
+  params: PhotoFissionParams,
+  shot: PhotoFissionShot,
+): string {
+  const blueprint = getPantsShotBlueprintForCount(params.resultCount)[shot.order - 1]
+  return blueprint
+    ? `${blueprint.label} ${blueprint.description}`
+    : `${shot.label} ${shot.prompt}`
+}
+
+function getPantsShotView(
+  params: PhotoFissionParams,
+  shot: PhotoFissionShot,
+): PantsPoseView {
+  return (
+    getPantsShotBlueprintForCount(params.resultCount)[shot.order - 1]?.view ??
+    'front'
+  )
+}
+
 function buildStyleLockSection(
   shotDescription: string,
   shotScene: PhotoFissionShotScene | undefined,
@@ -955,6 +1427,8 @@ export interface RunPhotoFissionPipelineOptions {
   params: PhotoFissionParams
   apiKey: string
   timeoutMs: number
+  signal?: AbortSignal
+  onShotProgress?: (shotId: string, message: string, retryAttempt?: number) => void
   /**
    * 单 shot 成功后立刻回调；用于流式持久化已成功的图，防止整个 pipeline 卡死时丢失数据。
    * 可选：未传时 pipeline 行为完全向后兼容（仅在 Promise.all 全部 settle 后返回 results）。
@@ -1121,6 +1595,8 @@ export async function runPhotoFissionPipeline(
         apiKey: provider.apiKey || options.apiKey,
         aspectRatio,
         imageSize,
+        signal: options.signal,
+        onShotProgress: options.onShotProgress,
         onShotResult: options.onShotResult,
         shotIndexMap,
         allShotResults,
@@ -1192,6 +1668,8 @@ export async function runPhotoFissionPipeline(
               apiKey: provider.apiKey,
               aspectRatio,
               imageSize,
+              signal: options.signal,
+              onShotProgress: options.onShotProgress,
               onShotResult: options.onShotResult,
               shotIndexMap,
               allShotResults,
@@ -1311,6 +1789,8 @@ interface RunShotGroupOptions {
   apiKey: string
   aspectRatio: string
   imageSize: string
+  signal?: AbortSignal
+  onShotProgress?: (shotId: string, message: string, retryAttempt?: number) => void
   onShotResult?: (result: ResultAsset) => Promise<void>
   shotIndexMap: Map<string, number>
   allShotResults: ShotRunResult[]
@@ -1332,6 +1812,8 @@ async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
     apiKey,
     aspectRatio,
     imageSize,
+    signal,
+    onShotProgress,
     onShotResult,
     shotIndexMap,
     allShotResults,
@@ -1358,24 +1840,48 @@ async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
       const currentIndex = nextIndex
       nextIndex += 1
       if (currentIndex >= shots.length) return
+      if (signal?.aborted) return
 
       const shot = shots[currentIndex]
       const globalIndex = shotIndexMap.get(shot.shotId)
       if (globalIndex === undefined) continue
 
       try {
+        const isPantsTask = isPantsChildrensCategory(
+          params.category,
+          params.childrensCategory,
+        )
+        const pantsAvailability = isPantsTask
+          ? getPantsDetailAvailability(params)
+          : null
+        const pantsView = isPantsTask ? getPantsShotView(params, shot) : undefined
+        const shotInputImages = pantsAvailability
+          ? selectPantsShotInputImages(
+              inputImages,
+              pantsAvailability,
+              pantsView ?? 'front',
+            )
+          : inputImages
+        const inputImageLabels = pantsAvailability
+          ? getPantsShotInputImageLabels(pantsAvailability, pantsView ?? 'front')
+          : undefined
         const single = await runImageEditViaProvider({
           taskId,
           provider,
           fallbackApiKey: apiKey,
           model: params.model,
           prompt: shot.prompt,
-          inputImages,
+          inputImages: shotInputImages,
+          inputImageLabels,
           count: 1,
           aspectRatio,
           imageSize,
           traceId: `${taskId}_${shot.shotId}`,
           shotId: shot.shotId,
+          signal,
+          onRetryAttempt: (attempt) => {
+            onShotProgress?.(shot.shotId, `第 ${attempt} 次重跑中...`, attempt)
+          },
         })
 
         const first = single[0]
@@ -1463,6 +1969,26 @@ function readPositiveInt(value: string | undefined, fallback: number): number {
   return Math.floor(parsed)
 }
 
+function readPhotoFissionDetailCount(
+  value: unknown,
+  legacyHasDetail: boolean,
+  max: number,
+  errorMessage: string,
+): number {
+  if (value === undefined || value === null || value === '') {
+    return legacyHasDetail ? 1 : 0
+  }
+  if (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= max
+  ) {
+    return value
+  }
+  throw new Error(errorMessage)
+}
+
 function readFashionModel(value: unknown): FashionModelId {
   if (value === undefined || value === null || value === '') {
     return DEFAULT_FASHION_MODEL
@@ -1523,6 +2049,12 @@ function readPhotoFissionResolution(value: unknown): PhotoFissionResolution {
   throw new Error('服装大片裂变分辨率无效')
 }
 
+function readPantsMainHandVisibility(value: unknown): PantsMainHandVisibility {
+  if (value === undefined || value === null || value === '') return 'hidden'
+  if (value === 'hidden' || value === 'visible') return value
+  throw new Error('裤子主图露手参数无效')
+}
+
 const VALID_RESULT_COUNTS = new Set<number>([2, 4, 9, 10])
 
 function readResultCount(value: unknown): PhotoFissionResultCount {
@@ -1570,6 +2102,24 @@ function getRecentDressActionHints(params: PhotoFissionParams): string[] {
   return [...new Set(generations.flat())]
 }
 
+function getRecentPantsPoseHints(params: PhotoFissionParams): string[] {
+  if (!isPantsChildrensCategory(params.category, params.childrensCategory)) {
+    return []
+  }
+  const key = buildPantsPoseHistoryKey(params)
+  const state = pantsPoseHistoryByKey.get(key)
+  if (!state) return []
+
+  const cyclePosition = state.generationCount % PANTS_POSE_CYCLE_LENGTH
+  if (cyclePosition === 0) {
+    return []
+  }
+  if (cyclePosition >= PANTS_POSE_RESTRICTED_GENERATIONS) {
+    return []
+  }
+  return [...new Set(state.generations.flat())]
+}
+
 function rememberSuitActionHints(
   params: PhotoFissionParams,
   shots: ReadonlyArray<{ role: string; imagePrompt: string | import('@/lib/types').StructuredImagePrompt }>,
@@ -1604,6 +2154,34 @@ function rememberDressActionHints(
   recentDressActionHistoryByKey.set(key, nextGenerations)
 }
 
+function rememberPantsPoseHints(
+  params: PhotoFissionParams,
+  shots: ReadonlyArray<{ role: string; imagePrompt: string | import('@/lib/types').StructuredImagePrompt }>,
+): void {
+  if (!isPantsChildrensCategory(params.category, params.childrensCategory)) {
+    return
+  }
+  const key = buildPantsPoseHistoryKey(params)
+  const current = pantsPoseHistoryByKey.get(key) ?? {
+    generationCount: 0,
+    generations: [],
+  }
+  const cyclePosition = current.generationCount % PANTS_POSE_CYCLE_LENGTH
+  const nextHints = extractPantsPoseHints(shots)
+  const nextGenerations =
+    cyclePosition < PANTS_POSE_RESTRICTED_GENERATIONS && nextHints.length > 0
+      ? [
+          ...(cyclePosition === 0 ? [] : current.generations),
+          nextHints,
+        ].slice(-PANTS_POSE_RESTRICTED_GENERATIONS)
+      : current.generations
+
+  pantsPoseHistoryByKey.set(key, {
+    generationCount: current.generationCount + 1,
+    generations: nextGenerations,
+  })
+}
+
 function buildSuitActionHistoryKey(params: PhotoFissionParams): string {
   return `${params.category}:${params.childrensCategory ?? 'none'}:${params.resultCount ?? 9}`
 }
@@ -1618,14 +2196,25 @@ function buildDressActionHistoryKey(params: PhotoFissionParams): string {
   ].join(':')
 }
 
+function buildPantsPoseHistoryKey(params: PhotoFissionParams): string {
+  return [
+    params.category,
+    params.childrensCategory ?? 'none',
+    params.resultCount ?? 10,
+    params.imageRatio,
+    params.referenceAssetKey ?? 'unknown-reference',
+  ].join(':')
+}
+
 function extractSuitActionHints(
   shots: ReadonlyArray<{ role: string; imagePrompt: string | import('@/lib/types').StructuredImagePrompt }>,
 ): string[] {
   const hints = new Set<string>()
   for (const shot of shots) {
-    const promptText = typeof shot.imagePrompt === 'string'
-      ? shot.imagePrompt
-      : `${shot.imagePrompt.pose} ${shot.imagePrompt.expression}`
+    const promptText =
+      typeof shot.imagePrompt === 'string'
+        ? shot.imagePrompt
+        : `${shot.imagePrompt.pose} ${shot.imagePrompt.expression}`
     const text = `${shot.role} ${promptText}`
     for (const [pattern, hint] of SUIT_ACTION_HINT_PATTERNS) {
       if (pattern.test(text)) {
@@ -1641,9 +2230,10 @@ function extractDressActionHints(
 ): string[] {
   const hints = new Set<string>()
   for (const shot of shots) {
-    const promptText = typeof shot.imagePrompt === 'string'
-      ? shot.imagePrompt
-      : `${shot.imagePrompt.pose} ${shot.imagePrompt.expression}`
+    const promptText =
+      typeof shot.imagePrompt === 'string'
+        ? shot.imagePrompt
+        : `${shot.imagePrompt.pose} ${shot.imagePrompt.expression}`
     const text = `${shot.role} ${promptText}`
     for (const [pattern, hint] of DRESS_ACTION_HINT_PATTERNS) {
       if (pattern.test(text)) {
@@ -1652,6 +2242,25 @@ function extractDressActionHints(
     }
   }
   return [...hints].slice(0, 14)
+}
+
+function extractPantsPoseHints(
+  shots: ReadonlyArray<{ role: string; imagePrompt: string | import('@/lib/types').StructuredImagePrompt }>,
+): string[] {
+  const hints = new Set<string>()
+  for (const shot of shots) {
+    const promptText =
+      typeof shot.imagePrompt === 'string'
+        ? shot.imagePrompt
+        : `${shot.imagePrompt.pose} ${shot.imagePrompt.expression}`
+    const text = `${shot.role} ${promptText}`
+    for (const [pattern, hint] of PANTS_POSE_HISTORY_PATTERNS) {
+      if (pattern.test(text)) {
+        hints.add(hint)
+      }
+    }
+  }
+  return [...hints].slice(0, 12)
 }
 
 const DRESS_ACTION_HINT_PATTERNS: ReadonlyArray<[RegExp, string]> = [
@@ -1717,6 +2326,177 @@ function refineDressPlannerCard(card: PlannerPromptCard): PlannerPromptCard {
     sanitizeDressPoseText(card.imagePrompt).trim(),
   )
   return { role, imagePrompt }
+}
+
+function refinePantsPlannerCard(
+  card: PlannerPromptCard,
+  view: PantsPoseView,
+  _assignedPose: PantsPoseCard,
+  pantsMainHandVisibility: PantsMainHandVisibility,
+): PlannerPromptCard {
+  const role = sanitizePantsCropText(card.role).trim()
+  const rawImagePrompt =
+    typeof card.imagePrompt === 'string' ? card.imagePrompt : ''
+  const croppedPrompt = sanitizePantsCropText(rawImagePrompt).trim()
+  const handSafePrompt =
+    pantsMainHandVisibility === 'hidden'
+      ? removeVisiblePantsHandText(croppedPrompt)
+      : croppedPrompt
+  const poseSafePrompt = removeForbiddenPantsHandText(
+    handSafePrompt,
+    view,
+  )
+  const poseFreePrompt = removePantsPoseTextFromPlannerPrompt(poseSafePrompt)
+  return { role, imagePrompt: poseFreePrompt }
+}
+
+const PANTS_VISIBLE_HAND_ACTION_PATTERN =
+  /手部候选|手部动作|手势|手臂|手掌|手指|双手|单手|一手|另一手|两只手|手腕|手肘|前臂|抱臂|交叉抱|搭腰|扶腰|叉腰|插袋|插兜|捏腰头|扶后腰|低位|侧展|轻抬|隐藏|收在身后|背在身后|袖口.*手/
+
+function removeVisiblePantsHandText(text: string): string {
+  return text
+    .split(/(?<=[。！？；])/u)
+    .filter((sentence) => !PANTS_VISIBLE_HAND_ACTION_PATTERN.test(sentence))
+    .join('')
+    .trim()
+}
+
+function removeForbiddenPantsHandText(
+  text: string,
+  view: PantsPoseView,
+): string {
+  const directionPatterns: RegExp[] =
+    view === 'back'
+      ? [
+          /后腰.*(?:交握|交叠)|(?:交握|交叠).*后腰/,
+          /双腕.*(?:靠拢|相碰)/,
+          /双手.*身后低位/,
+        ]
+      : view === 'left' || view === 'right' || view === 'side'
+        ? [
+            /手(?:掌|臂).*裤缝|裤缝.*手(?:掌|臂)/,
+            /手指.*侧缝|侧缝.*手指/,
+            /手掌.*大腿外侧|大腿外侧.*手掌/,
+            /低位自然平衡|自然前后摆动/,
+          ]
+        : [
+            /双手.*(?:小腹|裆部|裤面).*(?:贴压|紧贴|覆盖|遮挡)/,
+            /(?:贴压|紧贴|覆盖|遮挡).*(?:腰头|裆部|裤面)/,
+          ]
+  return text
+    .split(/(?<=[。！？；])/u)
+    .filter(
+      (sentence) =>
+        !PANTS_FORBIDDEN_BILATERAL_HANDS_DOWN_PATTERN.test(sentence) &&
+        !directionPatterns.some((pattern) => pattern.test(sentence)),
+    )
+    .join('')
+    .trim()
+}
+
+const PANTS_PLANNER_POSE_TEXT_PATTERN =
+  /指定姿势卡|执行姿势卡|姿势卡|指定姿势|视觉动作族|腿脚视觉族|视觉族|肉眼可见差异点|必须看出|禁止退化|动作族|脚尖|脚跟|脚后跟|前脚|后脚|前后脚|双脚|双腿|支撑脚|支撑腿|重心|错步|错开|交叉步|交叉腿|交叉抱|迈步|行走|蹬地|屈膝|抬腿|抬脚|脚掌|站距|跨步|弓步|开放三角|平行站|并排站|并排平放|分腿|宽站|窄站|站姿|腿部必须|台阶|栏杆|扶手|透明金属椅|椅子|台面/
+
+/**
+ * 去冲突：删除 planner imagePrompt 里一切腿脚/重心/支撑物/姿势卡引用句。
+ * 让最终 prompt 的【本张镜头】只保留方向家族与商品展示，姿势只由后端注入的
+ * 唯一指定姿势卡（【姿势】段）提供，避免两套姿势互相打架导致正侧面塌缩成同款站姿。
+ */
+function removePantsPoseTextFromPlannerPrompt(text: string): string {
+  return text
+    .split(/(?<=[。！？；\n])/u)
+    .filter((sentence) => !PANTS_PLANNER_POSE_TEXT_PATTERN.test(sentence))
+    .join('')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function hasForbiddenPositivePantsHandText(text: string): boolean {
+  return text
+    .split(/(?<=[。！？；])/u)
+    .some(
+      (sentence) =>
+        PANTS_FORBIDDEN_BILATERAL_HANDS_DOWN_PATTERN.test(sentence) &&
+        !isPantsNegativeGuardSentence(sentence),
+    )
+}
+
+function repairForbiddenPositivePantsHandText(text: string): string {
+  const repaired = text
+    .split(/(?<=[。！？；])/u)
+    .filter(
+      (sentence) =>
+        !PANTS_FORBIDDEN_BILATERAL_HANDS_DOWN_PATTERN.test(sentence) ||
+        isPantsNegativeGuardSentence(sentence),
+    )
+    .join('')
+    .trim()
+  return repaired || text
+}
+
+function isPantsNegativeGuardSentence(sentence: string): boolean {
+  return /禁止|不得|不能|不要|避免|不允许|不再|只禁止|禁用|关键约束|红线|负面|硬锁|不出现|不露手|不露出/.test(
+    sentence,
+  )
+}
+
+function enforcePantsAssignedPose(
+  text: string,
+  assignedPose: PantsPoseCard,
+  pantsMainHandVisibility: PantsMainHandVisibility,
+): string {
+  const handRule =
+    pantsMainHandVisibility === 'visible'
+      ? '主图露手模式：按图1保留可见手部数量、手臂可见范围、上衣袖长、袖口和上衣款式，只执行上述手部候选。'
+      : PANTS_LOWER_BODY_PRODUCT_FRAME_RULE
+  const guard = [
+    '【本镜头唯一指定姿势｜最高优先级】',
+    buildPantsAssignedPoseInstruction(assignedPose, {
+      mainHandVisibility: pantsMainHandVisibility,
+    }),
+    `必须执行上述腿部、重心、脚掌落点和肉眼可见差异点；${handRule}最终以本段指定姿势为准，不参考其它姿势库，不创造相似替代动作。商品参考图只锁定裤子外观和角度结构，不复制参考图站姿；指定姿势可以自然改变裤脚垂坠、褶皱、鞋子露出程度和脚部遮挡关系。`,
+  ].join('')
+  return `${guard}${text}`
+}
+
+function appendPantsPoseDirectionGuard(
+  text: string,
+  view: PantsPoseView,
+): string {
+  const guard = [
+    `裤子镜头方向硬约束：${getPantsPoseDirectionRule(view)}`,
+    '姿势只能执行“本镜头唯一指定姿势”段落，不得再学习其它姿势卡、相似姿势、参考图站姿或同方向库外姿势；只允许按指定卡改变重心、脚掌落点和方向家族内的微侧幅度，不跨方向。商品参考图不控制腿脚站法。',
+    PANTS_MAIN_EVIDENCE_RULE,
+  ].join('')
+  return appendSentence(text, guard)
+}
+
+function sanitizePantsCropText(text: string): string {
+  return text
+    .replace(/童装裤子/g, '裤子')
+    .replace(/童装/g, '')
+    .replace(/儿童身体比例|儿童体型比例|儿童比例/g, '图1身体比例')
+    .replace(/儿童年龄感|年龄感/g, '图1人物状态')
+    .replace(/腰头、门襟区域、前片结构/g, '正面真实结构')
+    .replace(/门襟区域|门襟|扣件|装饰扣|纽扣|扣子|拉链|抽绳|松紧带|铆钉|口袋|前袋|后袋|侧袋|侧缝/g, '参考图真实结构')
+    .replace(/裤脚不被遮挡|鞋子完整展示|鞋子完整可见|鞋型完整可见/g, '裤脚与鞋脚遮挡可随指定姿势自然变化')
+    .replace(/从主图实际露出的最高位置到脚底完整入镜/g, '画面下边缘与主图一致')
+    .replace(/到脚底完整入镜|脚底完整入镜/g, '且画面下边缘与主图一致')
+    .replace(/完整人物全身照/g, '主图边界裤子商品图')
+    .replace(/全身商品图/g, '主图边界商品图')
+    .replace(/全身站姿/g, '主图腿部状态')
+    .replace(/全身入镜/g, '画面上下边界与主图一致')
+    .replace(/全身照/g, '主图边界商品图')
+    .replace(/完整上半身/g, '主图实际露出的上衣范围')
+    .replace(/头部顺着身体方向自然朝前[^。；]*[。；]?/g, '')
+}
+
+function appendPantsCropGuard(text: string): string {
+  const guard = `裤子模式强制锁定：画面边界、相机距离、人物大小、身体比例和腿长必须与图1主图一致。裤子穿着版型、裤长基准、裤脚宽度和商品结构以图1及当前镜头实际参考图为准；腿脚站法只执行本镜头唯一指定姿势，参考图站姿不得覆盖指定姿势。指定腿脚动作可以自然改变裤脚垂坠、褶皱、鞋子露出程度和脚部遮挡关系，脚或鞋允许被裤脚遮挡且不要求完整展示。商品图案、刺绣、logo、拼接和其它真实结构只按本镜头实际提供的参考图中可见状态复现，参考图没有就不要生成，不凭常见裤装经验补结构。不要扩展图1边界外的头部、脸部、五官或完整发型；图1边界内已有少量发丝只保持原发色和相近可见范围。人物状态只根据图1，不按品类标签改写。${PANTS_MAIN_EVIDENCE_RULE}`
+  if (/裤子模式强制(?:构图|锁定)/.test(text)) {
+    return text
+  }
+  return appendSentence(text, guard)
 }
 
 function sanitizeDressPoseText(text: string): string {
@@ -1824,19 +2604,24 @@ async function applyShotPlannerOverride(
     params.childrensCategory,
   )
     ? getRecentSuitActionHints(params)
-    : getRecentDressActionHints(params)
+    : isDressChildrensCategory(params.category, params.childrensCategory)
+      ? getRecentDressActionHints(params)
+      : isPantsChildrensCategory(params.category, params.childrensCategory)
+        ? getRecentPantsPoseHints(params)
+        : []
   const plan = buildPlannerRulePlan(
     params.category,
     params.childrensCategory,
     params.resultCount,
     recentActionHints,
     Boolean(params.faceIdModelId),
-    params.faceIdModelId
-      ? 1 + (params.hasFrontDetail ? 1 : 0) + (params.hasBackDetail ? 1 : 0) + 1
+    getFaceIdImageIndexFromParams(params),
+    isPantsChildrensCategory(params.category, params.childrensCategory)
+      ? getPantsDetailAvailability(params)
       : undefined,
   )
   if (!plan) {
-    throw new Error('生成失败：当前服装大片裂变仅支持童装连衣裙和套装')
+    throw new Error('生成失败：当前服装大片裂变仅支持童装连衣裙、套装和裤子')
   }
 
   const startedAt = Date.now()
@@ -1880,50 +2665,152 @@ async function applyShotPlannerOverride(
     params.category,
     params.childrensCategory,
   )
+  const isPantsTask = isPantsChildrensCategory(
+    params.category,
+    params.childrensCategory,
+  )
   const rememberedSuitShots: PlannerPromptCard[] = []
   const rememberedDressShots: PlannerPromptCard[] = []
+  const rememberedPantsShots: PlannerPromptCard[] = []
+  const pantsPoseTextLeakShots: string[] = []
   let overridden = 0
   for (const card of output.shots) {
     const idx = indexByShotId.get(card.shotId)
     if (idx === undefined) continue
+    const pantsView = isPantsTask
+      ? getPantsShotView(params, fullPlan[idx])
+      : undefined
+    const persistedPantsPoseCardId = isPantsTask
+      ? fullPlan[idx].pantsPoseCardId ??
+        fullPlan[idx].prompt.match(/指定姿势卡\s+([a-z0-9-]+)/)?.[1]
+      : undefined
+    const pantsMainHandVisibility: PantsMainHandVisibility =
+      fullPlan[idx].pantsMainHandVisibility ??
+      (fullPlan[idx].pantsMayRevealHandsWhenMainHidden
+        ? 'visible'
+        : params.pantsMainHandVisibility ?? 'hidden')
+    const assignedPantsPose = isPantsTask
+      ? persistedPantsPoseCardId
+        ? getPantsPoseCardById(persistedPantsPoseCardId)
+        : getPantsAssignedPoseForShot(
+            params.resultCount,
+            card.shotId,
+            undefined,
+            pantsMainHandVisibility,
+          )
+      : undefined
     const plannerCard = isSuitTask
       ? refineSuitPlannerCard(card, idx)
-      : isDressTask
-        ? refineDressPlannerCard(card)
-        : card
-
-    // 将 imagePrompt 转换为最终格式
-    let finalPrompt: string
-    if (typeof plannerCard.imagePrompt === 'string') {
-      // 兼容旧版文本格式
-      finalPrompt = appendFlatDetailReferenceLock(
-        plannerCard.imagePrompt,
-        params,
-        `${plannerCard.role} ${plannerCard.imagePrompt}`,
-      ).trim()
-    } else {
-      // 新版结构化 JSON 格式：转换为 JSON 字符串 + 追加约束
-      finalPrompt = convertStructuredPromptToJson(plannerCard.imagePrompt, params)
+        : isDressTask
+          ? refineDressPlannerCard(card)
+          : isPantsTask
+            ? refinePantsPlannerCard(
+                card,
+                pantsView ?? 'front',
+                assignedPantsPose!,
+                pantsMainHandVisibility,
+              )
+            : card
+    const pantsShotText = isPantsTask
+      ? getPantsShotReferenceText(params, fullPlan[idx])
+      : ''
+    const pantsShotAvailability = isPantsTask
+      ? getPantsShotDetailAvailability(
+          getPantsDetailAvailability(params),
+          pantsView ?? 'front',
+        )
+      : undefined
+    const plannerPromptRaw =
+      typeof plannerCard.imagePrompt === 'string' ? plannerCard.imagePrompt : ''
+    const plannerPrompt = pantsShotAvailability
+      ? sanitizePantsPlannerReferenceText(
+          plannerPromptRaw,
+          pantsShotAvailability,
+        )
+      : plannerPromptRaw
+    if (isPantsTask && PANTS_PLANNER_POSE_TEXT_PATTERN.test(plannerPrompt)) {
+      pantsPoseTextLeakShots.push(card.shotId)
     }
-
-    if (!finalPrompt) continue
-
-    const nextLabel = plannerCard.role.trim()
+    const nextLabel = isPantsTask
+      ? fullPlan[idx].label
+      : plannerCard.role.trim()
+    const detailLockParams = pantsShotAvailability
+      ? { ...params, ...pantsShotAvailability, pantsView }
+      : params
+    let next: string
+    let nextIsJsonPrompt = false
+    if (isPantsTask && assignedPantsPose) {
+      next = buildCompactPantsShotPrompt({
+        label: nextLabel || fullPlan[idx].label,
+        shotDescription: plannerPrompt || pantsShotText || fullPlan[idx].prompt,
+        shotIndex: idx,
+        category: params.category,
+        childrensCategory: params.childrensCategory,
+        imageRatio: params.imageRatio,
+        resolution: params.resolution,
+        resultCount: params.resultCount,
+        hasFrontDetail:
+          pantsShotAvailability?.hasFrontDetail ?? params.hasFrontDetail,
+        hasSideDetail:
+          pantsShotAvailability?.hasSideDetail ?? Boolean(params.hasSideDetail),
+        hasBackDetail:
+          pantsShotAvailability?.hasBackDetail ?? params.hasBackDetail,
+        frontDetailCount:
+          pantsShotAvailability?.frontDetailCount ?? params.frontDetailCount,
+        sideDetailCount:
+          pantsShotAvailability?.sideDetailCount ?? params.sideDetailCount,
+        backDetailCount:
+          pantsShotAvailability?.backDetailCount ?? params.backDetailCount,
+        pantsView,
+        pantsAssignedPose: assignedPantsPose,
+        pantsMainHandVisibility,
+        hasFaceIdModel: Boolean(params.faceIdModelId),
+        faceIdImageIndex: getFaceIdImageIndexFromParams(params),
+      })
+    } else if (typeof plannerCard.imagePrompt !== 'string') {
+      // 结构化对象 → JSON（生产基线行为）
+      next = convertStructuredPromptToJson(plannerCard.imagePrompt, params)
+      nextIsJsonPrompt = true
+    } else {
+      const plannerPromptWithLocks = appendFlatDetailReferenceLock(
+        plannerPrompt,
+        detailLockParams,
+        `${plannerCard.role} ${pantsShotText || plannerPrompt}`,
+      ).trim()
+      if (!plannerPromptWithLocks) continue
+      next = convertTextPromptToJson(
+        plannerPromptWithLocks,
+        params,
+        nextLabel || fullPlan[idx].label,
+      )
+      nextIsJsonPrompt = true
+    }
+    if (!next) continue
+    if (!nextIsJsonPrompt) {
+      // Face ID lock: force-inject identity lock paragraph after planner rewrite
+      next = appendFaceIdLock(next, params)
+    }
     fullPlan[idx] = {
       ...fullPlan[idx],
       label: nextLabel || fullPlan[idx].label,
-      prompt: finalPrompt,
+      prompt: next,
     }
     if (isSuitTask) {
       rememberedSuitShots.push({
         role: nextLabel || fullPlan[idx].label,
-        imagePrompt: finalPrompt,
+        imagePrompt: next,
       })
     }
     if (isDressTask) {
       rememberedDressShots.push({
         role: nextLabel || fullPlan[idx].label,
-        imagePrompt: finalPrompt,
+        imagePrompt: next,
+      })
+    }
+    if (isPantsTask) {
+      rememberedPantsShots.push({
+        role: nextLabel || fullPlan[idx].label,
+        imagePrompt: next,
       })
     }
     overridden += 1
@@ -1934,35 +2821,72 @@ async function applyShotPlannerOverride(
       `生成失败：LLM 镜头策划器返回的 ${params.resultCount} 段提示词无法匹配到任何 shotId`,
     )
   }
-  rememberSuitActionHints(
-    params,
-    isSuitTask && rememberedSuitShots.length > 0
-      ? rememberedSuitShots
-      : output.shots,
-  )
-  rememberDressActionHints(
-    params,
-    isDressTask && rememberedDressShots.length > 0
-      ? rememberedDressShots
-      : output.shots,
-  )
+  if (isSuitTask) {
+    rememberSuitActionHints(
+      params,
+      rememberedSuitShots.length > 0 ? rememberedSuitShots : output.shots,
+    )
+  }
+  if (isDressTask) {
+    rememberDressActionHints(
+      params,
+      rememberedDressShots.length > 0 ? rememberedDressShots : output.shots,
+    )
+  }
+  if (isPantsTask) {
+    rememberPantsPoseHints(
+      params,
+      rememberedPantsShots.length > 0 ? rememberedPantsShots : output.shots,
+    )
+    const repairedForbiddenShots: string[] = []
+    fullPlan.forEach((shot) => {
+      if (!hasForbiddenPositivePantsHandText(shot.prompt)) return
+      shot.prompt = repairForbiddenPositivePantsHandText(shot.prompt)
+      repairedForbiddenShots.push(shot.shotId)
+    })
+    console.log(
+      JSON.stringify({
+        lvl:
+          repairedForbiddenShots.length > 0 ||
+          pantsPoseTextLeakShots.length > 0
+            ? 'warn'
+            : 'info',
+        evt: 'planner.pants-diversity',
+        ts: new Date().toISOString(),
+        traceId: taskId,
+        taskId,
+        assignedPoseCards: fullPlan.map((shot) => ({
+          shotId: shot.shotId,
+          poseCardId:
+            shot.pantsPoseCardId ??
+            shot.prompt.match(/指定姿势卡\s+([a-z0-9-]+)/)?.[1] ??
+            'unknown',
+        })),
+        repairedForbiddenPositiveHandShots: repairedForbiddenShots,
+        poseTextLeakShots: pantsPoseTextLeakShots,
+      }),
+    )
+  }
 
-  // 多样性诊断：检测 planner 输出的重复率并记录日志
-  const diversityDiag = diagnosePromptDiversity(fullPlan)
-  console.log(
-    JSON.stringify({
-      lvl: diversityDiag.hasWarning ? 'warn' : 'info',
-      evt: 'planner.diversity',
-      ts: new Date().toISOString(),
-      traceId: taskId,
-      taskId,
-      ...diversityDiag,
-    }),
-  )
+  // 裤子只展示胸部以下，不能套用带面部表情/发型替代池的多样性修复。
+  if (!isPantsTask) {
+    // 多样性诊断：检测 planner 输出的重复率并记录日志
+    const diversityDiag = diagnosePromptDiversity(fullPlan)
+    console.log(
+      JSON.stringify({
+        lvl: diversityDiag.hasWarning ? 'warn' : 'info',
+        evt: 'planner.diversity',
+        ts: new Date().toISOString(),
+        traceId: taskId,
+        taskId,
+        ...diversityDiag,
+      }),
+    )
 
-  // 多样性自动修复：当检测到严重重复时，在后续 shot 追加强制差异化指令
-  if (diversityDiag.hasWarning) {
-    enforcePromptDiversity(fullPlan, diversityDiag, taskId)
+    // 多样性自动修复：当检测到严重重复时，在后续 shot 追加强制差异化指令
+    if (diversityDiag.hasWarning) {
+      enforcePromptDiversity(fullPlan, diversityDiag, taskId)
+    }
   }
 
   console.log(
@@ -1988,9 +2912,7 @@ function convertStructuredPromptToJson(
   structured: import('@/lib/types').StructuredImagePrompt,
   params: PhotoFissionParams,
 ): string {
-  const faceIdImageIndex = params.faceIdModelId
-    ? 1 + (params.hasFrontDetail ? 1 : 0) + (params.hasBackDetail ? 1 : 0) + 1
-    : undefined
+  const faceIdImageIndex = getFaceIdImageIndexFromParams(params)
 
   const jsonPrompt = {
     generation_request: {
@@ -2049,35 +2971,66 @@ function convertStructuredPromptToJson(
   return JSON.stringify(jsonPrompt, null, 2)
 }
 
-/**
- * 强制追加关键约束段落（WARDROBE + NEGATIVE），防止 planner 丢失反伪影指令。
- *
- * LLM 导演只负责动作、表情、构图，不管图像质量。这个函数确保每个 shot 的 prompt
- * 都包含完整的服装约束和反伪影禁令，避免生成横向扫描线、摩尔纹等常见伪影。
- */
-function appendCriticalConstraints(
-  prompt: string,
+function convertTextPromptToJson(
+  promptText: string,
   params: PhotoFissionParams,
+  role: string,
 ): string {
-  const faceIdImageIndex = params.faceIdModelId
-    ? 1 + (params.hasFrontDetail ? 1 : 0) + (params.hasBackDetail ? 1 : 0) + 1
-    : undefined
-
-  const constraints = [
-    '',
-    '【服装质感约束】服装表面必须干净清晰，绝对禁止横向扫描线、横向条纹伪影、摩尔纹、水波纹、密集平行线、屏幕纹、压缩噪声、马赛克或规则重复线条。布料纹理必须是真实自然的织物质感。',
-    '',
-    '【关键禁令】绝对禁止的图像伪影：横向扫描线、横向条纹、摩尔纹、水波纹、网格纹、屏幕纹、密集平行细线、规则重复的横向或纵向线条、压缩噪声、马赛克、色块、条带状失真。服装和皮肤表面必须干净自然，不能有任何规则的人工线条纹理。',
-  ]
-
-  if (params.faceIdModelId && faceIdImageIndex) {
-    constraints.push(
-      '',
-      `【脸部锁定】脸型骨骼、五官细节、皮肤质感严格复刻图${faceIdImageIndex}；不生成通用 AI 脸、网红脸、娃娃脸、过度美颜脸、糊脸、塑料皮。`,
-    )
+  const faceIdImageIndex = getFaceIdImageIndexFromParams(params)
+  const jsonPrompt = {
+    generation_request: {
+      meta_data: {
+        tool: "Gemini Image Generation",
+        task_type: "ecommerce_childrens_fashion_photo",
+        language: "zh-CN",
+        priority: "highest"
+      },
+      input: {
+        mode: "image_to_image",
+        reference_image_usage: "maximum",
+        preserve_identity: true,
+        preserve_clothing: true
+      },
+      identity_lock: faceIdImageIndex ? {
+        face_priority: "absolute",
+        face_reference_index: faceIdImageIndex,
+        note: `图${faceIdImageIndex}提供脸型、五官、皮肤质感、发色；图1提供发型、刘海、帽子、发饰、服装`
+      } : {
+        face_reference: "图1",
+        note: "延续参考图人物身份与面部特征"
+      },
+      prompt: {
+        role,
+        description: promptText
+      },
+      wardrobe: {
+        color_source: params.hasFrontDetail || params.hasBackDetail ? "细节图为准" : "图1为准",
+        rules: [
+          "完整延续版型、图案、logo、纽扣、口袋、领口、袖口、下摆",
+          "参考图中真实存在的材质特征才保留",
+          "图1已有配饰必须保留"
+        ]
+      },
+      category_requirements: buildCategoryConfig(params.category, params.childrensCategory),
+      quality_control: {
+        surface_quality: "必须干净清晰",
+        avoid: [
+          "横向扫描线", "横向条纹伪影", "摩尔纹", "水波纹",
+          "密集平行线", "屏幕纹", "压缩噪声", "马赛克",
+          "色块", "条带状失真", "规则重复线条"
+        ],
+        note: "布料纹理必须是真实自然的织物质感，不是像素级规则线条"
+      },
+      negative_prompt: buildNegativeArray(
+        params.category,
+        params.childrensCategory,
+        params.faceIdModelId ? true : false,
+        faceIdImageIndex
+      )
+    }
   }
 
-  return prompt.trim() + '\n' + constraints.join('\n')
+  return JSON.stringify(jsonPrompt, null, 2)
 }
 
 /**

@@ -27,6 +27,8 @@ import {
   type PhotoFissionParams,
   type PoseFissionParams,
   type ResultAsset,
+  type ShotProgress,
+  type ShotProgressStatus,
   type TaskParams,
 } from '@/lib/types'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -38,6 +40,7 @@ const globalStore = globalThis as typeof globalThis & {
     assets: Map<string, AssetRecord>
     tasks: Map<string, GenerationTask>
   }
+  fashionMvpTaskControllers?: Map<string, AbortController>
 }
 
 const store = globalStore.fashionMvpStore ?? {
@@ -46,6 +49,9 @@ const store = globalStore.fashionMvpStore ?? {
 }
 
 globalStore.fashionMvpStore = store
+const runningTaskControllers =
+  globalStore.fashionMvpTaskControllers ?? new Map<string, AbortController>()
+globalStore.fashionMvpTaskControllers = runningTaskControllers
 
 const defaultUserId = 'demo_user'
 const defaultProjectId = 'demo_project'
@@ -110,6 +116,7 @@ function buildTaskRow(task: GenerationTask): TaskRow {
       params: task.params,
       progress: task.progress,
       message: task.message,
+      shotProgress: task.shotProgress,
       errorMessage: task.errorMessage,
       creditsUsed: task.creditsUsed,
       userId: task.userId,
@@ -418,6 +425,52 @@ export async function getTask(taskId: string, opts?: { userId?: string }) {
   return hydrateTaskInputAssets(task)
 }
 
+export async function cancelTask(taskId: string, userId?: string) {
+  await ensureStoreReady()
+  const task = store.tasks.get(taskId)
+  if (!task) {
+    throw new Error('任务不存在')
+  }
+
+  const ownerUserId = task.userId ?? defaultUserId
+  const requester = userId?.trim()
+  if (
+    requester &&
+    !shouldBypassOwnership(requester) &&
+    ownerUserId !== requester
+  ) {
+    throw new Error('任务不存在')
+  }
+
+  if (task.status !== 'pending' && task.status !== 'running') {
+    throw new Error('当前任务状态不允许取消')
+  }
+
+  const photoParams =
+    task.featureType === 'photo-fission'
+      ? (task.params as Partial<PhotoFissionParams>)
+      : null
+  if (photoParams?.childrensCategory !== 'pants') {
+    throw new Error('当前任务不支持取消')
+  }
+
+  runningTaskControllers.get(taskId)?.abort()
+  const resultCount = task.results.length
+  updateTask(taskId, {
+    status: 'cancelled',
+    progress: 100,
+    message: `已手动取消，已生成 ${resultCount} 张图`,
+    shotProgress: ensureShotProgress(task).map((item) => {
+      if (item.status === 'success') return item
+      return { ...item, status: 'cancelled', message: '已取消' }
+    }),
+    finishedAt: new Date().toISOString(),
+  })
+
+  const refreshed = store.tasks.get(taskId)
+  return hydrateTaskInputAssets(refreshed ?? task)
+}
+
 export async function createTask(input: {
   featureType: FeatureType
   inputAssetIds: string[]
@@ -466,6 +519,7 @@ export async function createTask(input: {
     message: '任务已创建，等待生成',
     resultAssetIds: [],
     results: [],
+    shotProgress: buildInitialShotProgress(input.featureType, normalizedParams),
     createdAt: new Date().toISOString(),
     creditsUsed: getCredits(normalizedParams),
   }
@@ -531,6 +585,100 @@ function validatePhotoFissionFaceMaskAsset(
   }
 }
 
+function buildInitialShotProgress(
+  featureType: FeatureType,
+  params: TaskParams,
+): ShotProgress[] {
+  // 生成进度 UI 仅对裤子品类生效；其它品类 / 功能恢复旧行为（不建初始进度）。
+  if (featureType === 'photo-fission') {
+    const photoParams = params as PhotoFissionParams
+    if (photoParams.childrensCategory !== 'pants') return []
+    const shotPlan = photoParams.shotPlan ?? []
+    return shotPlan.map((shot, index) => ({
+      shotId: shot.shotId ?? `shot_${index + 1}`,
+      label: shot.label || `镜头 ${index + 1}`,
+      status: 'prompting',
+      message: '正在写提示词...',
+    }))
+  }
+
+  return []
+}
+
+function ensureShotProgress(task: GenerationTask): ShotProgress[] {
+  if (task.shotProgress?.length) return task.shotProgress
+  return buildInitialShotProgress(task.featureType, task.params)
+}
+
+function updateShotProgress(
+  taskId: string,
+  shotId: string,
+  patch: Partial<Omit<ShotProgress, 'shotId'>>,
+) {
+  const task = store.tasks.get(taskId)
+  if (!task) return
+
+  const current = ensureShotProgress(task)
+  const found = current.some((item) => item.shotId === shotId)
+  const next = found
+    ? current.map((item) =>
+        item.shotId === shotId ? { ...item, ...patch, shotId } : item,
+      )
+    : [
+        ...current,
+        {
+          shotId,
+          label: patch.label ?? shotId,
+          status: patch.status ?? 'generating',
+          message: patch.message ?? '正在生图...',
+          retryAttempt: patch.retryAttempt,
+        },
+      ]
+
+  updateTask(taskId, { shotProgress: next })
+}
+
+function updateAllShotProgress(
+  taskId: string,
+  status: ShotProgressStatus,
+  message: string,
+) {
+  const task = store.tasks.get(taskId)
+  if (!task) return
+  updateTask(taskId, {
+    shotProgress: ensureShotProgress(task).map((item) => {
+      if (item.status === 'success' || item.status === 'failed') return item
+      return { ...item, status, message }
+    }),
+  })
+}
+
+function markMissingShotProgressFailed(taskId: string, message: string) {
+  const task = store.tasks.get(taskId)
+  if (!task) return
+  const succeeded = new Set(
+    task.results
+      .map((result) => result.shotId)
+      .filter((shotId): shotId is string => Boolean(shotId)),
+  )
+  updateTask(taskId, {
+    shotProgress: ensureShotProgress(task).map((item) => {
+      if (item.status === 'success') return item
+      if (succeeded.has(item.shotId)) {
+        return { ...item, status: 'success', message: '已生成' }
+      }
+      return { ...item, status: 'failed', message }
+    }),
+  })
+}
+
+function assertTaskNotCancelled(taskId: string, signal?: AbortSignal) {
+  const task = store.tasks.get(taskId)
+  if (signal?.aborted || task?.status === 'cancelled') {
+    throw new Error('任务已手动取消')
+  }
+}
+
 async function resolvePhotoFissionFaceMaskDataUrl(
   params: PhotoFissionParams,
 ): Promise<string | null> {
@@ -571,25 +719,35 @@ async function runTask(taskId: string) {
 
   // PR4：task.userId 由 createTask 注入；historical task 没存 userId 时回退到 defaultUserId。
   const ownerUserId = task.userId ?? defaultUserId
+  const controller = new AbortController()
+  runningTaskControllers.set(taskId, controller)
 
   try {
     updateTask(taskId, {
       status: 'running',
       progress: 18,
       message: '正在校验上传素材',
+      shotProgress: ensureShotProgress(task).map((item) => ({
+        ...item,
+        status: 'prompting',
+        message: '正在写提示词...',
+      })),
     })
 
     await wait(500)
+    assertTaskNotCancelled(taskId, controller.signal)
     updateTask(taskId, {
       progress: 45,
       message: '正在准备固定工作流参数',
     })
 
     await wait(500)
+    assertTaskNotCancelled(taskId, controller.signal)
     updateTask(taskId, {
       progress: 72,
       message: '正在调用第三方生图 API',
     })
+    updateAllShotProgress(taskId, 'generating', '正在生图...')
 
     const inputImages = (
       await Promise.all(
@@ -612,8 +770,13 @@ async function runTask(taskId: string) {
     const persistedResults: ResultAsset[] = []
     const onShotResult = useStreamingPersist
       ? async (result: ResultAsset) => {
+          assertTaskNotCancelled(taskId, controller.signal)
           await persistOneResult(taskId, result, ownerUserId)
           persistedResults.push(result)
+          updateShotProgress(taskId, result.shotId ?? result.assetId, {
+            status: 'success',
+            message: '已生成',
+          })
         }
       : undefined
 
@@ -641,9 +804,18 @@ async function runTask(taskId: string) {
         inputImages,
         params: task.params,
         faceMaskImage,
+        signal: controller.signal,
+        onShotProgress: (shotId, message, retryAttempt) => {
+          updateShotProgress(taskId, shotId, {
+            status: 'retrying',
+            message,
+            retryAttempt,
+          })
+        },
         onShotResult,
       })
     }
+    assertTaskNotCancelled(taskId, controller.signal)
 
     // photo-fission / pose-fission：results 已在 onShotResult 内全部持久化，禁止再走 saveResults 重复写盘。
     // 其他 feature：批量持久化生成 resultAssetIds。
@@ -653,22 +825,43 @@ async function runTask(taskId: string) {
       : await saveResults(results, taskId, ownerUserId)
 
     const { status, message } = resolveTaskCompletion(task, finalResults)
+    const finalShotProgress = ensureShotProgress(store.tasks.get(taskId) ?? task)
+      .map((item, index) => {
+        const matchingResult = finalResults.find(
+          (result) =>
+            (result.shotId ?? (index === 0 ? 'result_1' : '')) === item.shotId,
+        )
+        if (item.status === 'success' || matchingResult) {
+          return { ...item, status: 'success' as const, message: '已生成' }
+        }
+        return { ...item, status: 'failed' as const, message: '重跑失败' }
+      })
     updateTask(taskId, {
       status,
       progress: 100,
       message,
       results: finalResults,
       resultAssetIds,
+      shotProgress: finalShotProgress,
       finishedAt: new Date().toISOString(),
     })
   } catch (error) {
+    const currentTask = store.tasks.get(taskId)
+    if (currentTask?.status === 'cancelled') {
+      updateAllShotProgress(taskId, 'cancelled', '已取消')
+      return
+    }
+    const reason = error instanceof Error ? error.message : '未知错误'
+    markMissingShotProgressFailed(taskId, '重跑失败')
     updateTask(taskId, {
       status: 'failed',
       progress: 100,
       message: '生成失败',
-      errorMessage: error instanceof Error ? error.message : '未知错误',
+      errorMessage: reason,
       finishedAt: new Date().toISOString(),
     })
+  } finally {
+    runningTaskControllers.delete(taskId)
   }
 }
 

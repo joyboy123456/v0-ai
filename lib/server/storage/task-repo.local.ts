@@ -73,6 +73,7 @@ function taskToRow(task: GenerationTask): TaskRow {
       params: task.params,
       progress: task.progress,
       message: task.message,
+      shotProgress: task.shotProgress,
       errorMessage: task.errorMessage,
       creditsUsed: task.creditsUsed,
       userId: task.userId,
@@ -95,6 +96,7 @@ function rowToTask(row: TaskRow): GenerationTask {
     params?: TaskParams
     progress?: number
     message?: string
+    shotProgress?: GenerationTask['shotProgress']
     errorMessage?: string
     creditsUsed?: number
     userId?: string
@@ -116,6 +118,7 @@ function rowToTask(row: TaskRow): GenerationTask {
     status: row.status as GenerationTask['status'],
     progress: payload?.progress ?? 0,
     message: payload?.message ?? '',
+    shotProgress: payload?.shotProgress,
     errorMessage: payload?.errorMessage,
     creditsUsed: payload?.creditsUsed ?? 0,
     resultAssetIds: result?.resultAssetIds ?? [],
@@ -212,6 +215,7 @@ export function createLocalTaskRepo(): TaskRepo {
         const parsed = safeParse<{
           progress?: number
           message?: string
+          shotProgress?: GenerationTask['shotProgress']
           errorMessage?: string
           creditsUsed?: number
           inputAssetIds?: string[]
@@ -220,6 +224,9 @@ export function createLocalTaskRepo(): TaskRepo {
         if (parsed) {
           if (parsed.progress !== undefined) next.progress = parsed.progress
           if (parsed.message !== undefined) next.message = parsed.message
+          if (parsed.shotProgress !== undefined) {
+            next.shotProgress = parsed.shotProgress
+          }
           if (parsed.errorMessage !== undefined) {
             next.errorMessage = parsed.errorMessage
           }

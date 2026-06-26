@@ -88,6 +88,7 @@ export interface RetryOptions {
 interface RetryAcquireOptions {
   apiKey: string
   signal?: AbortSignal
+  onRetryAttempt?: (attempt: number) => void
   /** provider 唯一标识，用于令牌桶隔离。不传时降级到 apiKey */
   providerId?: string
   /** 节流桶 key：同一凭证的多个 provider 可共享桶，避免重复消耗同一 key 额度 */
@@ -303,6 +304,9 @@ export async function callGoogleImageWithRetry<T>(
   let lastError: GoogleImageError | null = null
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (attempt > 1) {
+      acquireOptions.onRetryAttempt?.(attempt)
+    }
     // 节流：每次 attempt 进 fetch 前 acquire 一次
     await acquireGoogleImageSlot({
       apiKey: acquireOptions.apiKey,

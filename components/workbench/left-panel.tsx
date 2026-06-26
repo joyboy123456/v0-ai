@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   DEFAULT_FASHION_MODEL,
   FEATURE_LABELS,
@@ -59,6 +60,7 @@ import {
   type PhotoFissionParams,
   type PhotoFissionResolution,
   type PhotoFissionResultCount,
+  type PantsMainHandVisibility,
   type PoseFissionCase,
   type PoseFissionParams,
   type PoseImageRatio,
@@ -70,6 +72,16 @@ import {
 
 const CREATE_TASK_TIMEOUT_MS = 15_000;
 const MISSING_ASSET_ERROR_PREFIX = "素材不存在：";
+
+function replacePhotoFissionDetail(
+  current: UploadedImage[],
+  index: number,
+  image: UploadedImage,
+): UploadedImage[] {
+  const next = current.slice(0, 2);
+  next[index] = image;
+  return next.filter((item): item is UploadedImage => Boolean(item)).slice(0, 2);
+}
 
 interface AssetDescriptor {
   assetId: string;
@@ -146,10 +158,12 @@ export function LeftPanel({
     useState<PhotoFissionChildrensCategory>("dress");
   const [photoFissionMainImage, setPhotoFissionMainImage] =
     useState<UploadedImage | null>(null);
-  const [photoFissionFrontDetail, setPhotoFissionFrontDetail] =
-    useState<UploadedImage | null>(null);
-  const [photoFissionBackDetail, setPhotoFissionBackDetail] =
-    useState<UploadedImage | null>(null);
+  const [photoFissionFrontDetails, setPhotoFissionFrontDetails] =
+    useState<UploadedImage[]>([]);
+  const [photoFissionSideDetails, setPhotoFissionSideDetails] =
+    useState<UploadedImage[]>([]);
+  const [photoFissionBackDetails, setPhotoFissionBackDetails] =
+    useState<UploadedImage[]>([]);
   const [photoFissionFaceMask, setPhotoFissionFaceMask] =
     useState<UploadedImage | null>(null);
   const [isFaceMaskPainterOpen, setIsFaceMaskPainterOpen] = useState(false);
@@ -160,6 +174,10 @@ export function LeftPanel({
     useState<PhotoFissionResolution>("2k");
   const [photoFissionResultCount, setPhotoFissionResultCount] =
     useState<PhotoFissionResultCount>(9);
+  const [
+    photoFissionPantsMainHandVisibility,
+    setPhotoFissionPantsMainHandVisibility,
+  ] = useState<PantsMainHandVisibility>("hidden");
   const [photoFissionPlannerReasoningEnabled, setPhotoFissionPlannerReasoningEnabled] =
     useState(false);
   const photoFissionRatioUserOverrideRef = useRef(false);
@@ -193,6 +211,19 @@ export function LeftPanel({
       setPhotoFissionFaceMask(null);
     }
   }, [selectedFaceIdModel]);
+
+  useEffect(() => {
+    if (photoFissionChildrensCategory !== "pants") return;
+    if (photoFissionResultCount === 9) {
+      setPhotoFissionResultCount(10);
+    }
+    setPhotoFissionFaceMask(null);
+    onChangeSelectedFaceIdModel(null);
+  }, [
+    onChangeSelectedFaceIdModel,
+    photoFissionChildrensCategory,
+    photoFissionResultCount,
+  ]);
 
   useEffect(() => {
     if (!fashionRemixRequest) return;
@@ -253,8 +284,9 @@ export function LeftPanel({
     setPhotoFissionResolution(photoFissionCase.resolution);
     photoFissionRatioUserOverrideRef.current = true;
     photoFissionResolutionUserOverrideRef.current = true;
-    setPhotoFissionFrontDetail(null);
-    setPhotoFissionBackDetail(null);
+    setPhotoFissionFrontDetails([]);
+    setPhotoFissionSideDetails([]);
+    setPhotoFissionBackDetails([]);
     setError("");
 
     let cancelled = false;
@@ -360,7 +392,11 @@ export function LeftPanel({
         setError("请先上传参考图");
         return;
       }
-      if (selectedFaceIdModel && !photoFissionFaceMask) {
+      if (
+        photoFissionChildrensCategory !== "pants" &&
+        selectedFaceIdModel &&
+        !photoFissionFaceMask
+      ) {
         setError("请先涂抹主图五官区域");
         return;
       }
@@ -489,6 +525,18 @@ export function LeftPanel({
 
     if (feature === "photo-fission") {
       if (!photoFissionMainImage) return [];
+      const isPantsCategory = photoFissionChildrensCategory === "pants";
+      const frontDetails = photoFissionFrontDetails.slice(
+        0,
+        isPantsCategory ? 2 : 1,
+      );
+      const sideDetails = isPantsCategory
+        ? photoFissionSideDetails.slice(0, 2)
+        : [];
+      const backDetails = photoFissionBackDetails.slice(
+        0,
+        isPantsCategory ? 2 : 1,
+      );
       const assets: AssetDescriptor[] = [
         {
           assetId: photoFissionMainImage.assetId,
@@ -496,21 +544,31 @@ export function LeftPanel({
           role: "主图",
         },
       ];
-      if (photoFissionFrontDetail) {
+      frontDetails.forEach((detail, index) => {
         assets.push({
-          assetId: photoFissionFrontDetail.assetId,
-          name: photoFissionFrontDetail.name,
-          role: "产品正面细节图",
+          assetId: detail.assetId,
+          name: detail.name,
+          role: `产品正面参考图 ${index + 1}`,
         });
-      }
-      if (photoFissionBackDetail) {
+      });
+      sideDetails.forEach((detail, index) => {
         assets.push({
-          assetId: photoFissionBackDetail.assetId,
-          name: photoFissionBackDetail.name,
-          role: "产品背面细节图",
+          assetId: detail.assetId,
+          name: detail.name,
+          role: `产品侧面参考图 ${index + 1}`,
         });
-      }
-      if (selectedFaceIdModel) {
+      });
+      backDetails.forEach((detail, index) => {
+        assets.push({
+          assetId: detail.assetId,
+          name: detail.name,
+          role: `产品背面参考图 ${index + 1}`,
+        });
+      });
+      if (
+        photoFissionChildrensCategory !== "pants" &&
+        selectedFaceIdModel
+      ) {
         assets.push({
           assetId: selectedFaceIdModel.assetId,
           name: selectedFaceIdModel.name,
@@ -595,19 +653,46 @@ export function LeftPanel({
     }
 
     if (feature === "photo-fission") {
+      const isPantsCategory = photoFissionChildrensCategory === "pants";
+      const frontDetailCount = Math.min(
+        photoFissionFrontDetails.length,
+        isPantsCategory ? 2 : 1,
+      );
+      const sideDetailCount = isPantsCategory
+        ? Math.min(photoFissionSideDetails.length, 2)
+        : 0;
+      const backDetailCount = Math.min(
+        photoFissionBackDetails.length,
+        isPantsCategory ? 2 : 1,
+      );
       // shotPlan 由后端 normalize 阶段补全，这里仅占位以满足类型。
       return {
         model: photoFissionModel,
         category: photoFissionCategory,
         childrensCategory: photoFissionChildrensCategory,
-        hasFrontDetail: Boolean(photoFissionFrontDetail),
-        hasBackDetail: Boolean(photoFissionBackDetail),
+        hasFrontDetail: frontDetailCount > 0,
+        hasSideDetail: sideDetailCount > 0,
+        hasBackDetail: backDetailCount > 0,
+        frontDetailCount,
+        sideDetailCount,
+        backDetailCount,
+        pantsMainHandVisibility: isPantsCategory
+          ? photoFissionPantsMainHandVisibility
+          : undefined,
         imageRatio: photoFissionImageRatio,
         resolution: photoFissionResolution,
         shotPlan: [],
         resultCount: photoFissionResultCount,
-        faceIdModelId: selectedFaceIdModel?.assetId ?? null,
-        faceMaskAssetId: selectedFaceIdModel ? photoFissionFaceMask?.assetId ?? null : null,
+        faceIdModelId:
+          photoFissionChildrensCategory === "pants"
+            ? null
+            : selectedFaceIdModel?.assetId ?? null,
+        faceMaskAssetId:
+          photoFissionChildrensCategory === "pants"
+            ? null
+            : selectedFaceIdModel
+              ? photoFissionFaceMask?.assetId ?? null
+              : null,
         plannerReasoningEnabled: photoFissionPlannerReasoningEnabled,
       };
     }
@@ -730,8 +815,10 @@ export function LeftPanel({
                 category={photoFissionCategory}
                 childrensCategory={photoFissionChildrensCategory}
                 mainImage={photoFissionMainImage}
-                frontDetailImage={photoFissionFrontDetail}
-                backDetailImage={photoFissionBackDetail}
+                frontDetailImages={photoFissionFrontDetails}
+                sideDetailImages={photoFissionSideDetails}
+                backDetailImages={photoFissionBackDetails}
+                pantsMainHandVisibility={photoFissionPantsMainHandVisibility}
                 imageRatio={photoFissionImageRatio}
                 resolution={photoFissionResolution}
                 plannerReasoningEnabled={photoFissionPlannerReasoningEnabled}
@@ -761,10 +848,39 @@ export function LeftPanel({
                   setPhotoFissionMainImage(null);
                   setPhotoFissionFaceMask(null);
                 }}
-                onFrontDetailUploaded={setPhotoFissionFrontDetail}
-                onFrontDetailRemove={() => setPhotoFissionFrontDetail(null)}
-                onBackDetailUploaded={setPhotoFissionBackDetail}
-                onBackDetailRemove={() => setPhotoFissionBackDetail(null)}
+                onFrontDetailUploaded={(index, image) =>
+                  setPhotoFissionFrontDetails((current) =>
+                    replacePhotoFissionDetail(current, index, image),
+                  )
+                }
+                onFrontDetailRemove={(index) =>
+                  setPhotoFissionFrontDetails((current) =>
+                    current.filter((_, currentIndex) => currentIndex !== index),
+                  )
+                }
+                onSideDetailUploaded={(index, image) =>
+                  setPhotoFissionSideDetails((current) =>
+                    replacePhotoFissionDetail(current, index, image),
+                  )
+                }
+                onSideDetailRemove={(index) =>
+                  setPhotoFissionSideDetails((current) =>
+                    current.filter((_, currentIndex) => currentIndex !== index),
+                  )
+                }
+                onBackDetailUploaded={(index, image) =>
+                  setPhotoFissionBackDetails((current) =>
+                    replacePhotoFissionDetail(current, index, image),
+                  )
+                }
+                onBackDetailRemove={(index) =>
+                  setPhotoFissionBackDetails((current) =>
+                    current.filter((_, currentIndex) => currentIndex !== index),
+                  )
+                }
+                onPantsMainHandVisibilityChange={
+                  setPhotoFissionPantsMainHandVisibility
+                }
                 onSelectFaceIdModel={onChangeSelectedFaceIdModel}
                 onOpenFaceIdLibrary={onOpenFaceIdLibrary}
                 onOpenFaceMaskPainter={() => setIsFaceMaskPainterOpen(true)}
@@ -1569,16 +1685,68 @@ function getPoseRatioStyle(id: PoseImageRatio) {
 
 /**
  * 服装大片裂变（PRD v2）左侧表单。
- * 字段：模型 / 品类 / 主图（必填）/ 正面细节图 / 背面细节图 / 图片比例（6+5）/ 画质。
+ * 字段：模型 / 品类 / 主图（必填）/ 正面细节图 / 侧面细节图（裤子）/ 背面细节图 / 图片比例（6+5）/ 画质。
  * 「更多」按钮在主图比例后弹出 Radix Popover 平铺 5 个扩展比例。
  */
+function PhotoFissionDetailReferenceGroup({
+  angleLabel,
+  images,
+  maxCount,
+  onUploaded,
+  onRemove,
+}: {
+  angleLabel: "正面" | "侧面" | "背面";
+  images: UploadedImage[];
+  maxCount: 1 | 2;
+  onUploaded: (index: number, image: UploadedImage) => void;
+  onRemove: (index: number) => void;
+}) {
+  const getSingleHelper = () => {
+    if (angleLabel === "正面") {
+      return "请上传服装正面的关键细节图，如领口、图案、Logo 等";
+    }
+    if (angleLabel === "背面") {
+      return "请上传服装背面的关键细节图，如背片设计、面料纹理等";
+    }
+    return "请上传服装侧面的关键细节图";
+  };
+
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: maxCount }, (_, index) => (
+        <UploadBox
+          key={`${angleLabel}-${index + 1}`}
+          label={
+            maxCount === 1
+              ? `产品${angleLabel}细节图（非必填）`
+              : `产品${angleLabel}参考图 ${index + 1}（非必填）`
+          }
+          helper={
+            maxCount === 2
+              ? "可自由上传完整角度图或局部放大图；上传两张时系统会联合参考"
+              : getSingleHelper()
+          }
+          image={images[index] ?? null}
+          onUploaded={(image) => onUploaded(index, image)}
+          onRemove={() => onRemove(index)}
+          required={false}
+          variant="compact"
+          optimizeForGeneration
+        />
+      ))}
+    </div>
+  );
+}
+
 function PhotoFissionForm({
   model,
   category,
   childrensCategory,
   mainImage,
-  frontDetailImage,
-  backDetailImage,
+  frontDetailImages,
+  sideDetailImages,
+  backDetailImages,
+  pantsMainHandVisibility,
   imageRatio,
   resolution,
   plannerReasoningEnabled,
@@ -1594,8 +1762,11 @@ function PhotoFissionForm({
   onMainRemove,
   onFrontDetailUploaded,
   onFrontDetailRemove,
+  onSideDetailUploaded,
+  onSideDetailRemove,
   onBackDetailUploaded,
   onBackDetailRemove,
+  onPantsMainHandVisibilityChange,
   onSelectFaceIdModel = () => {},
   onOpenFaceIdLibrary = () => {},
   onOpenFaceMaskPainter = () => {},
@@ -1610,8 +1781,10 @@ function PhotoFissionForm({
   category: PhotoFissionCategory;
   childrensCategory: PhotoFissionChildrensCategory;
   mainImage: UploadedImage | null;
-  frontDetailImage: UploadedImage | null;
-  backDetailImage: UploadedImage | null;
+  frontDetailImages: UploadedImage[];
+  sideDetailImages: UploadedImage[];
+  backDetailImages: UploadedImage[];
+  pantsMainHandVisibility: PantsMainHandVisibility;
   imageRatio: PhotoFissionImageRatio;
   resolution: PhotoFissionResolution;
   plannerReasoningEnabled: boolean;
@@ -1625,10 +1798,13 @@ function PhotoFissionForm({
   onChildrensCategoryChange: (value: PhotoFissionChildrensCategory) => void;
   onMainUploaded: (image: UploadedImage) => void;
   onMainRemove: () => void;
-  onFrontDetailUploaded: (image: UploadedImage) => void;
-  onFrontDetailRemove: () => void;
-  onBackDetailUploaded: (image: UploadedImage) => void;
-  onBackDetailRemove: () => void;
+  onFrontDetailUploaded: (index: number, image: UploadedImage) => void;
+  onFrontDetailRemove: (index: number) => void;
+  onSideDetailUploaded: (index: number, image: UploadedImage) => void;
+  onSideDetailRemove: (index: number) => void;
+  onBackDetailUploaded: (index: number, image: UploadedImage) => void;
+  onBackDetailRemove: (index: number) => void;
+  onPantsMainHandVisibilityChange: (value: PantsMainHandVisibility) => void;
   onSelectFaceIdModel?: (model: CompanyModel | null) => void;
   onOpenFaceIdLibrary?: () => void;
   onOpenFaceMaskPainter?: () => void;
@@ -1642,6 +1818,10 @@ function PhotoFissionForm({
   const isExtraRatio = PHOTO_FISSION_RATIOS_EXTRA.some(
     (option) => option.id === imageRatio,
   );
+  const isPantsCategory = childrensCategory === "pants";
+  const resultCountOptions = isPantsCategory
+    ? PHOTO_FISSION_RESULT_COUNTS.filter((option) => option.id !== 9)
+    : PHOTO_FISSION_RESULT_COUNTS;
 
   return (
     <div className="space-y-4">
@@ -1710,35 +1890,57 @@ function PhotoFissionForm({
         </p>
       )}
 
-      <UploadBox
-        label="产品正面细节图（非必填）"
-        helper="请上传服装正面的关键细节图，如领口、图案、Logo 等"
-        image={frontDetailImage}
+      {isPantsCategory && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-secondary/40 px-3 py-2">
+          <div className="min-w-0">
+            <p className="text-sm text-foreground">主图露手</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+              关闭时全批不写手部姿势，成图不出现手
+            </p>
+          </div>
+          <Switch
+            checked={pantsMainHandVisibility === "visible"}
+            onCheckedChange={(checked) =>
+              onPantsMainHandVisibilityChange(checked ? "visible" : "hidden")
+            }
+          />
+        </div>
+      )}
+
+      <PhotoFissionDetailReferenceGroup
+        angleLabel="正面"
+        images={frontDetailImages}
+        maxCount={isPantsCategory ? 2 : 1}
         onUploaded={onFrontDetailUploaded}
         onRemove={onFrontDetailRemove}
-        required={false}
-        variant="compact"
-        optimizeForGeneration
       />
-      <UploadBox
-        label="产品背面细节图（非必填）"
-        helper="请上传服装背面的关键细节图，如背片设计、面料纹理等"
-        image={backDetailImage}
+      {isPantsCategory && (
+        <PhotoFissionDetailReferenceGroup
+          angleLabel="侧面"
+          images={sideDetailImages}
+          maxCount={2}
+          onUploaded={onSideDetailUploaded}
+          onRemove={onSideDetailRemove}
+        />
+      )}
+      <PhotoFissionDetailReferenceGroup
+        angleLabel="背面"
+        images={backDetailImages}
+        maxCount={isPantsCategory ? 2 : 1}
         onUploaded={onBackDetailUploaded}
         onRemove={onBackDetailRemove}
-        required={false}
-        variant="compact"
-        optimizeForGeneration
       />
 
-      <FaceIdModelSelect
-        models={faceIdModels}
-        selectedModel={selectedFaceIdModel}
-        onSelectModel={onSelectFaceIdModel}
-        onOpenLibrary={onOpenFaceIdLibrary}
-      />
+      {!isPantsCategory && (
+        <FaceIdModelSelect
+          models={faceIdModels}
+          selectedModel={selectedFaceIdModel}
+          onSelectModel={onSelectFaceIdModel}
+          onOpenLibrary={onOpenFaceIdLibrary}
+        />
+      )}
 
-      {selectedFaceIdModel && (
+      {!isPantsCategory && selectedFaceIdModel && (
         <div className="rounded-lg border border-border bg-secondary p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -1789,7 +1991,7 @@ function PhotoFissionForm({
       <OptionSelector
         label="出图数量"
         required
-        options={PHOTO_FISSION_RESULT_COUNTS}
+        options={resultCountOptions}
         value={resultCount}
         onChange={onResultCountChange}
       />

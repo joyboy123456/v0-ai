@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Check,
   CheckCircle2,
@@ -40,6 +40,7 @@ import {
   type PoseFissionCase,
   type PoseFissionParams,
   type ResultAsset,
+  type ShotProgress,
   type TaskStatus,
 } from "@/lib/types";
 
@@ -50,9 +51,19 @@ interface ResultPreview {
   task: GenerationTask;
 }
 
-type ResultGridItem = { kind: "image"; image: ResultAsset };
+type ResultGridItem =
+  | { kind: "image"; image: ResultAsset; progress?: ShotProgress }
+  | { kind: "progress"; progress: ShotProgress };
+
+function isPantsFissionTask(task: GenerationTask): boolean {
+  if (task.featureType !== "photo-fission") return false;
+  const params = task.params as Partial<PhotoFissionParams>;
+  return params.childrensCategory === "pants";
+}
 
 function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
+  // 任务取消/生成进度 UI 仅对裤子品类生效；连衣裙/套装/姿势裂变沿用旧行为（不显示进度卡）。
+  const showProgress = isPantsFissionTask(task);
   const params = task.params as {
     shotPlan?: { shotId?: string }[];
     poseTemplateIds?: string[];
@@ -67,7 +78,11 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
     const plannedItems = params.shotPlan.flatMap<ResultGridItem>((shot, index) => {
       const shotId = shot.shotId ?? `shot_${index + 1}`;
       const result = resultsByShotId.get(shotId);
-      if (result) return [{ kind: "image", image: result }];
+      const progress = showProgress
+        ? task.shotProgress?.find((item) => item.shotId === shotId)
+        : undefined;
+      if (result) return [{ kind: "image", image: result, progress }];
+      if (progress) return [{ kind: "progress", progress }];
       return [];
     });
     const plannedIds = new Set(
@@ -86,7 +101,11 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
     const plannedItems = params.poseTemplateIds.flatMap<ResultGridItem>(
       (templateId) => {
         const result = resultsByShotId.get(templateId);
-        if (result) return [{ kind: "image", image: result }];
+        const progress = showProgress
+          ? task.shotProgress?.find((item) => item.shotId === templateId)
+          : undefined;
+        if (result) return [{ kind: "image", image: result, progress }];
+        if (progress) return [{ kind: "progress", progress }];
         return [];
       },
     );
@@ -156,6 +175,7 @@ interface RightPanelProps {
   onSelectPhotoFissionCase: (photoFissionCase: PhotoFissionCase) => void;
   onSelectTask: (taskId: string) => void;
   onRefreshTasks: () => void;
+  onCancelTask: (taskId: string) => Promise<void>;
   onDeleteTaskResult: (taskId: string, assetId: string) => Promise<void>;
 }
 
@@ -183,6 +203,7 @@ export function RightPanel({
   onSelectPhotoFissionCase,
   onSelectTask,
   onRefreshTasks,
+  onCancelTask,
   onDeleteTaskResult,
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<
@@ -319,6 +340,11 @@ export function RightPanel({
   const visibleTaskGridItems = visibleTask
     ? getTaskResultGridItems(visibleTask)
     : [];
+  const showHistoryLiveTask =
+    activeTab === "history" &&
+    visibleTask &&
+    isPantsFissionTask(visibleTask) &&
+    (visibleTask.status === "pending" || visibleTask.status === "running");
 
   useEffect(() => {
     if (isPoseFission) {
@@ -824,6 +850,28 @@ export function RightPanel({
         <TaskHistory
           tasks={currentFeatureTasks}
           tasksLoading={tasksLoading}
+          topContent={
+            showHistoryLiveTask && visibleTask ? (
+              <LiveTaskProgressPanel
+                task={visibleTask}
+                gridItems={visibleTaskGridItems}
+                favorites={favorites}
+                isFaceVariantRunning={isFaceVariantRunning}
+                onBatchDownload={handleBatchDownload}
+                onRetryShots={handleRetryShots}
+                onCancelTask={onCancelTask}
+                onPreviewImage={(image) =>
+                  setPreviewResult({ image, task: visibleTask })
+                }
+                onToggleFavorite={handleToggleFavorite}
+                onRefineFace={(image) => openFaceRefine(visibleTask, image)}
+                onRegenerate={(image) => handleRegenerateShot(visibleTask, image)}
+                onDelete={(image) =>
+                  void handleDeleteResult(visibleTask.taskId, image.assetId)
+                }
+              />
+            ) : null
+          }
           activeTaskId={activeTask?.taskId}
           favorites={favorites}
           batchSelectMode={batchSelectMode}
@@ -858,11 +906,21 @@ export function RightPanel({
                 task={visibleTask}
                 onBatchDownload={handleBatchDownload}
                 onRetryShots={handleRetryShots}
+                onCancelTask={onCancelTask}
               />
 
               {visibleTaskGridItems.length > 0 ? (
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
                   {visibleTaskGridItems.map((item) => {
+                    if (item.kind === "progress") {
+                      return (
+                        <ResultProgressCard
+                          key={item.progress.shotId}
+                          progress={item.progress}
+                        />
+                      );
+                    }
+
                     const image = item.image;
                     const isFavorite = favorites.has(image.assetId);
                     const canUseFaceActions =
@@ -2297,19 +2355,66 @@ function CaseImage({ src, alt }: { src: string; alt: string }) {
   );
 }
 
+function ResultProgressCard({ progress }: { progress: ShotProgress }) {
+  const isFailed = progress.status === "failed";
+  const isCancelled = progress.status === "cancelled";
+  const isRetrying = progress.status === "retrying";
+  const retryAttempt = progress.retryAttempt ?? 0;
+
+  return (
+    <div className="aspect-[3/4] rounded-lg border border-dashed border-border bg-card/70 p-3 text-left">
+      <div className="flex h-full flex-col justify-between">
+        <div>
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-xs font-medium text-foreground">
+              {progress.label}
+            </span>
+            <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
+              {retryAttempt > 0 ? `重跑 ${retryAttempt}` : "排队"}
+            </span>
+          </div>
+          <p
+            className={cn(
+              "mt-3 text-xs leading-relaxed",
+              isFailed ? "text-destructive" : "text-muted-foreground",
+            )}
+          >
+            {isFailed ? "重跑失败" : progress.message}
+          </p>
+        </div>
+        {!isFailed && !isCancelled && (
+          <div className="flex items-center gap-2 text-[11px] text-sky-300/80">
+            <RefreshCw
+              className={cn("h-3.5 w-3.5 animate-spin", isRetrying && "text-sky-200")}
+            />
+            <span>{isRetrying ? "正在重试" : "处理中"}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TaskStatusCard({
   task,
   onBatchDownload,
   onRetryShots,
+  onCancelTask,
 }: {
   task: GenerationTask;
   onBatchDownload: () => void;
   onRetryShots?: (task: GenerationTask, shotIds: string[]) => Promise<void>;
+  onCancelTask?: (taskId: string) => Promise<void>;
 }) {
-  const isDone = task.status === "success" || task.status === "partial";
+  const isDone =
+    task.status === "success" ||
+    task.status === "partial" ||
+    task.status === "cancelled";
+  const isRunning = task.status === "pending" || task.status === "running";
   const isPhotoFission = task.featureType === "photo-fission";
   const isPoseFission = task.featureType === "pose-fission";
   const [retrying, setRetrying] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
 
   // photo-fission：shotPlan 中存在但 results 中没有对应 shotId 的项。
@@ -2362,6 +2467,19 @@ function TaskStatusCard({
     }
   };
 
+  const handleCancel = async () => {
+    if (!onCancelTask || cancelling) return;
+    setRetryError(null);
+    setCancelling(true);
+    try {
+      await onCancelTask(task.taskId);
+    } catch (error) {
+      setRetryError(error instanceof Error ? error.message : "取消任务失败");
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   return (
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-start justify-between gap-4">
@@ -2399,6 +2517,17 @@ function TaskStatusCard({
                 : `重新生成${retryLabel} (${failedShotIds.length})`}
             </button>
           )}
+          {isRunning && onCancelTask && isPantsFissionTask(task) && (
+            <button
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="px-3 py-2 rounded-md border border-destructive/60 bg-destructive/10 text-destructive text-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-destructive hover:text-destructive-foreground transition-colors"
+              title="停止当前任务，保留已生成图片"
+            >
+              <X className="w-4 h-4" />
+              {cancelling ? "取消中..." : "取消任务"}
+            </button>
+          )}
           <button
             onClick={onBatchDownload}
             disabled={!isDone || task.results.length === 0}
@@ -2433,6 +2562,7 @@ function StatusBadge({ status }: { status: TaskStatus }) {
     success: "成功",
     failed: "失败",
     partial: "部分成功",
+    cancelled: "已取消",
   }[status];
 
   return (
@@ -2444,6 +2574,7 @@ function StatusBadge({ status }: { status: TaskStatus }) {
         status === "pending" && "bg-muted text-muted-foreground",
         status === "failed" && "bg-destructive/15 text-destructive",
         status === "partial" && "bg-yellow-500/15 text-yellow-300",
+        status === "cancelled" && "bg-muted text-muted-foreground",
       )}
     >
       {status === "success" && <CheckCircle2 className="w-3 h-3" />}
@@ -2452,9 +2583,83 @@ function StatusBadge({ status }: { status: TaskStatus }) {
   );
 }
 
+function LiveTaskProgressPanel({
+  task,
+  gridItems,
+  favorites,
+  isFaceVariantRunning,
+  onBatchDownload,
+  onRetryShots,
+  onCancelTask,
+  onPreviewImage,
+  onToggleFavorite,
+  onRefineFace,
+  onRegenerate,
+  onDelete,
+}: {
+  task: GenerationTask;
+  gridItems: ResultGridItem[];
+  favorites: Set<string>;
+  isFaceVariantRunning: boolean;
+  onBatchDownload: () => void;
+  onRetryShots: (task: GenerationTask, shotIds: string[]) => Promise<void>;
+  onCancelTask: (taskId: string) => Promise<void>;
+  onPreviewImage: (image: ResultAsset) => void;
+  onToggleFavorite: (assetId: string) => void;
+  onRefineFace: (image: ResultAsset) => void;
+  onRegenerate: (image: ResultAsset) => void;
+  onDelete: (image: ResultAsset) => void;
+}) {
+  const canUseFaceActions =
+    task.featureType === "photo-fission" &&
+    Boolean((task.params as PhotoFissionParams).faceIdModelId);
+
+  return (
+    <div className="mb-5 space-y-4">
+      <TaskStatusCard
+        task={task}
+        onBatchDownload={onBatchDownload}
+        onRetryShots={onRetryShots}
+        onCancelTask={onCancelTask}
+      />
+      {gridItems.length > 0 && (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+          {gridItems.map((item) => {
+            if (item.kind === "progress") {
+              return (
+                <ResultProgressCard
+                  key={item.progress.shotId}
+                  progress={item.progress}
+                />
+              );
+            }
+
+            return (
+              <ResultImageCard
+                key={item.image.assetId}
+                image={item.image}
+                isFavorite={favorites.has(item.image.assetId)}
+                canRefineFace={canUseFaceActions}
+                canRegenerate={task.featureType === "photo-fission"}
+                actionDisabled={isFaceVariantRunning}
+                onClick={() => onPreviewImage(item.image)}
+                onToggleFavorite={() => onToggleFavorite(item.image.assetId)}
+                onRefineFace={() => onRefineFace(item.image)}
+                onRegenerate={() => onRegenerate(item.image)}
+                onDelete={() => onDelete(item.image)}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TaskHistory({
   tasks,
   tasksLoading,
+  topContent,
   activeTaskId,
   favorites,
   batchSelectMode,
@@ -2466,6 +2671,7 @@ function TaskHistory({
 }: {
   tasks: GenerationTask[];
   tasksLoading?: boolean;
+  topContent?: ReactNode;
   activeTaskId?: string;
   favorites: Set<string>;
   batchSelectMode: boolean;
@@ -2479,6 +2685,7 @@ function TaskHistory({
     if (tasksLoading) {
       return (
         <div className="flex-1 overflow-y-auto p-5">
+          {topContent}
           <div className="space-y-3">
             {Array.from({ length: 3 }).map((_, i) => (
               <div
@@ -2510,6 +2717,7 @@ function TaskHistory({
     }
     return (
       <div className="flex-1 overflow-y-auto p-5">
+        {topContent}
         <EmptyState />
       </div>
     );
@@ -2518,6 +2726,7 @@ function TaskHistory({
   return (
     <div className="flex-1 overflow-y-auto p-5">
       <div className="space-y-3">
+        {topContent}
         {tasks.map((task) => {
           // 使用增强版动画组件（如果不需要批量选择模式）
           if (!batchSelectMode) {

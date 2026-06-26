@@ -79,6 +79,8 @@ export interface GoogleEditInput {
   prompt: string
   /** Each item is a data URL or HTTP/HTTPS image URL collected from the asset store. */
   inputImages: string[]
+  /** Optional text labels interleaved immediately before each image part. */
+  inputImageLabels?: string[]
   /** Number of result images to return. Gemini does not support `n` natively, so we loop. */
   count: number
   /** Optional aspect ratio (e.g. "1:1", "3:4", "16:9"). Only honored by 3.x models. */
@@ -100,6 +102,8 @@ export interface GoogleEditInput {
   maxIpm?: number
   /** 该 provider 的 RPM 上限。不传时降级读 env */
   maxRpm?: number
+  signal?: AbortSignal
+  onRetryAttempt?: (attempt: number) => void
 }
 
 export async function runGoogleImageEdit(input: GoogleEditInput): Promise<ResultAsset[]> {
@@ -198,6 +202,7 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
           requestBodyBytes,
           maxRequestBytes,
           timeoutMs: input.timeoutMs,
+          signal: input.signal,
         })
 
         logImageEvent('gimg.success', { ...ctx, attempt }, {
@@ -214,6 +219,8 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
         rateLimitKey: input.rateLimitKey,
         maxIpm: input.maxIpm,
         maxRpm: input.maxRpm,
+        signal: input.signal,
+        onRetryAttempt: input.onRetryAttempt,
       },
     )
 
@@ -253,6 +260,7 @@ interface PerformSingleCallInput {
   /** 请求体大小阈值，用于 413 时判断本地是否确实超限。 */
   maxRequestBytes?: number
   timeoutMs: number
+  signal?: AbortSignal
 }
 
 /**
@@ -286,6 +294,7 @@ async function performSingleCall(
       body: input.serializedBody ?? JSON.stringify(input.body),
     },
     input.timeoutMs,
+    input.signal,
   )
 
   const data = (await readJsonResponse(response)) as GeminiResponse
@@ -455,9 +464,13 @@ async function performSingleCall(
 
 function buildRequestBody(input: GoogleEditInput) {
   const parts: GeminiPart[] = [
-    ...input.inputImages.map((dataUrl) => ({
-      inline_data: parseDataUrl(dataUrl),
-    })),
+    ...input.inputImages.flatMap((dataUrl, index) => {
+      const label = input.inputImageLabels?.[index]?.trim()
+      return [
+        ...(label ? [{ text: label }] : []),
+        { inline_data: parseDataUrl(dataUrl) },
+      ]
+    }),
     { text: input.prompt },
   ]
 
@@ -612,9 +625,17 @@ function extractFinalImage(response: GeminiResponse): GeminiInlineData | null {
   return null
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  const abortFromParent = () => controller.abort()
+  if (signal?.aborted) controller.abort()
+  signal?.addEventListener('abort', abortFromParent, { once: true })
 
   try {
     return await proxyFetch(url, { ...init, signal: controller.signal })
@@ -650,6 +671,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
       cause: error,
     })
   } finally {
+    signal?.removeEventListener('abort', abortFromParent)
     clearTimeout(timeoutId)
   }
 }

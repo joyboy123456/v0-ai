@@ -36,6 +36,12 @@ import {
   buildSuitPlannerSystemPrompt,
   buildSuitPlannerUserPrompt,
 } from '@/lib/server/prompt-templates/suit-planner-system'
+import {
+  buildPantsPlannerSlots,
+  buildPantsPlannerSystemPrompt,
+  buildPantsPlannerUserPrompt,
+} from '@/lib/server/prompt-templates/pants-planner-system'
+import type { PantsDetailAvailability } from '@/lib/server/pants-reference-policy'
 
 export interface PlannerSlotMeta {
   shotId: string
@@ -63,6 +69,7 @@ export function buildPlannerRulePlan(
   recentActionHints: readonly string[] = [],
   hasFaceIdModel?: boolean,
   faceIdImageIndex?: number,
+  pantsDetailAvailability?: PantsDetailAvailability,
 ): PlannerRulePlan | undefined {
   if (category === 'childrens' && childrensCategory) {
     if (childrensCategory === 'suit') {
@@ -74,6 +81,17 @@ export function buildPlannerRulePlan(
         systemPrompt,
         userPrompt: buildSuitPlannerUserPrompt(resultCount, recentActionHints),
         slots: buildSuitPlannerSlots(resultCount),
+      }
+    }
+    if (childrensCategory === 'pants') {
+      return {
+        systemPrompt: buildPantsPlannerSystemPrompt(
+          resultCount,
+          recentActionHints,
+          pantsDetailAvailability,
+        ),
+        userPrompt: buildPantsPlannerUserPrompt(resultCount, recentActionHints),
+        slots: buildPantsPlannerSlots(resultCount),
       }
     }
     let systemPrompt = getChildrensCategoryPlannerSystemPrompt(childrensCategory, resultCount)

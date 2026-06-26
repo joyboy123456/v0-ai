@@ -27,11 +27,15 @@ export interface ProviderImageEditInput {
   model: string
   prompt: string
   inputImages: string[]
+  /** 与 inputImages 一一对应；Gemini 请求会把标签紧邻放在对应图片前。 */
+  inputImageLabels?: string[]
   count: number
   aspectRatio?: string
   imageSize?: string
   traceId?: string
   shotId?: string
+  signal?: AbortSignal
+  onRetryAttempt?: (attempt: number) => void
 }
 
 /**
@@ -57,6 +61,7 @@ export async function runImageEditViaProvider(
           timeoutMs,
           prompt: input.prompt,
           inputImages: input.inputImages,
+          inputImageLabels: input.inputImageLabels,
           count: input.count,
           aspectRatio: input.aspectRatio,
           imageSize: input.imageSize,
@@ -66,6 +71,8 @@ export async function runImageEditViaProvider(
           rateLimitKey,
           maxIpm: provider.maxIpm,
           maxRpm: provider.maxRpm,
+          signal: input.signal,
+          onRetryAttempt: input.onRetryAttempt,
         })
 
       case 'openai':
@@ -153,6 +160,7 @@ export async function runImageEditViaProvider(
           timeoutMs,
           prompt: input.prompt,
           inputImages: input.inputImages,
+          inputImageLabels: input.inputImageLabels,
           count: input.count,
           aspectRatio: input.aspectRatio,
           imageSize: input.imageSize,
@@ -162,6 +170,8 @@ export async function runImageEditViaProvider(
           rateLimitKey,
           maxIpm: provider.maxIpm,
           maxRpm: provider.maxRpm,
+          signal: input.signal,
+          onRetryAttempt: input.onRetryAttempt,
         })
     }
   } catch (error) {

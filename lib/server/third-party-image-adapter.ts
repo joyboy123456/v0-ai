@@ -29,6 +29,8 @@ interface ThirdPartyWorkflowInput {
   inputImages: string[]
   faceMaskImage?: string | null
   params: TaskParams
+  signal?: AbortSignal
+  onShotProgress?: (shotId: string, message: string, retryAttempt?: number) => void
   /** 单 shot 成功后立刻回调（photo-fission 流式持久化使用，可选；其他 feature 不消费此字段） */
   onShotResult?: (result: ResultAsset) => Promise<void>
 }
@@ -80,13 +82,22 @@ export async function runThirdPartyWorkflow(
   if (input.featureType === 'photo-fission') {
     const params = input.params as PhotoFissionParams
     const hasFaceId = Boolean(params.faceIdModelId)
-    const maxImages = hasFaceId ? 4 : 3
+    const frontDetailCount =
+      params.frontDetailCount ?? (params.hasFrontDetail ? 1 : 0)
+    const sideDetailCount =
+      params.sideDetailCount ?? (params.hasSideDetail ? 1 : 0)
+    const backDetailCount =
+      params.backDetailCount ?? (params.hasBackDetail ? 1 : 0)
+    const expectedImages =
+      1 +
+      frontDetailCount +
+      sideDetailCount +
+      backDetailCount +
+      (hasFaceId ? 1 : 0)
     const count = input.inputImages.length
-    if (count < 1 || count > maxImages) {
+    if (count !== expectedImages) {
       throw new Error(
-        hasFaceId
-          ? '服装大片裂变最多上传 1 张主图 + 正面/背面细节图 + 人像小卡共 4 张'
-          : '服装大片裂变最多上传 1 张主图 + 正面/背面细节图共 3 张',
+        `服装大片裂变素材数量不一致：当前 ${count} 张，按任务参数应为 ${expectedImages} 张`,
       )
     }
   }
@@ -111,6 +122,8 @@ export async function runThirdPartyWorkflow(
       params: input.params as PhotoFissionParams,
       apiKey: '',
       timeoutMs: defaultImageTimeoutMs,
+      signal: input.signal,
+      onShotProgress: input.onShotProgress,
       onShotResult: input.onShotResult,
     })
   }

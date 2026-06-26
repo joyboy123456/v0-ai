@@ -51,6 +51,7 @@ export interface LaozhangEditInput {
   timeoutMs: number
   prompt: string
   inputImages: string[]
+  inputImageLabels?: string[]
   count: number
   aspectRatio?: string
   imageSize?: string
@@ -60,6 +61,8 @@ export interface LaozhangEditInput {
   rateLimitKey?: string
   maxIpm?: number
   maxRpm?: number
+  signal?: AbortSignal
+  onRetryAttempt?: (attempt: number) => void
 }
 
 /**
@@ -94,6 +97,7 @@ export async function runLaozhangImageEdit(input: LaozhangEditInput): Promise<Re
       timeoutMs: input.timeoutMs,
       prompt: input.prompt,
       inputImages: input.inputImages,
+      inputImageLabels: input.inputImageLabels,
       count: input.count,
       aspectRatio: input.aspectRatio,
       imageSize: input.imageSize,
@@ -103,6 +107,8 @@ export async function runLaozhangImageEdit(input: LaozhangEditInput): Promise<Re
       rateLimitKey: input.rateLimitKey,
       maxIpm: input.maxIpm,
       maxRpm: input.maxRpm,
+      signal: input.signal,
+      onRetryAttempt: input.onRetryAttempt,
     }
 
     return runGoogleImageEdit(googleInput)
@@ -131,5 +137,4 @@ export async function runLaozhangImageEdit(input: LaozhangEditInput): Promise<Re
     return runOpenAIImageEdit(qiniuInput)
   }
 }
-
 

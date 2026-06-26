@@ -12,7 +12,29 @@ export type FeatureType =
   | 'photo-fission'
   | 'pose-fission'
 
-export type TaskStatus = 'pending' | 'running' | 'success' | 'failed' | 'partial'
+export type TaskStatus =
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'partial'
+  | 'cancelled'
+
+export type ShotProgressStatus =
+  | 'prompting'
+  | 'generating'
+  | 'retrying'
+  | 'success'
+  | 'failed'
+  | 'cancelled'
+
+export interface ShotProgress {
+  shotId: string
+  label: string
+  status: ShotProgressStatus
+  message: string
+  retryAttempt?: number
+}
 
 export type SceneStyle = 'studio' | 'outdoor' | 'street' | 'lifestyle'
 export type GenerateCount = 4 | 8 | 12 | 16
@@ -41,7 +63,7 @@ export type PoseResolution = '2k' | '4k'
 export type FashionResolution = PoseResolution
 export type ProductCategory = 'tops' | 'bottoms' | 'dress' | 'suit' | 'outerwear'
 export type PhotoFissionCategory = 'childrens'
-export type PhotoFissionChildrensCategory = 'dress' | 'suit'
+export type PhotoFissionChildrensCategory = 'dress' | 'suit' | 'pants'
 export type PhotoFissionImageRatio =
   | '1:1'
   | '3:2'
@@ -55,6 +77,7 @@ export type PhotoFissionImageRatio =
   | '21:9'
 export type PhotoFissionResolution = PoseResolution
 export type PhotoFissionResultCount = 2 | 4 | 9 | 10
+export type PantsMainHandVisibility = 'hidden' | 'visible'
 export type ElementReplaceType = 'clothing' | 'environment' | 'person'
 export type FashionReferenceSource = 'model' | 'upload'
 export type FashionPromptMode = 'enhanced' | 'raw'
@@ -138,6 +161,7 @@ export interface GenerationTask {
   message: string
   resultAssetIds: string[]
   results: ResultAsset[]
+  shotProgress?: ShotProgress[]
   errorMessage?: string
   createdAt: string
   finishedAt?: string
@@ -167,6 +191,12 @@ export interface PhotoFissionShot {
   label: string
   prompt: string
   order: number
+  /** 裤子任务持久化的抽卡结果，保证 Planner 覆盖和失败重试仍使用同一姿势。 */
+  pantsPoseCardId?: string
+  /** 裤子主图是否露手：hidden 时全批不生成手，也不写手部姿势。 */
+  pantsMainHandVisibility?: PantsMainHandVisibility
+  /** 历史兼容字段；当前裤子规则下主图不露手时所有镜头都不露手。 */
+  pantsMayRevealHandsWhenMainHidden?: boolean
 }
 
 /**
@@ -223,7 +253,16 @@ export interface PhotoFissionParams {
   category: PhotoFissionCategory
   childrensCategory?: PhotoFissionChildrensCategory
   hasFrontDetail: boolean
+  hasSideDetail?: boolean
   hasBackDetail: boolean
+  /** 裤子品类每个角度支持 0-2 张；历史任务缺失时由 has*Detail 回退为 0/1。 */
+  frontDetailCount?: number
+  sideDetailCount?: number
+  backDetailCount?: number
+  /** 裤子主图是否露手；默认 hidden，避免主图无手时 prompt 仍写手部姿势。 */
+  pantsMainHandVisibility?: PantsMainHandVisibility
+  /** 每个裤子任务独立的加权姿势抽卡种子。 */
+  pantsPoseDrawSeed?: string
   plannerReasoningEnabled?: boolean
   imageRatio: PhotoFissionImageRatio
   resolution: PhotoFissionResolution
@@ -427,6 +466,7 @@ export const PHOTO_FISSION_CATEGORIES = [
 export const PHOTO_FISSION_CHILDRENS_CATEGORIES = [
   { id: 'dress', label: '连衣裙' },
   { id: 'suit', label: '套装' },
+  { id: 'pants', label: '裤子' },
 ] satisfies { id: PhotoFissionChildrensCategory; label: string }[]
 
 /**
