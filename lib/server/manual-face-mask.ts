@@ -97,7 +97,7 @@ export async function applyManualFaceMask(
   const result = await sharp(imageBuffer)
     .resize(width, height, { fit: 'fill' })
     .composite([{ input: overlay, left: 0, top: 0 }])
-    .png({ compressionLevel: 6 })
+    .png({ compressionLevel: 9, adaptiveFiltering: true })
     .toBuffer()
 
   return `data:image/png;base64,${result.toString('base64')}`

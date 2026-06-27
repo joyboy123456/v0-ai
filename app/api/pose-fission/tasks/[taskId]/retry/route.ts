@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { requireUser } from '@/lib/server/auth/require-user'
+import { jsonErrorResponse } from '@/lib/server/api-error-response'
 import { retryPoseFissionShots } from '@/lib/server/task-store'
 
 interface RouteContext {
@@ -63,6 +64,6 @@ export async function POST(request: NextRequest, context: RouteContext) {
     // 任务不存在 / 状态不允许 / 姿势无效统一 400；上游 API 调用错误也归 400 让前端展示
     const status =
       message.includes('任务不存在') || message.includes('丢失') ? 404 : 400
-    return NextResponse.json({ error: message }, { status })
+    return jsonErrorResponse(error, status)
   }
 }

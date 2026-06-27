@@ -15,7 +15,10 @@ import {
   UploadBox,
 } from "./upload-components";
 import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
-import { cn, validateUploadSize } from "@/lib/utils";
+import {
+  cn,
+  readJsonResponse,
+} from "@/lib/utils";
 import {
   Popover,
   PopoverContent,
@@ -305,8 +308,6 @@ export function LeftPanel({
         );
 
         const prepared = await prepareImageForGenerationUpload(file, true);
-        const sizeError = validateUploadSize(prepared.file);
-        if (sizeError) return;
 
         const formData = new FormData();
         formData.append("file", prepared.file);
@@ -321,12 +322,12 @@ export function LeftPanel({
         });
         if (!uploadResponse.ok) return;
 
-        const data = (await uploadResponse.json()) as {
+        const data = await readJsonResponse<{
           assetId: string;
           fileName: string;
           width: number;
           height: number;
-        };
+        }>(uploadResponse, "上传失败");
         if (cancelled) return;
         setPhotoFissionMainImage({
           assetId: data.assetId,
@@ -483,19 +484,13 @@ export function LeftPanel({
         method: "POST",
         body: formData,
       });
-      if (!response.ok) {
-        const data = (await response.json().catch(() => ({}))) as {
-          error?: string;
-        };
-        throw new Error(data.error ?? `上传人脸 mask 失败：HTTP ${response.status}`);
-      }
-      const data = (await response.json()) as {
+      const data = await readJsonResponse<{
         assetId: string;
         url: string;
         fileName: string;
         width?: number;
         height?: number;
-      };
+      }>(response, "上传人脸 mask 失败");
       setPhotoFissionFaceMask({
         assetId: data.assetId,
         preview: data.url,
@@ -1363,30 +1358,11 @@ function FashionReferenceUploader({
       return;
     }
 
-    const oversizedNames: string[] = [];
-    const acceptedFiles: File[] = [];
-    for (const file of files) {
-      if (validateUploadSize(file)) {
-        oversizedNames.push(file.name);
-      } else {
-        acceptedFiles.push(file);
-      }
-    }
-
-    if (!acceptedFiles.length) {
-      setUploadError(
-        oversizedNames.length === 1
-          ? `图片体积超过 8MB 上限：${oversizedNames[0]}`
-          : `${oversizedNames.length} 张图片体积超过 8MB 上限，未上传`,
-      );
-      return;
-    }
-
     setIsUploading(true);
     setUploadError("");
 
     try {
-      for (const file of acceptedFiles.slice(0, availableSlots)) {
+      for (const file of files.slice(0, availableSlots)) {
         const preview = URL.createObjectURL(file);
         const formData = new FormData();
         formData.append("file", file);
@@ -1396,17 +1372,12 @@ function FashionReferenceUploader({
           body: formData,
         });
 
-        if (!response.ok) {
-          const data = (await response.json()) as { error?: string };
-          throw new Error(data.error || "上传失败");
-        }
-
-        const data = (await response.json()) as {
+        const data = await readJsonResponse<{
           assetId: string;
           fileName: string;
           width: number;
           height: number;
-        };
+        }>(response, "上传失败");
 
         onAddUploadReference({
           assetId: data.assetId,
@@ -1418,11 +1389,8 @@ function FashionReferenceUploader({
       }
 
       const messages: string[] = [];
-      if (acceptedFiles.length > availableSlots) {
+      if (files.length > availableSlots) {
         messages.push("参考图最多上传10张，已自动忽略超出图片");
-      }
-      if (oversizedNames.length) {
-        messages.push(`已跳过 ${oversizedNames.length} 张超过 8MB 的图片`);
       }
       if (messages.length) setUploadError(messages.join("；"));
     } catch (error) {

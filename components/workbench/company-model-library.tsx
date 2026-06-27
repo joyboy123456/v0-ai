@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react'
 import { Check, Plus, X } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { cn } from '@/lib/utils'
+import { cn, readJsonResponse } from '@/lib/utils'
 import type { CompanyModel } from '@/lib/types'
 
 interface CompanyModelLibraryProps {
@@ -120,18 +120,13 @@ function CompanyModelDialog({
         body: formData,
       })
 
-      if (!response.ok) {
-        const data = (await response.json()) as { error?: string }
-        throw new Error(data.error || '上传失败')
-      }
-
-      const data = (await response.json()) as {
+      const data = await readJsonResponse<{
         assetId: string
         url: string
         fileName: string
         width: number
         height: number
-      }
+      }>(response, '上传失败')
       // A-fix: 使用 server 返回的稳定 URL（/generated/assets/xxx.png），
       // 刷新页面或换浏览器都能正常显示，不再使用 blob URL。
       const model: CompanyModel = {

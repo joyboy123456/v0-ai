@@ -19,19 +19,125 @@ export function getOssThumbnailUrl(
   return `${url}?x-oss-process=image/resize,w_${width}/format,webp/quality,q_80`
 }
 
-// Gemini 3 Pro Image inline data 官方限制：单张图片最大 7 MB
-// 文档：https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-pro-image
-export const MAX_UPLOAD_BYTES = 7 * 1024 * 1024
+export type ApiErrorSource =
+  | 'client'
+  | 'upload_parser'
+  | 'image_validation'
+  | 'storage'
+  | 'proxy_or_transport'
+  | 'upstream'
 
-/**
- * 验证上传文件大小是否符合 Gemini 3 Pro Image 限制。
- *
- * @returns null when the file is acceptable, or a Chinese error message string otherwise.
- */
-export function validateUploadSize(file: File): string | null {
-  if (file.size > MAX_UPLOAD_BYTES) {
-    const sizeMb = (file.size / 1024 / 1024).toFixed(1)
-    return `图片尺寸过大（${sizeMb}MB），请使用小于 7MB 的图片`
+export interface ApiErrorPayload {
+  error?: string
+  source?: ApiErrorSource
+  code?: string
+  advice?: string
+  upstreamStatus?: number
+  provider?: string
+}
+
+export class ApiResponseError extends Error {
+  payload?: ApiErrorPayload
+  status: number
+
+  constructor(message: string, status: number, payload?: ApiErrorPayload) {
+    super(message)
+    this.name = 'ApiResponseError'
+    this.status = status
+    this.payload = payload
   }
-  return null
+}
+
+const apiErrorSourceLabels: Record<ApiErrorSource, string> = {
+  client: '前端',
+  upload_parser: '上传解析服务',
+  image_validation: '图片校验服务',
+  storage: '存储服务',
+  proxy_or_transport: '传输/代理',
+  upstream: '上游模型',
+}
+
+function formatApiErrorMessage(
+  status: number,
+  payload: ApiErrorPayload,
+  fallbackError: string,
+): string {
+  const rawError = payload.error?.trim() || `${fallbackError}（HTTP ${status}）`
+  const label = payload.source ? apiErrorSourceLabels[payload.source] : ''
+  const hasSourcePrefix = label ? rawError.startsWith(label) : false
+  const base =
+    payload.source === 'upstream' && payload.upstreamStatus && !hasSourcePrefix
+      ? `${label}返回 ${payload.upstreamStatus}：${rawError}`
+      : label && !hasSourcePrefix
+        ? `${label}返回：${rawError}`
+        : rawError
+
+  if (!payload.advice?.trim() || base.includes(payload.advice.trim())) {
+    return base
+  }
+
+  return `${base}。建议：${payload.advice.trim()}`
+}
+
+function buildTransportError(
+  status: number,
+  bodyText: string,
+  fallbackError: string,
+): ApiResponseError {
+  const payload: ApiErrorPayload = {
+    source: 'proxy_or_transport',
+    code: `http_${status}`,
+    error:
+      status === 413
+        ? '请求体过大，可能被代理、网关或服务运行时拦截'
+        : bodyText || `${fallbackError}（HTTP ${status}）`,
+    advice:
+      status === 413
+        ? '请减少单次上传的图片数量，或联系管理员提高代理请求体上限'
+        : '请稍后重试；如果持续出现，请检查网络、代理或服务日志',
+  }
+
+  return new ApiResponseError(
+    formatApiErrorMessage(status, payload, fallbackError),
+    status,
+    payload,
+  )
+}
+
+export async function readJsonResponse<T>(
+  response: Response,
+  fallbackError = '请求失败',
+): Promise<T> {
+  const text = await response.text()
+  const trimmed = text.trim()
+  let data: unknown = null
+
+  if (trimmed) {
+    try {
+      data = JSON.parse(trimmed) as unknown
+    } catch {
+      if (!response.ok) {
+        throw buildTransportError(response.status, trimmed, fallbackError)
+      }
+      throw new Error('服务器返回格式异常，请稍后重试')
+    }
+  }
+
+  if (!response.ok) {
+    const payload =
+      data && typeof data === 'object'
+        ? (data as ApiErrorPayload)
+        : ({ error: `${fallbackError}（HTTP ${response.status}）` } satisfies ApiErrorPayload)
+    throw new ApiResponseError(
+      formatApiErrorMessage(response.status, payload, fallbackError),
+      response.status,
+      payload,
+    )
+  }
+
+  if (!data) {
+    throw new Error('服务器返回为空，请稍后重试')
+  }
+
+  return data as T
 }

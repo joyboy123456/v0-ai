@@ -4,6 +4,9 @@ import {
   callGoogleImageWithRetry,
   parseRetryAfter,
 } from './google-image-retry'
+import {
+  formatImageLimitMb,
+} from './image-input-limits'
 import { logImageEvent, type LogContext } from './log'
 import { proxyFetch } from './proxy-fetch'
 
@@ -21,29 +24,9 @@ import { proxyFetch } from './proxy-fetch'
 
 const googleApiBaseUrl = 'https://generativelanguage.googleapis.com/v1beta'
 const referenceImageFetchTimeoutMs = 30_000
-const maxReferenceImageBytes = 20 * 1024 * 1024
-
-/**
- * 请求体总大小上限（序列化后 JSON 字节，含所有图片 base64 + prompt）。
- *
- * 背景：Gemini inline_data 的经典上限是「整个请求体 20MB」（文本+系统指令+所有图片
- * base64 之和），老张等代理各自另设阈值（如 25MB），新版可达 100MB。不同渠道阈值
- * 不一，故默认取最保守的 20MB，并允许通过 env 调高以贴合特定渠道。
- *
- * 注意：阈值针对「序列化后请求体字节」（含 base64 ~33% 膨胀），不是原始图片字节。
- */
-const defaultMaxRequestBytes = 20 * 1024 * 1024
-
-function resolveMaxRequestBytes(): number {
-  const raw = process.env.IMAGE_MAX_REQUEST_BYTES
-  if (!raw) return defaultMaxRequestBytes
-  const parsed = Number(raw)
-  if (!Number.isFinite(parsed) || parsed <= 0) return defaultMaxRequestBytes
-  return Math.floor(parsed)
-}
 
 function formatMb(bytes: number): string {
-  return (bytes / 1024 / 1024).toFixed(1)
+  return formatImageLimitMb(bytes)
 }
 
 interface GeminiInlineData {
@@ -139,36 +122,10 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
   const requestInput = { ...input, inputImages: normalizedInputImages }
   const requestBody = buildRequestBody(requestInput)
 
-  // ① 本地预先计算请求体真实大小（序列化后 JSON 字节，含所有图片 base64 + prompt）。
-  // 请求体大小是「恒定」的：由「图片张数 × 每张大小」一次决定，与重试/failover 次数无关。
-  // serializedBody 复用给 performSingleCall，避免重复 stringify。
+  // 本地只计算真实请求体大小用于日志和上游 413 诊断，不再提前拦截。
   const serializedBody = JSON.stringify(requestBody)
   const requestBodyBytes = Buffer.byteLength(serializedBody, 'utf8')
-  const maxRequestBytes = resolveMaxRequestBytes()
   const imageCount = normalizedInputImages.length
-
-  // ② 上游调用前的总和预检：本地请求体超阈值时直接拒绝，不发任何上游请求、不触发 failover。
-  // 换渠道无意义（请求体不变），故标记 payload_too_large 且 retryable=false。
-  if (requestBodyBytes > maxRequestBytes) {
-    logImageEvent(
-      'gimg.fail',
-      { traceId, taskId: input.taskId, shotId: input.shotId },
-      {
-        stage: 'preflight',
-        category: 'payload_too_large',
-        suspectUpstream: false,
-        bodyBytes: requestBodyBytes,
-        maxBytes: maxRequestBytes,
-        imageCount,
-        promptLen: input.prompt.length,
-      },
-    )
-    throw new GoogleImageError({
-      category: 'payload_too_large',
-      message: `参考图合计约 ${formatMb(requestBodyBytes)}MB（${imageCount} 张），超过 ${formatMb(maxRequestBytes)}MB 上限，请减少参考图数量或压缩后重试`,
-      retryable: false,
-    })
-  }
 
   // Gemini's generateContent returns one candidate per request, so we issue `count` calls in series.
   // 每个 call 由 callGoogleImageWithRetry 包装，独立计算 attempts / backoff / throttle。
@@ -200,7 +157,6 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
           body: requestBody,
           serializedBody,
           requestBodyBytes,
-          maxRequestBytes,
           timeoutMs: input.timeoutMs,
           signal: input.signal,
         })
@@ -255,10 +211,8 @@ interface PerformSingleCallInput {
   body: unknown
   /** 预先序列化的请求体，复用以避免重复 JSON.stringify。 */
   serializedBody?: string
-  /** 本地计算的请求体字节数，用于 413 时区分「真超大」vs「上游抽风」。 */
+  /** 本地计算的请求体字节数，仅用于日志与上游 413 诊断。 */
   requestBodyBytes?: number
-  /** 请求体大小阈值，用于 413 时判断本地是否确实超限。 */
-  maxRequestBytes?: number
   timeoutMs: number
   signal?: AbortSignal
 }
@@ -347,23 +301,15 @@ async function performSingleCall(
       })
     }
 
-    // 413 请求体过大：单独分类为 payload_too_large（不重试、不 failover——换渠道无意义，请求体不变）。
-    // 关键诊断：对比本地实际计算的请求体大小与阈值，区分「本地确实超大」vs「上游抽风」。
+    // 413 请求体过大：只在上游明确返回时分类，不再本地预判拦截。
     if (status === 413) {
-      const haveLocalSize =
-        typeof input.requestBodyBytes === 'number' &&
-        typeof input.maxRequestBytes === 'number'
-      // 本地请求体未超阈值却被上游回 413 → 疑似上游异常（代理后端问题/代理自设更低阈值）。
-      const suspectUpstream =
-        haveLocalSize &&
-        (input.requestBodyBytes as number) <= (input.maxRequestBytes as number)
-      const localMb = haveLocalSize ? formatMb(input.requestBodyBytes as number) : '未知'
-      const message = suspectUpstream
-        ? `生图渠道返回 413（请求体过大），但本地请求体仅约 ${localMb}MB（未超本地 ${formatMb(input.maxRequestBytes as number)}MB 阈值），疑似上游渠道异常，请稍后重试`
-        : `Google API 调用失败（413）：请求体过大（本地约 ${localMb}MB），请减少参考图数量或压缩后重试`
+      const localMb =
+        typeof input.requestBodyBytes === 'number'
+          ? formatMb(input.requestBodyBytes)
+          : '未知'
       throw new GoogleImageError({
         category: 'payload_too_large',
-        message,
+        message: `Google API 返回 413：${upstreamMessage}（本次请求体约 ${localMb}MB）`,
         httpStatus: status,
         retryable: false,
       })
@@ -536,15 +482,6 @@ async function fetchImageUrlAsDataUrl(url: string, index: number): Promise<strin
     })
   }
 
-  const contentLength = response.headers.get('content-length')
-  if (contentLength && Number(contentLength) > maxReferenceImageBytes) {
-    throw new GoogleImageError({
-      category: 'bad_request',
-      message: `第 ${index + 1} 张参考图超过 20MB，无法作为 Google 参考图`,
-      retryable: false,
-    })
-  }
-
   const mimeType = normalizeImageMime(response.headers.get('content-type'))
   if (!mimeType?.startsWith('image/')) {
     throw new GoogleImageError({
@@ -555,14 +492,6 @@ async function fetchImageUrlAsDataUrl(url: string, index: number): Promise<strin
   }
 
   const buffer = Buffer.from(await response.arrayBuffer())
-  if (buffer.byteLength > maxReferenceImageBytes) {
-    throw new GoogleImageError({
-      category: 'bad_request',
-      message: `第 ${index + 1} 张参考图超过 20MB，无法作为 Google 参考图`,
-      retryable: false,
-    })
-  }
-
   return `data:${mimeType};base64,${buffer.toString('base64')}`
 }
 

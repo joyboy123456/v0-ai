@@ -237,7 +237,7 @@ interface PoseRunResult {
   template: PoseTemplate
   result?: ResultAsset
   error?: string
-  /** 失败错误类别。payload_too_large 时不应跨渠道 failover（请求体恒定，换渠道必然同样失败）。 */
+  /** 失败错误类别，用于日志与最终错误提示。 */
   errorCategory?: string
   providerId?: string
 }
@@ -358,9 +358,7 @@ export async function runPoseFissionPipeline(
         (
           entry,
         ): entry is { result: PoseRunResult; template: PoseTemplate } =>
-          Boolean(entry.result?.error && !entry.result.result) &&
-          // payload_too_large：请求体恒定，换渠道必然同样失败，跳过 failover。
-          entry.result.errorCategory !== 'payload_too_large',
+          Boolean(entry.result?.error && !entry.result.result),
       )
 
     if (failedPoses.length > 0) {

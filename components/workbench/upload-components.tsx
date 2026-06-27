@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { Loader2, Upload, X } from "lucide-react";
-import { cn, validateUploadSize } from "@/lib/utils";
+import { cn, readJsonResponse } from "@/lib/utils";
 import type { UploadedImage } from "@/lib/types";
 
 interface UploadBoxProps {
@@ -21,7 +21,7 @@ interface PreparedGenerationUpload {
   file: File;
   width: number;
   height: number;
-  optimized: false; // 始终为 false，不再进行优化
+  optimized: false;
 }
 
 interface LoadedImage {
@@ -31,22 +31,12 @@ interface LoadedImage {
   release: () => void;
 }
 
-// 以下常量已废弃，保留仅为向后兼容
-const GENERATION_UPLOAD_MAX_SIDE = 2048;
-const GENERATION_UPLOAD_JPEG_QUALITY = 0.98;
-const GENERATION_UPLOAD_MIME_TYPE = "image/jpeg";
-const OPTIMIZABLE_GENERATION_MIME_TYPES = new Set([
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp",
-]);
-
 export async function prepareImageForGenerationUpload(
   file: File,
   optimizeForGeneration = false,
 ): Promise<PreparedGenerationUpload> {
-  // 不再进行任何压缩或优化，直接读取原始尺寸后返回
+  void optimizeForGeneration;
+  // 只读取尺寸，不压缩、不缩放、不转码，保证模型看到用户上传的原始纹理。
   const loaded = await loadImageFromFile(file).catch(() => null);
   if (!loaded) {
     return {
@@ -124,13 +114,6 @@ export function UploadBox({
 
     if (!file) return;
 
-    // 始终验证原始文件大小，即使开启了优化
-    const sizeError = validateUploadSize(file);
-    if (sizeError) {
-      setError(sizeError);
-      return;
-    }
-
     setError("");
     setIsUploading(true);
 
@@ -139,11 +122,6 @@ export function UploadBox({
         file,
         optimizeForGeneration,
       );
-      const preparedSizeError = validateUploadSize(prepared.file);
-      if (preparedSizeError) {
-        setError(preparedSizeError);
-        return;
-      }
 
       const preview = URL.createObjectURL(prepared.file);
       const formData = new FormData();
@@ -158,17 +136,12 @@ export function UploadBox({
         body: formData,
       });
 
-      if (!response.ok) {
-        const data = (await response.json()) as { error?: string };
-        throw new Error(data.error || "上传失败");
-      }
-
-      const data = (await response.json()) as {
+      const data = await readJsonResponse<{
         assetId: string;
         fileName: string;
         width: number;
         height: number;
-      };
+      }>(response, "上传失败");
 
       onUploaded({
         assetId: data.assetId,

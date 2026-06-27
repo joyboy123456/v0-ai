@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { requireUser } from '@/lib/server/auth/require-user'
+import { jsonErrorResponse } from '@/lib/server/api-error-response'
 import { refinePhotoFissionFace } from '@/lib/server/task-store'
 
 interface RouteContext {
@@ -50,6 +51,6 @@ export async function POST(request: NextRequest, context: RouteContext) {
   } catch (error) {
     const message = error instanceof Error ? error.message : '未知错误'
     const status = message.includes('任务不存在') ? 404 : 400
-    return NextResponse.json({ error: message }, { status })
+    return jsonErrorResponse(error, status)
   }
 }
