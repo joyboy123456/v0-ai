@@ -484,6 +484,7 @@ export function Workbench() {
         user={user}
         isAuthLoading={isAuthLoading}
         onLogout={handleLogout}
+        onRefreshTasks={loadTasks}
       />
       <LeftPanel
         feature={currentFeature}

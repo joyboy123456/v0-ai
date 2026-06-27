@@ -450,18 +450,30 @@ export async function cancelTask(taskId: string, userId?: string) {
     task.featureType === 'photo-fission'
       ? (task.params as Partial<PhotoFissionParams>)
       : null
-  if (photoParams?.childrensCategory !== 'pants') {
+  const childrensCategory = photoParams?.childrensCategory
+  if (
+    childrensCategory !== 'dress' &&
+    childrensCategory !== 'suit' &&
+    childrensCategory !== 'pants'
+  ) {
     throw new Error('当前任务不支持取消')
   }
 
   runningTaskControllers.get(taskId)?.abort()
   const resultCount = task.results.length
+  const succeededShotIds = new Set(
+    task.results
+      .map((result) => result.shotId)
+      .filter((shotId): shotId is string => Boolean(shotId)),
+  )
   updateTask(taskId, {
     status: 'cancelled',
     progress: 100,
     message: `已手动取消，已生成 ${resultCount} 张图`,
-    shotProgress: ensureShotProgress(task).map((item) => {
-      if (item.status === 'success') return item
+    shotProgress: ensureCancellationShotProgress(task).map((item) => {
+      if (item.status === 'success' || succeededShotIds.has(item.shotId)) {
+        return { ...item, status: 'success', message: '已生成' }
+      }
       return { ...item, status: 'cancelled', message: '已取消' }
     }),
     finishedAt: new Date().toISOString(),
@@ -589,24 +601,36 @@ function buildInitialShotProgress(
   featureType: FeatureType,
   params: TaskParams,
 ): ShotProgress[] {
-  // 生成进度 UI 仅对裤子品类生效；其它品类 / 功能恢复旧行为（不建初始进度）。
+  // 裤子保留逐镜头进度卡；连衣裙/套装只提供任务级取消入口，不建初始进度。
   if (featureType === 'photo-fission') {
     const photoParams = params as PhotoFissionParams
     if (photoParams.childrensCategory !== 'pants') return []
-    const shotPlan = photoParams.shotPlan ?? []
-    return shotPlan.map((shot, index) => ({
-      shotId: shot.shotId ?? `shot_${index + 1}`,
-      label: shot.label || `镜头 ${index + 1}`,
-      status: 'prompting',
-      message: '正在写提示词...',
-    }))
+    return buildPhotoFissionShotProgress(photoParams)
   }
 
   return []
 }
 
+function buildPhotoFissionShotProgress(params: PhotoFissionParams): ShotProgress[] {
+  const shotPlan = params.shotPlan ?? []
+  return shotPlan.map((shot, index) => ({
+    shotId: shot.shotId ?? `shot_${index + 1}`,
+    label: shot.label || `镜头 ${index + 1}`,
+    status: 'prompting',
+    message: '正在写提示词...',
+  }))
+}
+
 function ensureShotProgress(task: GenerationTask): ShotProgress[] {
   if (task.shotProgress?.length) return task.shotProgress
+  return buildInitialShotProgress(task.featureType, task.params)
+}
+
+function ensureCancellationShotProgress(task: GenerationTask): ShotProgress[] {
+  if (task.shotProgress?.length) return task.shotProgress
+  if (task.featureType === 'photo-fission') {
+    return buildPhotoFissionShotProgress(task.params as PhotoFissionParams)
+  }
   return buildInitialShotProgress(task.featureType, task.params)
 }
 
@@ -1190,7 +1214,7 @@ async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null>
       }
 
       // 非 OSS URL、无法提取 key，或认证下载失败时，尝试直接 fetch（兼容其他存储服务）
-      // 添加超时限制（30秒）和大小限制（20MB）防止 SSRF 和内存溢出
+      // 添加超时限制（30秒），防止外部图片下载长期挂起。
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 30_000)
 
@@ -1204,20 +1228,7 @@ async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null>
 
       if (!response.ok) return null
 
-      // 检查 Content-Length 头（如果存在）
-      const contentLength = response.headers.get('content-length')
-      if (contentLength && parseInt(contentLength, 10) > 20 * 1024 * 1024) {
-        console.warn('[task-store] 外部图片超过 20MB 限制，跳过：', fileUrl)
-        return null
-      }
-
       const buffer = Buffer.from(await response.arrayBuffer())
-
-      // 再次检查实际大小（防止 Content-Length 缺失或不准确）
-      if (buffer.byteLength > 20 * 1024 * 1024) {
-        console.warn('[task-store] 外部图片实际大小超过 20MB 限制，跳过：', fileUrl)
-        return null
-      }
 
       const mimeType = fileType?.startsWith('image/')
         ? fileType
@@ -1889,24 +1900,79 @@ export async function setAssetsFavoriteBatch(
 }
 
 /**
- * 自动清理过期资产：删除超过 maxAgeMs 且未被收藏的「AI 生成结果图」+ 缩略图。
+ * 按日期范围查询待清理的生成图资产（只读，不执行删除）。
  *
- * 清理范围（重要）：
- * - **仅清理生成图**（kind=generated，fileUrl 含 `/results/`），即历史记录里的成品图。
- * - **保留用户上传的素材图**（kind=upload，assets bucket），避免影响「同款 / 重新生成」
- *   等依赖原图的功能。
- * - 生成图的缩略图（`{assetId}_thumb.webp`）会随原图一起删除，避免孤儿对象占用空间。
+ * 筛选条件：
+ * - fileUrl 含 `/results/`（仅生成图，保留用户上传素材）
+ * - createdAt 在 [startMs, endMs) 范围内
+ * - favorited !== true（收藏的资产跳过）
  *
- * 策略：
- * 1. 遍历 store.assets，找出生成图中 createdAt 超过 maxAgeMs 且 favorited !== true 的资产
- * 2. 逐个删除 OSS 对象（原图 + 缩略图，best-effort）
- * 3. 从 store.assets 和 taskRepo 中移除记录
- * 4. 清理关联 task 中已空的 task
+ * @param startDate YYYY-MM-DD（本地时间 00:00:00 起）
+ * @param endDate   YYYY-MM-DD（本地时间 23:59:59 止）
+ * @returns 资产预览列表 + 总数
+ */
+export async function countAssetsByDateRange(
+  startDate: string,
+  endDate: string,
+): Promise<{
+  total: number
+  assets: Array<{
+    assetId: string
+    fileName: string
+    createdAt: string
+    fileUrl: string
+  }>
+}> {
+  await ensureStoreReady()
+  const startMs = new Date(startDate + 'T00:00:00').getTime()
+  const endMs = new Date(endDate + 'T23:59:59.999').getTime()
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs > endMs) {
+    return { total: 0, assets: [] }
+  }
+
+  const matched: Array<{
+    assetId: string
+    fileName: string
+    createdAt: string
+    fileUrl: string
+  }> = []
+
+  for (const asset of store.assets.values()) {
+    if (asset.favorited) continue
+    if (!asset.fileUrl?.includes('/results/')) continue
+    const createdMs = parseTimestampMs(asset.createdAt)
+    if (createdMs === null) continue
+    if (createdMs >= startMs && createdMs <= endMs) {
+      matched.push({
+        assetId: asset.assetId,
+        fileName: asset.fileName,
+        createdAt: asset.createdAt,
+        fileUrl: asset.fileUrl,
+      })
+    }
+  }
+
+  return { total: matched.length, assets: matched }
+}
+
+/**
+ * 按日期范围清理生成图资产（手动触发）。
  *
+ * 逻辑与原 cleanupExpiredAssets 一致，唯一区别：筛选条件从「超过 maxAgeMs」
+ * 改为「createdAt 在 [startMs, endMs] 范围内」。
+ *
+ * 清理范围：
+ * - 仅清理生成图（fileUrl 含 `/results/`），保留用户上传素材
+ * - 跳过 favorited === true 的资产
+ * - 删除原图 + 缩略图 + store 记录 + repo 记录 + 清空 task
+ *
+ * @param startDate YYYY-MM-DD（本地时间 00:00:00 起）
+ * @param endDate   YYYY-MM-DD（本地时间 23:59:59 止）
  * @returns 清理统计
  */
-export async function cleanupExpiredAssets(
-  maxAgeMs: number = 48 * 60 * 60 * 1000,
+export async function cleanupAssetsByDateRange(
+  startDate: string,
+  endDate: string,
 ): Promise<{
   deletedAssets: number
   deletedObjects: number
@@ -1914,16 +1980,19 @@ export async function cleanupExpiredAssets(
   details: Array<{ assetId: string; key: string; error?: string }>
 }> {
   await ensureStoreReady()
-  const now = Date.now()
-  const expired: AssetRecord[] = []
+  const startMs = new Date(startDate + 'T00:00:00').getTime()
+  const endMs = new Date(endDate + 'T23:59:59.999').getTime()
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs > endMs) {
+    return { deletedAssets: 0, deletedObjects: 0, errors: 0, details: [] }
+  }
 
+  const expired: AssetRecord[] = []
   for (const asset of store.assets.values()) {
     if (asset.favorited) continue
-    // 仅清理生成图（kind=generated）；保留用户上传的素材图。
     if (!asset.fileUrl?.includes('/results/')) continue
     const createdMs = parseTimestampMs(asset.createdAt)
     if (createdMs === null) continue
-    if (now - createdMs > maxAgeMs) {
+    if (createdMs >= startMs && createdMs <= endMs) {
       expired.push(asset)
     }
   }
@@ -2010,7 +2079,7 @@ export async function cleanupExpiredAssets(
   }
 
   console.log(
-    `[task-store] cleanupExpiredAssets: 删除 ${deletedAssets} 条资产记录，` +
+    `[task-store] cleanupAssetsByDateRange: 删除 ${deletedAssets} 条资产记录，` +
     `${deletedObjects} 个存储对象，${errors} 个错误`,
   )
 

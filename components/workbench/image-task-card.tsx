@@ -254,9 +254,9 @@ export function EnhancedImageTaskCard({
       }`}
     >
       {/* 顶部任务信息 */}
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-3">
         <StatusBadge status={task.status} />
-        <span className="text-xs text-muted-foreground">
+        <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-muted-foreground">
           {new Date(task.createdAt).toLocaleString("zh-CN")}
         </span>
       </div>

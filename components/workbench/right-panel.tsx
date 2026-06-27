@@ -18,7 +18,11 @@ import {
   X,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { cn, getOssThumbnailUrl, validateUploadSize } from "@/lib/utils";
+import {
+  cn,
+  getOssThumbnailUrl,
+  readJsonResponse,
+} from "@/lib/utils";
 import { EnhancedImageTaskCard } from "./image-task-card";
 import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
 import {
@@ -61,8 +65,18 @@ function isPantsFissionTask(task: GenerationTask): boolean {
   return params.childrensCategory === "pants";
 }
 
+function isCancellablePhotoFissionTask(task: GenerationTask): boolean {
+  if (task.featureType !== "photo-fission") return false;
+  const params = task.params as Partial<PhotoFissionParams>;
+  return (
+    params.childrensCategory === "dress" ||
+    params.childrensCategory === "suit" ||
+    params.childrensCategory === "pants"
+  );
+}
+
 function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
-  // 任务取消/生成进度 UI 仅对裤子品类生效；连衣裙/套装/姿势裂变沿用旧行为（不显示进度卡）。
+  // 裤子保留逐镜头进度卡；连衣裙/套装只在顶部运行面板提供任务级取消入口，不显示进度卡。
   const showProgress = isPantsFissionTask(task);
   const params = task.params as {
     shotPlan?: { shotId?: string }[];
@@ -343,8 +357,11 @@ export function RightPanel({
   const showHistoryLiveTask =
     activeTab === "history" &&
     visibleTask &&
-    isPantsFissionTask(visibleTask) &&
+    isCancellablePhotoFissionTask(visibleTask) &&
     (visibleTask.status === "pending" || visibleTask.status === "running");
+  const historyTasks = showHistoryLiveTask && visibleTask
+    ? currentFeatureTasks.filter((task) => task.taskId !== visibleTask.taskId)
+    : currentFeatureTasks;
 
   useEffect(() => {
     if (isPoseFission) {
@@ -500,13 +517,10 @@ export function RightPanel({
       method: "POST",
       body: formData,
     });
-    if (!response.ok) {
-      const data = (await response.json().catch(() => ({}))) as {
-        error?: string;
-      };
-      throw new Error(data.error ?? `上传重修 mask 失败：HTTP ${response.status}`);
-    }
-    const data = (await response.json()) as { assetId: string };
+    const data = await readJsonResponse<{ assetId: string }>(
+      response,
+      "上传重修 mask 失败",
+    );
     return data.assetId;
   };
 
@@ -848,7 +862,7 @@ export function RightPanel({
         />
       ) : activeTab === "history" ? (
         <TaskHistory
-          tasks={currentFeatureTasks}
+          tasks={historyTasks}
           tasksLoading={tasksLoading}
           topContent={
             showHistoryLiveTask && visibleTask ? (
@@ -857,7 +871,6 @@ export function RightPanel({
                 gridItems={visibleTaskGridItems}
                 favorites={favorites}
                 isFaceVariantRunning={isFaceVariantRunning}
-                onBatchDownload={handleBatchDownload}
                 onRetryShots={handleRetryShots}
                 onCancelTask={onCancelTask}
                 onPreviewImage={(image) =>
@@ -1694,12 +1707,6 @@ function MyModelLibraryPanel({
     event.target.value = "";
     if (!file) return;
 
-    const sizeError = validateUploadSize(file);
-    if (sizeError) {
-      setError(sizeError);
-      return;
-    }
-
     setError("");
     setIsUploading(true);
 
@@ -1712,18 +1719,13 @@ function MyModelLibraryPanel({
         body: formData,
       });
 
-      if (!response.ok) {
-        const data = (await response.json()) as { error?: string };
-        throw new Error(data.error || "上传失败");
-      }
-
-      const data = (await response.json()) as {
+      const data = await readJsonResponse<{
         assetId: string;
         url: string;
         fileName: string;
         width: number;
         height: number;
-      };
+      }>(response, "上传失败");
       const model: CompanyModel = {
         assetId: data.assetId,
         // A-fix: 强制使用 server 返回的稳定 URL，去掉 blob URL fallback。
@@ -2402,7 +2404,7 @@ function TaskStatusCard({
   onCancelTask,
 }: {
   task: GenerationTask;
-  onBatchDownload: () => void;
+  onBatchDownload?: () => void;
   onRetryShots?: (task: GenerationTask, shotIds: string[]) => Promise<void>;
   onCancelTask?: (taskId: string) => Promise<void>;
 }) {
@@ -2517,7 +2519,7 @@ function TaskStatusCard({
                 : `重新生成${retryLabel} (${failedShotIds.length})`}
             </button>
           )}
-          {isRunning && onCancelTask && isPantsFissionTask(task) && (
+          {isRunning && onCancelTask && isCancellablePhotoFissionTask(task) && (
             <button
               onClick={handleCancel}
               disabled={cancelling}
@@ -2528,14 +2530,16 @@ function TaskStatusCard({
               {cancelling ? "取消中..." : "取消任务"}
             </button>
           )}
-          <button
-            onClick={onBatchDownload}
-            disabled={!isDone || task.results.length === 0}
-            className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Download className="w-4 h-4" />
-            批量下载
-          </button>
+          {onBatchDownload && (
+            <button
+              onClick={onBatchDownload}
+              disabled={!isDone || task.results.length === 0}
+              className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Download className="w-4 h-4" />
+              批量下载
+            </button>
+          )}
         </div>
       </div>
 
@@ -2588,7 +2592,6 @@ function LiveTaskProgressPanel({
   gridItems,
   favorites,
   isFaceVariantRunning,
-  onBatchDownload,
   onRetryShots,
   onCancelTask,
   onPreviewImage,
@@ -2601,7 +2604,6 @@ function LiveTaskProgressPanel({
   gridItems: ResultGridItem[];
   favorites: Set<string>;
   isFaceVariantRunning: boolean;
-  onBatchDownload: () => void;
   onRetryShots: (task: GenerationTask, shotIds: string[]) => Promise<void>;
   onCancelTask: (taskId: string) => Promise<void>;
   onPreviewImage: (image: ResultAsset) => void;
@@ -2618,7 +2620,6 @@ function LiveTaskProgressPanel({
     <div className="mb-5 space-y-4">
       <TaskStatusCard
         task={task}
-        onBatchDownload={onBatchDownload}
         onRetryShots={onRetryShots}
         onCancelTask={onCancelTask}
       />
@@ -3171,12 +3172,6 @@ function MyFaceIdLibraryPanel({
     event.target.value = "";
     if (!file) return;
 
-    const sizeError = validateUploadSize(file);
-    if (sizeError) {
-      setError(sizeError);
-      return;
-    }
-
     setError("");
     setIsUploading(true);
 
@@ -3189,18 +3184,13 @@ function MyFaceIdLibraryPanel({
         body: formData,
       });
 
-      if (!response.ok) {
-        const data = (await response.json()) as { error?: string };
-        throw new Error(data.error || "上传失败");
-      }
-
-      const data = (await response.json()) as {
+      const data = await readJsonResponse<{
         assetId: string;
         url: string;
         fileName: string;
         width: number;
         height: number;
-      };
+      }>(response, "上传失败");
       const model: CompanyModel = {
         assetId: data.assetId,
         preview: data.url,

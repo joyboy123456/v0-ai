@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Camera, LogOut, PersonStanding, Repeat2 } from "lucide-react";
+import { Camera, LogOut, PersonStanding, Repeat2, Trash2 } from "lucide-react";
+import { CleanupDialog } from "./cleanup-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import type { AuthUser } from "@/hooks/use-auth";
@@ -14,6 +15,7 @@ interface FeatureSidebarProps {
   user: AuthUser | null;
   isAuthLoading: boolean;
   onLogout: () => Promise<void>;
+  onRefreshTasks: () => void;
 }
 
 const featureIcons = {
@@ -28,8 +30,10 @@ export function FeatureSidebar({
   user,
   isAuthLoading,
   onLogout,
+  onRefreshTasks,
 }: FeatureSidebarProps) {
   const [loggingOut, setLoggingOut] = useState(false);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
   const displayName = user?.displayName || user?.username || "未登录";
   const username = user?.username ?? "请先登录";
   const avatarLabel = (displayName || username).slice(0, 1).toUpperCase();
@@ -118,7 +122,14 @@ export function FeatureSidebar({
         </ul>
       </nav>
 
-      <div className="border-t border-border p-3">
+      <div className="border-t border-border p-3 space-y-2">
+        <button
+          onClick={() => setCleanupOpen(true)}
+          className="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-[12px] font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+        >
+          <Trash2 className="size-3.5" />
+          清理生成图
+        </button>
         <div className="flex items-center gap-3 rounded-md bg-secondary/50 p-2.5 hover:bg-secondary transition-colors">
           <Avatar className="size-8 border border-border bg-white shadow-sm">
             <AvatarFallback className="bg-secondary text-[11px] font-medium text-foreground">
@@ -146,6 +157,12 @@ export function FeatureSidebar({
           </Button>
         </div>
       </div>
+
+      <CleanupDialog
+        open={cleanupOpen}
+        onOpenChange={setCleanupOpen}
+        onRefreshTasks={onRefreshTasks}
+      />
     </aside>
   );
 }
