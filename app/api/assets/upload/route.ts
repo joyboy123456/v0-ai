@@ -1,22 +1,26 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { requireUser } from '@/lib/server/auth/require-user'
 import { createAsset } from '@/lib/server/task-store'
+import sharp from 'sharp'
 
 export const runtime = 'nodejs'
 
-// R6 输入预检：原始字节 > 7.5MB 时 base64 编码后约 10MB，接近 Google API 单图上限。
-// 这里按原始字节 7.5MB 拒绝，避免 base64 inline_data 超过 Google ~10MB 软上限触发 400。
-const MAX_RAW_BYTES = Math.floor(7.5 * 1024 * 1024)
-const MAX_BASE64_BYTES = 10 * 1024 * 1024
-const MAX_REMOTE_URL_LENGTH = 2048
 const ALLOWED_MIME_PREFIX = 'image/'
-const ALLOWED_MIME_TYPES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/jpg',
-  'image/webp',
-  'image/gif',
-])
+
+type ApiErrorSource =
+  | 'upload_parser'
+  | 'image_validation'
+  | 'storage'
+
+function errorResponse(
+  status: number,
+  error: string,
+  source: ApiErrorSource,
+  code: string,
+  advice: string,
+) {
+  return NextResponse.json({ error, source, code, advice }, { status })
+}
 
 export async function POST(request: NextRequest) {
   const userResult = await requireUser(request)
@@ -28,60 +32,83 @@ export async function POST(request: NextRequest) {
     return handleRemoteImageUrlUpload(request, userId)
   }
 
-  const formData = await request.formData()
+  let formData: FormData
+  try {
+    formData = await request.formData()
+  } catch (error) {
+    console.error('[assets/upload] 解析上传表单失败：', error)
+    return errorResponse(
+      400,
+      '上传请求解析失败，请确认图片文件有效后重试',
+      'upload_parser',
+      'multipart_parse_failed',
+      '请确认网络稳定后重试；如果图片较大，请检查代理或服务器请求体上限',
+    )
+  }
+
   const file = formData.get('file')
 
   if (!(file instanceof File)) {
-    return NextResponse.json({ error: '请上传图片文件' }, { status: 400 })
+    return errorResponse(
+      400,
+      '请上传图片文件',
+      'image_validation',
+      'missing_file',
+      '请重新选择一张本地图片后上传',
+    )
   }
 
   if (file.size <= 0) {
-    return NextResponse.json({ error: '文件为空，请重新选择' }, { status: 400 })
-  }
-
-  if (file.size > MAX_RAW_BYTES) {
-    const maxMb = (MAX_RAW_BYTES / 1024 / 1024).toFixed(1)
-    return NextResponse.json(
-      {
-        error: `参考图过大，请压缩到 ${maxMb}MB 以内（当前 ${(file.size / 1024 / 1024).toFixed(1)}MB）`,
-      },
-      { status: 413 },
+    return errorResponse(
+      400,
+      '文件为空，请重新选择',
+      'image_validation',
+      'empty_file',
+      '请重新导出或重新选择有效图片',
     )
   }
 
   const mimeType = (file.type || '').toLowerCase()
-  if (!mimeType.startsWith(ALLOWED_MIME_PREFIX) || !ALLOWED_MIME_TYPES.has(mimeType)) {
-    return NextResponse.json(
-      { error: '仅支持 PNG / JPG / WEBP / GIF 图片格式' },
-      { status: 415 },
+  if (!mimeType.startsWith(ALLOWED_MIME_PREFIX)) {
+    return errorResponse(
+      415,
+      '仅支持图片格式',
+      'image_validation',
+      'unsupported_image_type',
+      '请上传图片格式文件，上游模型会自行校验具体格式是否支持',
     )
   }
 
   const buffer = Buffer.from(await file.arrayBuffer())
-  const base64 = buffer.toString('base64')
-  // 双层防护：原始字节通过后，再检查 base64 字符串字节数是否 > 10MB
-  if (Buffer.byteLength(base64, 'utf8') > MAX_BASE64_BYTES) {
-    const maxMb = (MAX_BASE64_BYTES / 1024 / 1024).toFixed(0)
-    return NextResponse.json(
-      { error: `参考图编码后超过 ${maxMb}MB，请压缩后重试` },
-      { status: 413 },
-    )
-  }
+  const imageMetadata = await readUploadedImageMetadata(buffer)
 
+  const base64 = buffer.toString('base64')
   const dataUrl = `data:${mimeType};base64,${base64}`
-  const dimensions = readImageDimensions(formData)
+  const dimensions = readImageDimensions(formData, imageMetadata ?? undefined)
 
   // PR4：把 userId 传给 createAsset，cloud 模式下 R2 路径前缀
   // `users/{userId}/assets/...` 实现数据隔离。
-  const asset = await createAsset({
-    fileName: file.name,
-    fileType: mimeType,
-    fileUrl: dataUrl,
-    dataUrl,
-    width: dimensions.width,
-    height: dimensions.height,
-    userId,
-  })
+  let asset: Awaited<ReturnType<typeof createAsset>>
+  try {
+    asset = await createAsset({
+      fileName: file.name,
+      fileType: mimeType,
+      fileUrl: dataUrl,
+      dataUrl,
+      width: dimensions.width,
+      height: dimensions.height,
+      userId,
+    })
+  } catch (error) {
+    console.error('[assets/upload] 存储上传图片失败：', error)
+    return errorResponse(
+      500,
+      '图片存储失败，请稍后重试',
+      'storage',
+      'asset_store_failed',
+      '请稍后重试；如果持续失败，请联系管理员检查存储服务',
+    )
+  }
 
   return NextResponse.json({
     assetId: asset.assetId,
@@ -138,10 +165,6 @@ async function handleRemoteImageUrlUpload(request: NextRequest, userId: string) 
 }
 
 function validateRemoteImageUrl(fileUrl: string): string | null {
-  if (fileUrl.length > MAX_REMOTE_URL_LENGTH) {
-    return '公网图片 URL 过长'
-  }
-
   let parsed: URL
   try {
     parsed = new URL(fileUrl)
@@ -173,7 +196,7 @@ function validateRemoteImageUrl(fileUrl: string): string | null {
 function readRemoteImageFileType(value: unknown, fileUrl: string) {
   if (typeof value === 'string') {
     const normalized = value.trim().toLowerCase()
-    if (normalized.startsWith(ALLOWED_MIME_PREFIX) && ALLOWED_MIME_TYPES.has(normalized)) {
+    if (normalized.startsWith(ALLOWED_MIME_PREFIX)) {
       return normalized
     }
   }
@@ -182,6 +205,10 @@ function readRemoteImageFileType(value: unknown, fileUrl: string) {
   if (pathname.endsWith('.png')) return 'image/png'
   if (pathname.endsWith('.webp')) return 'image/webp'
   if (pathname.endsWith('.gif')) return 'image/gif'
+  if (pathname.endsWith('.heic')) return 'image/heic'
+  if (pathname.endsWith('.heif')) return 'image/heif'
+  if (pathname.endsWith('.bmp')) return 'image/bmp'
+  if (pathname.endsWith('.tiff') || pathname.endsWith('.tif')) return 'image/tiff'
   return 'image/jpeg'
 }
 
@@ -195,12 +222,29 @@ function readRemoteImageFileName(value: unknown, fileUrl: string) {
   return lastSegment || 'remote-image.jpg'
 }
 
-function readImageDimensions(formData: FormData) {
-  const width = readPositiveDimension(formData.get('width'))
-  const height = readPositiveDimension(formData.get('height'))
+function readImageDimensions(
+  formData: FormData,
+  metadata?: { width: number; height: number },
+) {
+  const width = metadata?.width ?? readPositiveDimension(formData.get('width'))
+  const height = metadata?.height ?? readPositiveDimension(formData.get('height'))
 
   if (width === undefined || height === undefined) return {}
   return { width, height }
+}
+
+async function readUploadedImageMetadata(
+  buffer: Buffer,
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const metadata = await sharp(buffer).metadata()
+    const width = metadata.width ?? 0
+    const height = metadata.height ?? 0
+    if (width <= 0 || height <= 0) return null
+    return { width, height }
+  } catch {
+    return null
+  }
 }
 
 function readPositiveDimension(value: FormDataEntryValue | null) {

@@ -13,7 +13,7 @@ import {
 } from '@/lib/types'
 
 const fashionPhotoCreditsCost = 35
-const maxFashionReferenceImages = 10
+const maxFashionReferenceImages = 16
 
 const fashionImageRatioIds = new Set<FashionImageRatio>(
   FASHION_IMAGE_RATIOS.map((option) => option.id),
@@ -137,10 +137,10 @@ export function normalizeAiFashionPhotoParams(
     resolution,
   })
 
-  // R6 输入预检：finalPrompt 字符长度上限 30000（Google API ~2 万-3 万软上限的安全线）
-  if (finalPrompt.length > 30000) {
+  // R6 输入预检：finalPrompt 字符长度上限 32000（对齐 OpenAI GPT Image 官方限制）
+  if (finalPrompt.length > 32000) {
     throw new Error(
-      `AI服装大片提示词过长（${finalPrompt.length} 字，上限 30000），请精简后重试`,
+      `AI服装大片提示词过长（${finalPrompt.length} 字，上限 32000），请精简后重试`,
     )
   }
 

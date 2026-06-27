@@ -286,11 +286,11 @@ export function normalizePhotoFissionParams(
     pantsPoseDrawSeed,
   })
 
-  // R6 输入预检：每条 shot.prompt 不应超过 30000 字（v3 实测 1400-1500 字，远低于上限，加 guard）
+  // R6 输入预检：每条 shot.prompt 不应超过 32000 字（对齐 OpenAI GPT Image 官方限制）
   for (const shot of shotPlan) {
-    if (shot.prompt.length > 30000) {
+    if (shot.prompt.length > 32000) {
       throw new Error(
-        `服装大片裂变 prompt 长度异常（shot=${shot.shotId} 长度=${shot.prompt.length}，上限 30000）`,
+        `服装大片裂变 prompt 长度异常（shot=${shot.shotId} 长度=${shot.prompt.length}，上限 32000）`,
       )
     }
   }
@@ -1449,7 +1449,7 @@ interface ShotRunResult {
   shot: PhotoFissionShot
   result?: ResultAsset
   error?: string
-  /** 失败错误类别。payload_too_large 时不应跨渠道 failover（请求体恒定，换渠道必然同样失败）。 */
+  /** 失败错误类别，用于日志与最终错误提示。 */
   errorCategory?: string
   providerId?: string
 }
@@ -1615,9 +1615,7 @@ export async function runPhotoFissionPipeline(
         (
           entry,
         ): entry is { result: ShotRunResult; shot: PhotoFissionShot } =>
-          Boolean(entry.result?.error && !entry.result.result) &&
-          // payload_too_large：请求体恒定，换渠道必然同样失败，跳过 failover。
-          entry.result.errorCategory !== 'payload_too_large',
+          Boolean(entry.result?.error && !entry.result.result),
       )
 
     if (failedShots.length > 0) {
