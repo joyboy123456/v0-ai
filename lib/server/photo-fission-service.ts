@@ -697,8 +697,8 @@ function buildCompactPantsShotPrompt(input: BuildShotPromptInput): string {
     input.resultCount,
   )
   const taskLine = isLowerBodyOnlyPants
-    ? `生成同一条裤子的【${input.label}】单张下半身电商商品图，${orientation}。图1主图只锁定商品外观、穿着版型、下半身比例、构图边界、背景、图1边界内已有上衣局部和鞋子；腿脚站法不跟随主图，只执行本镜头唯一指定姿势。输出单张完整图片，不要多宫格。`
-    : `生成同一条裤子的【${input.label}】单张电商商品图，${orientation}。图1主图只锁定商品外观、穿着版型、人物比例、构图、背景、上衣和鞋子；腿脚站法不跟随主图，只执行本镜头唯一指定姿势。输出单张完整图片，不要多宫格。`
+    ? `生成同一条裤子的【${input.label}】单张下半身电商商品图，${orientation}。腿脚站法只执行本镜头唯一指定姿势。输出单张完整图片，不要多宫格。`
+    : `生成同一条裤子的【${input.label}】单张电商商品图，${orientation}。腿脚站法只执行本镜头唯一指定姿势。输出单张完整图片，不要多宫格。`
   const productFrameLines = isLowerBodyOnlyPants
     ? [
         '裤子的穿着版型、裤型、宽松度、裤长基准和裤脚宽度以图1为准，不改造成其它裤型。指定腿脚姿势可以让裤脚垂坠、自然褶皱、裤脚高度投影、鞋子露出多少和脚部遮挡关系跟随动作发生真实变化。正面、侧面、背面细节图只校准对应可见局部真实存在的颜色、材质、纹理、图案、logo、刺绣、贴布、拼接、口袋、裤脚和侧缝；没有参考证据的结构不要生成，也不要凭常见裤装经验补口袋、装饰或图案。',
@@ -731,13 +731,13 @@ function buildCompactPantsShotPrompt(input: BuildShotPromptInput): string {
     ].join('\n'),
     [
       '【本张镜头】',
-      `${input.label}：${shotDescription}。本段只描述当前方向家族与商品展示，不得新增或改写任何腿部、脚掌、重心或支撑物动作，腿脚和角度一律以上方【唯一指定姿势】为准。`,
+      `${input.label}：${angleInstruction}。${shotDescription}。本段只描述当前方向家族与商品展示，腿脚和角度一律以上方【唯一指定姿势】为准。`,
     ].join('\n'),
     [
-      '【禁止】',
+      '【保持与禁止】',
       isLowerBodyOnlyPants
-        ? '不要改变裤子款式、裤型、裤长基准、裤脚宽度、上衣局部、鞋子款式、背景、光线、相机距离和主体大小；不要复制参考图腿脚站法，不要把指定姿势退化成参考图普通站姿，不要为了保持图1鞋脚遮挡而取消脚尖点地、屈膝、行走、交叉步或台阶高低层次。不要扩展图1上边缘以外的画面，不要补齐画面外身体结构，不要新增文字、水印、品牌印章、多余人物、多宫格、卡通、插画或 3D 风格；不要让裤子图案、logo、刺绣、贴布、拼接、口袋和真实结构与对应参考图不一致，不要换腿、换面、镜像或移动位置。'
-        : '不要改变裤子款式、裤型、裤长基准、裤脚宽度、上衣、鞋子款式、背景、光线、相机距离和人物大小；不要复制参考图腿脚站法，不要把指定姿势退化成参考图普通站姿，不要为了保持图1鞋脚遮挡而取消脚尖点地、屈膝、行走、交叉步或台阶高低层次。不要扩展图1上边缘以外的画面、不要新增文字、水印、品牌印章、多余人物、多宫格、卡通、插画或 3D 风格；不要让裤子图案、logo、刺绣、贴布、拼接、口袋和真实结构与对应参考图不一致，不要换腿、换面、镜像或移动位置。',
+        ? '保持裤子款式、裤型、裤长基准、裤脚宽度、上衣局部、鞋子款式、背景、光线、相机距离和主体大小与图1一致。保持指定姿势的脚尖点地、屈膝、行走、交叉步或台阶高低层次，不退化为参考图普通站姿。保持画面在图1上边缘以内，保持裤子图案、logo、刺绣、贴布、拼接、口袋和真实结构与参考图一致，只在对应可见区域呈现。输出干净单张图片，保持真实商品图质感。'
+        : '保持裤子款式、裤型、裤长基准、裤脚宽度、上衣、鞋子款式、背景、光线、相机距离和人物大小与图1一致。保持指定姿势的脚尖点地、屈膝、行走、交叉步或台阶高低层次，不退化为参考图普通站姿。保持画面在图1上边缘以内，保持裤子图案、logo、刺绣、贴布、拼接、口袋和真实结构与参考图一致，只在对应可见区域呈现。输出干净单张图片，保持真实商品图质感。',
     ].join('\n'),
     [
       '【输出参数】',
@@ -787,7 +787,7 @@ function buildPantsAngleInstruction(
     view === 'left'
       ? '鞋尖、膝盖、裤侧缝和裤腿外轮廓整体朝画面左侧；不能为了显示正面 logo 把左侧画成右侧或正面，右腿/正面 logo 没有左侧证据时应变窄、转到边缘或不可见。'
       : '鞋尖、膝盖、裤侧缝和裤腿外轮廓整体朝画面右侧；不能为了显示正面 logo 把右侧画成左侧或正面，左腿/正面 logo 没有右侧证据时应变窄、转到边缘或不可见。'
-  return `身体角度：朝向${direction}约${baseAngle}°，允许${rangeText}，与同批其它${direction}镜头形成可见角度差。${directionAnchor}`
+  return `身体角度：朝向${direction}约${baseAngle}°，允许${rangeText}。${directionAnchor}`
 }
 
 function getPantsSideBaseAngle(
@@ -842,8 +842,8 @@ function buildCompactPantsReferenceSection(input: BuildShotPromptInput): string 
   const lines = [
     '【参考图】',
     isLowerBodyOnlyPants
-      ? `参考图里的腿脚站姿必须被忽略，只锁定裤子外观、结构和图案。图1主图是下半身裁切基准，只锁定商品外观、穿着版型、下半身比例、构图边界、背景、图1边界内已有上衣局部和鞋子；腿脚站法不跟随主图，只执行本镜头唯一指定姿势。${PANTS_LOWER_BODY_PRODUCT_FRAME_RULE}`
-      : '参考图里的人物站姿必须被忽略，只锁定裤子外观、结构和图案。图1主图只锁定商品外观、穿着版型、人物比例、构图、背景、上衣和鞋子；腿脚站法不跟随主图，只执行本镜头唯一指定姿势。',
+      ? `参考图里的腿脚站姿必须被忽略，只锁定裤子外观、结构和图案。图1主图是下半身裁切基准。${PANTS_LOWER_BODY_PRODUCT_FRAME_RULE}`
+      : '参考图里的人物站姿必须被忽略，只锁定裤子外观、结构和图案。',
   ]
 
   if (referenceSlots.length === 0) {
@@ -2457,6 +2457,59 @@ function enforcePantsAssignedPose(
   return `${guard}${text}`
 }
 
+const PANTS_POSE_ID_PREFIX_BY_VIEW: Record<PantsPoseView, string> = {
+  front: 'front-',
+  left: 'left-',
+  right: 'right-',
+  back: 'back-',
+  side: '',
+}
+
+function resolvePantsAssignedPose(
+  card: { poseCardId?: string },
+  persistedPoseCardId: string | undefined,
+  expectedView: PantsPoseView,
+  resultCount: PhotoFissionResultCount,
+  shotId: string,
+  mainHandVisibility: PantsMainHandVisibility,
+): PantsPoseCard {
+  const candidateId = card.poseCardId ?? persistedPoseCardId
+  if (candidateId) {
+    try {
+      const candidate = getPantsPoseCardById(candidateId)
+      const expectedPrefix = PANTS_POSE_ID_PREFIX_BY_VIEW[expectedView]
+      if (expectedPrefix && !candidateId.startsWith(expectedPrefix)) {
+        console.warn(
+          JSON.stringify({
+            lvl: 'warn',
+            evt: 'planner.pants-pose-direction-mismatch',
+            shotId,
+            poseCardId: candidateId,
+            expectedView,
+          }),
+        )
+      } else {
+        return candidate
+      }
+    } catch {
+      console.warn(
+        JSON.stringify({
+          lvl: 'warn',
+          evt: 'planner.pants-pose-not-found',
+          shotId,
+          poseCardId: candidateId,
+        }),
+      )
+    }
+  }
+  return getPantsAssignedPoseForShot(
+    resultCount,
+    shotId,
+    undefined,
+    mainHandVisibility,
+  )
+}
+
 function appendPantsPoseDirectionGuard(
   text: string,
   view: PantsPoseView,
@@ -2688,14 +2741,14 @@ async function applyShotPlannerOverride(
         ? 'visible'
         : params.pantsMainHandVisibility ?? 'hidden')
     const assignedPantsPose = isPantsTask
-      ? persistedPantsPoseCardId
-        ? getPantsPoseCardById(persistedPantsPoseCardId)
-        : getPantsAssignedPoseForShot(
-            params.resultCount,
-            card.shotId,
-            undefined,
-            pantsMainHandVisibility,
-          )
+      ? resolvePantsAssignedPose(
+          card,
+          persistedPantsPoseCardId,
+          pantsView ?? 'front',
+          params.resultCount,
+          card.shotId,
+          pantsMainHandVisibility,
+        )
       : undefined
     const plannerCard = isSuitTask
       ? refineSuitPlannerCard(card, idx)

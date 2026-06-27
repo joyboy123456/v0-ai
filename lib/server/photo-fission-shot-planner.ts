@@ -39,6 +39,7 @@ const ShotCardSchema = z.object({
   shotId: z.string().min(1),
   role: z.string().min(1),
   imagePrompt: z.union([z.string().min(20), StructuredImagePromptSchema]),
+  poseCardId: z.string().optional(),
 }) satisfies z.ZodType<PhotoFissionShotCard>
 
 function buildShotPlannerOutputSchema(shotCount: number) {

@@ -227,6 +227,8 @@ export interface FissionPromptCard {
   shotId: string
   role: string
   imagePrompt: string | StructuredImagePrompt
+  /** 裤子品类：DeepSeek 从姿势库选择的姿势卡 id，后端校验合法性 */
+  poseCardId?: string
 }
 
 /**

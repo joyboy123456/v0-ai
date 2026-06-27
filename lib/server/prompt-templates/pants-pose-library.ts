@@ -909,10 +909,16 @@ function inferPantsPoseVisibility(card: PantsPoseCard): PantsPoseVisibility {
     }
   }
   if (/knee-lift|knee|屈膝/.test(id)) {
+    const view = card.view
+    const mustShow =
+      view === 'front'
+        ? '从正面看，非支撑腿膝盖明显弯曲约30°，膝盖位置低于站立状态，弯曲角度从正面画面中部可见，点地腿向画面前方伸出'
+        : view === 'back'
+          ? '从背面看，非支撑腿膝盖明显弯曲约30°，弯曲腿向画面后方伸出，膝盖高低差从背面轮廓可见'
+          : '从侧面看，非支撑腿膝盖明显弯曲约30°，膝盖位置低于站立状态，弯曲角度从侧面轮廓中部可见，点地腿向画面侧方伸出'
     return {
       visualFamily: 'knee-bend',
-      mustShow:
-        '非支撑腿膝盖明显弯曲约30°，膝盖位置明显低于站立状态，弯曲角度在画面中部可见',
+      mustShow,
       mustNotLookLike: ['普通侧面行走', '双腿直立', '仅前后脚轻微错开'],
     }
   }
@@ -925,18 +931,30 @@ function inferPantsPoseVisibility(card: PantsPoseCard): PantsPoseVisibility {
     }
   }
   if (/walking|walk/.test(id)) {
+    const view = card.view
+    const mustShow =
+      view === 'front'
+        ? '从正面看，一脚明显抬起离地约8cm，另一脚全掌承重，两腿步幅差约30cm，行走停顿瞬间从正面可见'
+        : view === 'back'
+          ? '从背面看，一脚明显抬起离地约8cm，另一脚全掌承重，两腿步幅差约30cm，行走停顿瞬间从背面轮廓可见'
+          : '从侧面看，一脚明显抬起离地约8cm，另一脚全掌承重，两腿步幅差约30cm，行走停顿瞬间从侧面轮廓清楚可见'
     return {
       visualFamily: 'walking',
-      mustShow:
-        '一脚明显抬起离地约8cm，另一脚全掌承重，两腿步幅差约30cm，形成明确的行走停顿瞬间',
+      mustShow,
       mustNotLookLike: ['静态前后脚站姿', '双脚都完整贴地', '交叉步'],
     }
   }
   if (/toe-point|light-thigh-touch|one-raised-one-waist/.test(id)) {
+    const view = card.view
+    const mustShow =
+      view === 'front'
+        ? '从正面看，一脚脚尖向画面前方点地，膝盖弯曲约30°，支撑腿与点地腿的高低差从正面可见，脚后跟离地约10cm'
+        : view === 'back'
+          ? '从背面看，一脚脚尖向画面后方点地，脚后跟离地约10cm从背面可见，支撑腿承重关系从背面轮廓能看出'
+          : '从侧面看，小腿向前倾斜角度从侧面轮廓可见，膝盖弯曲约30°，支撑腿与点地腿形成明显高低差，脚后跟离地约10cm'
     return {
       visualFamily: 'toe-point',
-      mustShow:
-        '小腿向前倾斜角度在画面中部可见，膝盖弯曲约30°，支撑腿与点地腿形成明显高低差，脚后跟离地约10cm',
+      mustShow,
       mustNotLookLike: ['双脚都完整落地', '普通前后脚错开', '行走后脚蹬地'],
     }
   }
@@ -1000,7 +1018,7 @@ function inferPantsPoseVisibility(card: PantsPoseCard): PantsPoseVisibility {
     visualFamily: 'staggered',
     mustShow:
       '前后脚关系必须清楚可见，至少在站距、膝部状态、脚掌落点或重心里呈现两项差异，膝盖弯曲角度在画面中部可见',
-    mustNotLookLike: ['双脚平行直立', '普通侧面行走', '其它镜头的同款前后脚站位'],
+    mustNotLookLike: ['双脚平行直立', '普通侧面行走', '同款前后脚站位'],
   }
 }
 
