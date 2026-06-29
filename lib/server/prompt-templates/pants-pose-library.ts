@@ -778,6 +778,23 @@ export function getPantsPoseCardById(id: string): PantsPoseCard {
   return card
 }
 
+/**
+ * 返回指定方向的所有非条件姿势卡。
+ * 后端确定性去重闸门使用：当 LLM 选了重复轮廓的卡时，从这里找替代卡。
+ * 条件姿势（需要口袋/道具/头发等证据）不纳入自动替换池。
+ */
+export function getPantsPoseLibraryForView(
+  view: PantsPoseView,
+): ReadonlyArray<PantsPoseCard> {
+  return PANTS_POSE_LIBRARY.filter(
+    (card) =>
+      (card.view === view ||
+        (view === 'left' && card.view === 'side') ||
+        (view === 'right' && card.view === 'side')) &&
+      !card.condition,
+  )
+}
+
 export interface PantsPoseVisibility {
   visualFamily: PantsPoseVisualFamily
   mustShow: string

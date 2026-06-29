@@ -823,14 +823,6 @@ export function RightPanel({
             </div>
           )}
 
-          <button
-            onClick={onRefreshTasks}
-            className="w-8 h-8 rounded-md border border-border bg-transparent flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-surface-soft transition-colors"
-            aria-label="刷新任务"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-          </button>
-
           {activeTab === "history" && (
             <button
               onClick={toggleBatchSelectMode}

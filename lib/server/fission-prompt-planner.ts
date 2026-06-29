@@ -29,6 +29,7 @@ export interface InvokeFissionPromptPlannerInput<TOutput> {
   plannerName?: string
   temperature?: number
   reasoningEnabled?: boolean
+  retryOnSchemaFailure?: boolean
 }
 
 export class FissionPromptPlannerError extends Error {
@@ -127,7 +128,10 @@ export async function invokeFissionPromptPlanner<TOutput>(
         traceId: input.traceId,
         feature: input.feature,
       })
-      if (!shouldRetry(error.stage) || attempt === DEFAULT_MAX_ATTEMPTS) {
+      if (
+        !shouldRetry(error.stage, input.retryOnSchemaFailure) ||
+        attempt === DEFAULT_MAX_ATTEMPTS
+      ) {
         break
       }
     }
@@ -266,8 +270,16 @@ function summarizeBody(text: string): string {
   return truncate(text.replace(/\s+/g, ' ').trim(), 200)
 }
 
-function shouldRetry(stage: FissionPromptPlannerErrorStage | undefined): boolean {
-  return stage === 'http' || stage === 'parse' || stage === 'timeout'
+function shouldRetry(
+  stage: FissionPromptPlannerErrorStage | undefined,
+  retryOnSchemaFailure?: boolean,
+): boolean {
+  return (
+    stage === 'http' ||
+    stage === 'parse' ||
+    stage === 'timeout' ||
+    (retryOnSchemaFailure === true && stage === 'schema')
+  )
 }
 
 function logPlannerRetry(input: {

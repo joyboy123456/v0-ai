@@ -35,16 +35,26 @@ const StructuredImagePromptSchema = z.object({
   quality: z.string().min(1),
 }) satisfies z.ZodType<StructuredImagePrompt>
 
-const ShotCardSchema = z.object({
-  shotId: z.string().min(1),
-  role: z.string().min(1),
-  imagePrompt: z.union([z.string().min(20), StructuredImagePromptSchema]),
-  poseCardId: z.string().optional(),
-}) satisfies z.ZodType<PhotoFissionShotCard>
+type ShotPlannerImagePromptMode = 'any' | 'structured'
 
-function buildShotPlannerOutputSchema(shotCount: number) {
+function buildShotCardSchema(imagePromptMode: ShotPlannerImagePromptMode) {
   return z.object({
-    shots: z.array(ShotCardSchema).length(shotCount),
+    shotId: z.string().min(1),
+    role: z.string().min(1),
+    imagePrompt:
+      imagePromptMode === 'structured'
+        ? StructuredImagePromptSchema
+        : z.union([z.string().min(20), StructuredImagePromptSchema]),
+    poseCardId: z.string().optional(),
+  }) satisfies z.ZodType<PhotoFissionShotCard>
+}
+
+function buildShotPlannerOutputSchema(
+  shotCount: number,
+  imagePromptMode: ShotPlannerImagePromptMode,
+) {
+  return z.object({
+    shots: z.array(buildShotCardSchema(imagePromptMode)).length(shotCount),
   })
 }
 
@@ -57,6 +67,10 @@ export interface InvokeShotPlannerInput {
   traceId?: string
   /** 开启 DeepSeek thinking mode，提升分镜推理质量但会增加耗时 */
   reasoningEnabled?: boolean
+  /** 裤子等结构化链路可强制拒绝 string imagePrompt，避免成功落回旧 TEXT */
+  imagePromptMode?: ShotPlannerImagePromptMode
+  /** 可选：schema 校验失败后再让 LLM 重写一次 */
+  retryOnSchemaFailure?: boolean
 }
 
 /**
@@ -87,7 +101,10 @@ export async function invokeShotPlanner(
     throw new Error(`invokeShotPlanner: 不支持的 shotCount=${shotCount}`)
   }
 
-  const outputSchema = buildShotPlannerOutputSchema(shotCount)
+  const outputSchema = buildShotPlannerOutputSchema(
+    shotCount,
+    input.imagePromptMode ?? 'any',
+  )
 
   try {
     return await invokeFissionPromptPlanner({
@@ -98,6 +115,7 @@ export async function invokeShotPlanner(
       feature: 'photo-fission',
       plannerName: 'photo-fission-shot-planner',
       reasoningEnabled: input.reasoningEnabled,
+      retryOnSchemaFailure: input.retryOnSchemaFailure,
     })
   } catch (error) {
     if (error instanceof FissionPromptPlannerError) {

@@ -135,8 +135,11 @@ export function getPantsShotInputImageLabels(
   ]
   slots.forEach((slot, index) => {
     const angleLabel = getPantsAngleLabel(slot.angle)
+    const directionNote = slot.angle === 'side'
+      ? '此图的拍摄方向不作为本张方向参考，本张方向以上方【方向硬约束】为准。'
+      : ''
     labels.push(
-      `图${index + 2} ${angleLabel}细节${slot.ordinal}：只作为当前${targetLabel}镜头的商品局部证据，锁定图中清楚可见的颜色、材质、纹理、logo、刺绣、贴布、拼接、口袋、裤脚或侧缝；不控制腿脚姿势、身体朝向、构图边界、人物大小或完整裤身轮廓。该图可能是局部放大图，只证明拍到的局部存在，不能扩展成其它面、另一条腿或整条裤子的结构。`,
+      `图${index + 2} ${angleLabel}细节${slot.ordinal}：只作为当前${targetLabel}镜头的商品局部证据，锁定图中清楚可见的颜色、材质、纹理、logo、刺绣、贴布、拼接、口袋、裤脚或侧缝；${directionNote}不控制腿脚姿势、身体朝向、构图边界、人物大小或完整裤身轮廓。该图可能是局部放大图，只证明拍到的局部存在，不能扩展成其它面、另一条腿或整条裤子的结构。`,
     )
   })
   if (targetAngle === 'back' && hasTargetDetail) {

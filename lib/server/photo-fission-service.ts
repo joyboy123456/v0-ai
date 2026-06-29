@@ -44,6 +44,7 @@ import {
 } from './prompt-templates/suit-planner-system'
 import {
   getPantsAssignedPoseForShot,
+  getPantsPoseShapeGroupByCardId,
   getPantsShotBlueprintForCount,
   PANTS_CATEGORY_REQUIREMENT,
 } from './prompt-templates/pants-planner-system'
@@ -762,7 +763,7 @@ function sanitizePantsHiddenHandText(text: string): string {
 }
 
 const PANTS_LOWER_BODY_PRODUCT_FRAME_RULE =
-  '下半身商品图模式：图1如果只上传腰胯以下或下半身局部，输出必须保持同类下半身裁切；主体限定为腰胯、裤身、膝盖、小腿、脚踝、鞋子和图1边界内已有上衣局部；不要扩展成完整人像，不要根据人体常识补齐画面外身体结构。'
+  'Lower-body product frame mode: if image 1 only shows waist-down or lower-body partial view, output must maintain the same lower-body crop; subject limited to waist, pants body, knees, calves, ankles, shoes and existing top garment partial visible in image 1; do not expand into full body, do not infer off-frame body structure from human anatomy.'
 
 function buildPantsAngleInstruction(
   view: PantsPoseView | undefined,
@@ -2333,8 +2334,10 @@ function refinePantsPlannerCard(
   pantsMainHandVisibility: PantsMainHandVisibility,
 ): PlannerPromptCard {
   const role = sanitizePantsCropText(card.role).trim()
-  const rawImagePrompt =
-    typeof card.imagePrompt === 'string' ? card.imagePrompt : ''
+  if (typeof card.imagePrompt !== 'string') {
+    return { role, imagePrompt: card.imagePrompt }
+  }
+  const rawImagePrompt = card.imagePrompt
   const croppedPrompt = sanitizePantsCropText(rawImagePrompt).trim()
   const handSafePrompt =
     pantsMainHandVisibility === 'hidden'
@@ -2349,13 +2352,33 @@ function refinePantsPlannerCard(
 }
 
 const PANTS_VISIBLE_HAND_ACTION_PATTERN =
-  /手部候选|手部动作|手势|手臂|手掌|手指|双手|单手|一手|另一手|两只手|手腕|手肘|前臂|抱臂|交叉抱|搭腰|扶腰|叉腰|插袋|插兜|捏腰头|扶后腰|低位|侧展|轻抬|隐藏|收在身后|背在身后|袖口.*手/
+  /手部候选|手部动作|手势|手臂|手掌|手指|双手|单手|一手|另一手|两只手|手腕|手肘|前臂|抱臂|交叉抱|搭腰|扶腰|叉腰|插袋|插兜|捏腰头|扶后腰|低位|侧展|轻抬|隐藏|收在身后|背在身后|袖口.*手|\bhands?\b|\barms?\b|\bfingers?\b|\bpalms?\b|\bwrists?\b|\belbows?\b|\bforearms?\b|resting on hip|behind back|hands behind|arms behind|on waist|elbows out|elbows away|hand lightly|hand touches|arm relaxed/i
 
 function removeVisiblePantsHandText(text: string): string {
   return text
-    .split(/(?<=[。！？；])/u)
+    .split(/(?<=[。！？；.!?;\n])/u)
     .filter((sentence) => !PANTS_VISIBLE_HAND_ACTION_PATTERN.test(sentence))
     .join('')
+    .trim()
+}
+
+function removePantsHandClauses(text: string): string {
+  const parts = text.split(/([，,；;。！？\n.!?;])/u)
+  let result = ''
+  for (let index = 0; index < parts.length; index += 2) {
+    const clause = parts[index] ?? ''
+    const separator = parts[index + 1] ?? ''
+    if (!clause.trim()) {
+      result += clause + separator
+      continue
+    }
+    if (PANTS_VISIBLE_HAND_ACTION_PATTERN.test(clause)) continue
+    result += clause + separator
+  }
+  return result
+    .replace(/[，,；;\s]+$/u, '')
+    .replace(/^[，,；;\s]+/u, '')
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
 
@@ -2675,6 +2698,10 @@ async function applyShotPlannerOverride(
     throw new Error('生成失败：当前服装大片裂变仅支持童装连衣裙、套装和裤子')
   }
 
+  const isPantsTask = isPantsChildrensCategory(
+    params.category,
+    params.childrensCategory,
+  )
   const startedAt = Date.now()
   let output: Awaited<ReturnType<typeof invokeShotPlanner>>
   try {
@@ -2683,7 +2710,9 @@ async function applyShotPlannerOverride(
       userPrompt: plan.userPrompt,
       shotCount: params.resultCount,
       traceId: taskId,
-      reasoningEnabled: Boolean(params.plannerReasoningEnabled),
+      reasoningEnabled: isPantsTask ? true : Boolean(params.plannerReasoningEnabled),
+      imagePromptMode: isPantsTask ? 'structured' : 'any',
+      retryOnSchemaFailure: isPantsTask,
     })
   } catch (error) {
     const stage =
@@ -2716,15 +2745,12 @@ async function applyShotPlannerOverride(
     params.category,
     params.childrensCategory,
   )
-  const isPantsTask = isPantsChildrensCategory(
-    params.category,
-    params.childrensCategory,
-  )
   const rememberedSuitShots: PlannerPromptCard[] = []
   const rememberedDressShots: PlannerPromptCard[] = []
   const rememberedPantsShots: PlannerPromptCard[] = []
   const pantsPoseTextLeakShots: string[] = []
   let overridden = 0
+
   for (const card of output.shots) {
     const idx = indexByShotId.get(card.shotId)
     if (idx === undefined) continue
@@ -2790,7 +2816,21 @@ async function applyShotPlannerOverride(
       : params
     let next: string
     let nextIsJsonPrompt = false
-    if (isPantsTask && assignedPantsPose) {
+    if (isPantsTask && typeof plannerCard.imagePrompt !== 'string') {
+      // 裤子结构化 JSON → 裤装专用 JSON builder
+      next = convertPantsStructuredPromptToJson(plannerCard.imagePrompt, params, {
+        view: pantsView,
+        handVisibility: pantsMainHandVisibility,
+        hasFrontDetail: pantsShotAvailability?.hasFrontDetail ?? params.hasFrontDetail,
+        hasSideDetail: pantsShotAvailability?.hasSideDetail ?? Boolean(params.hasSideDetail),
+        hasBackDetail: pantsShotAvailability?.hasBackDetail ?? params.hasBackDetail,
+        frontDetailCount: pantsShotAvailability?.frontDetailCount ?? params.frontDetailCount,
+        sideDetailCount: pantsShotAvailability?.sideDetailCount ?? params.sideDetailCount,
+        backDetailCount: pantsShotAvailability?.backDetailCount ?? params.backDetailCount,
+      })
+      nextIsJsonPrompt = true
+    } else if (isPantsTask && assignedPantsPose) {
+      // 裤子 string 输出 / 兜底路径 → 紧凑 TEXT
       next = buildCompactPantsShotPrompt({
         label: nextLabel || fullPlan[idx].label,
         shotDescription: plannerPrompt || pantsShotText || fullPlan[idx].prompt,
@@ -2845,6 +2885,7 @@ async function applyShotPlannerOverride(
       ...fullPlan[idx],
       label: nextLabel || fullPlan[idx].label,
       prompt: next,
+      ...(assignedPantsPose ? { pantsPoseCardId: assignedPantsPose.id } : {}),
     }
     if (isSuitTask) {
       rememberedSuitShots.push({
@@ -2906,13 +2947,27 @@ async function applyShotPlannerOverride(
         ts: new Date().toISOString(),
         traceId: taskId,
         taskId,
-        assignedPoseCards: fullPlan.map((shot) => ({
-          shotId: shot.shotId,
-          poseCardId:
+        shots: fullPlan.map((shot) => {
+          const poseCardId =
             shot.pantsPoseCardId ??
             shot.prompt.match(/指定姿势卡\s+([a-z0-9-]+)/)?.[1] ??
-            'unknown',
-        })),
+            'unknown'
+          const view = getPantsShotView(params, shot)
+          const silhouetteGroup = poseCardId !== 'unknown'
+            ? getPantsPoseShapeGroupByCardId(view ?? 'front', poseCardId)
+            : null
+          const isJsonPrompt = shot.prompt.includes('"generation_request"')
+          const poseMatch = shot.prompt.match(/"pose"\s*:\s*"([^"]+)"/)
+          const framingMatch = shot.prompt.match(/"framing"\s*:\s*"([^"]+)"/)
+          return {
+            shotId: shot.shotId,
+            poseCardId,
+            silhouetteGroup: silhouetteGroup ?? 'none',
+            pose: poseMatch?.[1] ?? '(text mode)',
+            framing: framingMatch?.[1] ?? '(text mode)',
+            finalPromptKind: isJsonPrompt ? 'structured-json' : 'compact-text',
+          }
+        }),
         repairedForbiddenPositiveHandShots: repairedForbiddenShots,
         poseTextLeakShots: pantsPoseTextLeakShots,
       }),
@@ -2950,7 +3005,7 @@ async function applyShotPlannerOverride(
       latencyMs: Date.now() - startedAt,
       overridden,
       total: fullPlan.length,
-      reasoningEnabled: Boolean(params.plannerReasoningEnabled),
+      reasoningEnabled: isPantsTask ? true : Boolean(params.plannerReasoningEnabled),
     }),
   )
 }
@@ -3020,6 +3075,138 @@ function convertStructuredPromptToJson(
   }
 
   return JSON.stringify(jsonPrompt, null, 2)
+}
+
+/**
+ * 裤子品类专用的结构化 imagePrompt → JSON 转换。
+ * 与通用 convertStructuredPromptToJson 的区别：
+ * - wardrobe.rules 承载裤装边界（裤长基准/裤脚宽度/下半身裁切/左右腿证据/侧背不迁移 logo口袋）
+ * - negative_prompt 追加裤子专用禁止项
+ * - 接收逐镜头上下文 ctx（view/detailAvailability/handVisibility/angle）
+ */
+function convertPantsStructuredPromptToJson(
+  structured: import('@/lib/types').StructuredImagePrompt,
+  params: PhotoFissionParams,
+  ctx: {
+    view?: PantsPoseView
+    handVisibility?: PantsMainHandVisibility
+    hasFrontDetail?: boolean
+    hasSideDetail?: boolean
+    hasBackDetail?: boolean
+    frontDetailCount?: number
+    sideDetailCount?: number
+    backDetailCount?: number
+  },
+): string {
+  const faceIdImageIndex = getFaceIdImageIndexFromParams(params)
+  const isLowerBodyOnly = (ctx.handVisibility ?? 'hidden') === 'hidden'
+  const view = ctx.view ?? 'front'
+  const prompt = isLowerBodyOnly
+    ? sanitizePantsStructuredPromptForLowerBody(structured)
+    : structured
+
+  // 负向提示词不引用"image 1"，避免生图模型把图1当整体参考导致仿照姿势。
+  // 商品规则已由导演系统提示词约束，导演输出的 structured JSON 自带这些信息。
+  const pantsNegatives = [
+    'skirt', 'dress', 'random outfit', 'yoga pants', 'pants type not in reference',
+    'changing pants length baseline', 'changing hem width', 'changing pants silhouette',
+    'inventing pockets, decorations or patterns from common pants experience',
+    'transferring right-leg evidence to left leg', 'transferring front evidence to side or back', 'extending close-up evidence to entire pants structure',
+    'extra arms', 'extra hands', 'ghost hands behind body', 'unnatural wrist joints', 'arms passing through torso',
+  ]
+  if (isLowerBodyOnly) {
+    pantsNegatives.push('full body shot', 'raising camera upward', 'expanding into full body')
+    pantsNegatives.push('hands', 'arms', 'palms', 'fingers', 'wrists', 'elbows', 'forearms', 'visible hands in frame', 'hands appearing in image')
+  }
+  if (view === 'back') {
+    pantsNegatives.push('back pockets without evidence', 'transferring pockets from front or side to back')
+  }
+
+  const jsonPrompt = {
+    generation_request: {
+      meta_data: {
+        tool: "Gemini Image Generation",
+        task_type: "ecommerce_pants_product_photo",
+        language: "en",
+        priority: "highest"
+      },
+      scene: {
+        description: prompt.scene,
+        environment: prompt.background,
+        framing: prompt.framing
+      },
+      subject: {
+        description: prompt.subject,
+        pose: `CRITICAL: Do NOT replicate the reference image's stance or pose. The reference image is ONLY for product appearance (pants fit, color, pattern, logo, material). The leg and foot pose must follow the description below, which is intentionally different from the reference image's ordinary standing pose. ${prompt.pose}`,
+        expression: prompt.expression,
+        clothing: prompt.clothing
+      },
+      identity_lock: faceIdImageIndex ? {
+        face_priority: "absolute",
+        face_reference_index: faceIdImageIndex,
+        note: `Image ${faceIdImageIndex} provides face shape, features, skin texture and hair color; image 1 provides hairstyle, bangs, hat, hair accessories and clothing`
+      } : {
+        face_reference: "image 1",
+        note: "Maintain reference image person identity and facial features"
+      },
+      quality_control: {
+        texture_requirement: prompt.quality,
+        surface_quality: "must be clean and clear",
+        avoid: [
+          "horizontal scan lines", "horizontal stripe artifacts", "moire pattern", "water ripples",
+          "dense parallel lines", "screen pattern", "compression noise", "mosaic",
+          "color blocks", "banding artifacts", "regular repetitive lines"
+        ],
+        note: "Fabric texture must be realistic natural textile quality, not pixel-level regular lines"
+      },
+      negative_prompt: [
+        ...buildNegativeArray(
+          params.category,
+          params.childrensCategory,
+          params.faceIdModelId ? true : false,
+          faceIdImageIndex
+        ),
+        ...pantsNegatives,
+        "no replicating reference image stance, no copying reference pose, no identical standing pose to reference, no mirror of reference image posture",
+        "no full body shot, no upper body, no face, no head, crop at chest level",
+        "no skirt, no dress, no random outfit, no yoga pants, no different pants type",
+        "no changing pants length, no changing pants width, no changing pants silhouette",
+        "no inventing pockets, logos, embroidery, patches or patterns not visible in reference",
+        "no extra arms, no extra hands, no ghost hands behind body, no unnatural joints",
+        "no text, no watermark, no brand stamp, no multiple people, no grid layout",
+        "no cartoon, no illustration, no anime, no 3D render",
+        "no scan lines, no moire pattern, no water ripples, no grid texture, no screen pattern",
+        "no repetitive lines, no compression noise, no mosaic, no color blocks, no banding artifacts",
+      ]
+    }
+  }
+
+  return JSON.stringify(jsonPrompt, null, 2)
+}
+
+function sanitizePantsStructuredPromptForLowerBody(
+  structured: import('@/lib/types').StructuredImagePrompt,
+): import('@/lib/types').StructuredImagePrompt {
+  return {
+    scene: removePantsHandClauses(structured.scene) || structured.scene,
+    subject:
+      removePantsHandClauses(structured.subject) ||
+      '人物下半身，裤子为画面第一主体',
+    pose:
+      removePantsHandClauses(structured.pose) ||
+      '按所选姿势卡执行腿部站法、重心和脚掌落点，保持下半身商品图裁切',
+    expression:
+      removePantsHandClauses(structured.expression) ||
+      '不露脸，胸口以上不进入画面',
+    clothing:
+      removePantsHandClauses(structured.clothing) ||
+      '身着这条裤子，上衣按主图露出范围保留',
+    background: removePantsHandClauses(structured.background) || structured.background,
+    framing:
+      removePantsHandClauses(structured.framing) ||
+      '下半身商品图裁切，画面上边缘与主图对齐，裤子清楚可见',
+    quality: removePantsHandClauses(structured.quality) || structured.quality,
+  }
 }
 
 function convertTextPromptToJson(
