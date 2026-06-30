@@ -24,6 +24,7 @@ const systemPrompt = buildPantsPlannerSystemPrompt(
   resultCount,
   [],
   detailAvailability,
+  'hidden',
 )
 const userPrompt = buildPantsPlannerUserPrompt(resultCount, [])
 
@@ -43,7 +44,8 @@ async function main() {
     shotCount: resultCount,
     traceId,
     reasoningEnabled: true,
-    imagePromptMode: 'structured',
+    imagePromptMode: 'pants-final-prompt',
+    pantsFinalPromptContract: { handMode: 'hidden' },
     retryOnSchemaFailure: true,
   })
 
@@ -56,26 +58,13 @@ async function main() {
 
   console.log('=== 逐张分析 ===')
   const silhouetteGroups = new Map<string, string[]>()
-  const poseTexts: Array<{ shotId: string; pose: string }> = []
+  const promptTexts: Array<{ shotId: string; prompt: string }> = []
 
   for (const shot of output.shots) {
     const idx = parseInt(shot.shotId.replace('shot_', '')) - 1
     const view = blueprint[idx]?.view ?? 'front'
     const poseCardId = shot.poseCardId ?? '(missing)'
-    const imagePrompt = shot.imagePrompt
-
-    let pose = '(unknown)'
-    let framing = '(unknown)'
-    let isStructured = false
-
-    if (typeof imagePrompt === 'string') {
-      pose = '(STRING MODE - NOT STRUCTURED!)'
-      framing = '(string mode)'
-    } else {
-      isStructured = true
-      pose = imagePrompt.pose
-      framing = imagePrompt.framing
-    }
+    const finalPrompt = shot.finalPrompt ?? ''
 
     const silhouetteGroup = getPantsPoseShapeGroupByCardId(view, poseCardId)
     const groupKey = silhouetteGroup ?? 'none'
@@ -89,16 +78,16 @@ async function main() {
       }
     }
 
-    poseTexts.push({ shotId: shot.shotId, pose })
+    promptTexts.push({ shotId: shot.shotId, prompt: finalPrompt })
 
     console.log(`\n--- ${shot.shotId} ---`)
     console.log(`  role: ${shot.role}`)
-    console.log(`  view: ${view}`)
+    console.log(`  view: ${shot.view ?? view}`)
+    console.log(`  angle: ${shot.angle ?? '(missing)'}`)
     console.log(`  poseCardId: ${poseCardId}`)
     console.log(`  silhouetteGroup: ${groupKey}`)
-    console.log(`  isStructured: ${isStructured}`)
-    console.log(`  pose: ${pose}`)
-    console.log(`  framing: ${framing}`)
+    console.log(`  selfCheck: ${shot.selfCheck ?? '(missing)'}`)
+    console.log(`  finalPrompt: ${finalPrompt.slice(0, 240)}...`)
   }
 
   console.log('\n=== 轮廓组重复检查 ===')
@@ -112,31 +101,31 @@ async function main() {
     }
   }
 
-  console.log('\n=== pose 字段文本重复检查 ===')
-  const poseSet = new Set<string>()
-  let hasPoseDup = false
-  for (const item of poseTexts) {
-    const normalized = item.pose.replace(/\s+/g, '').slice(0, 20)
-    if (poseSet.has(normalized)) {
-      hasPoseDup = true
-      console.log(`⚠️  pose 重复: ${item.shotId} 与前一张前20字相同`)
+  console.log('\n=== finalPrompt 文本重复检查 ===')
+  const promptSet = new Set<string>()
+  let hasPromptDup = false
+  for (const item of promptTexts) {
+    const normalized = item.prompt.replace(/\s+/g, '').slice(0, 60)
+    if (promptSet.has(normalized)) {
+      hasPromptDup = true
+      console.log(`⚠️  finalPrompt 重复: ${item.shotId} 与前一张前60字相同`)
     }
-    poseSet.add(normalized)
+    promptSet.add(normalized)
   }
-  if (!hasPoseDup) {
-    console.log('✅ 所有 pose 字段前20字均不同')
+  if (!hasPromptDup) {
+    console.log('✅ 所有 finalPrompt 前60字均不同')
   }
 
-  console.log('\n=== 结构化输出检查 ===')
-  const structuredCount = output.shots.filter(
-    (s) => typeof s.imagePrompt !== 'string',
+  console.log('\n=== finalPrompt 输出检查 ===')
+  const finalPromptCount = output.shots.filter(
+    (s) => typeof s.finalPrompt === 'string' && s.finalPrompt.includes('POSITIVE PROMPT:'),
   ).length
-  const stringCount = output.shots.length - structuredCount
-  console.log(`结构化: ${structuredCount}/${output.shots.length}`)
-  if (stringCount > 0) {
-    console.log(`⚠️  有 ${stringCount} 张返回了 string 而非结构化对象！`)
+  const missingFinalPromptCount = output.shots.length - finalPromptCount
+  console.log(`finalPrompt: ${finalPromptCount}/${output.shots.length}`)
+  if (missingFinalPromptCount > 0) {
+    console.log(`⚠️  有 ${missingFinalPromptCount} 张缺少标准 finalPrompt！`)
   } else {
-    console.log('✅ 全部返回结构化 JSON 对象')
+    console.log('✅ 全部返回 finalPrompt + 元数据')
   }
 
   console.log('\n=== 总结 ===')
@@ -145,8 +134,8 @@ async function main() {
   } else {
     console.log('✅ 无轮廓组重复')
   }
-  if (!hasPoseDup && structuredCount === output.shots.length) {
-    console.log('✅ 全部结构化 + pose 语义不重复')
+  if (!hasPromptDup && finalPromptCount === output.shots.length) {
+    console.log('✅ 全部 finalPrompt + 元数据输出正常')
   }
 
   console.log('\n=== 完整 LLM 输出 JSON ===')

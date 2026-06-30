@@ -24,6 +24,7 @@ import type {
   PhotoFissionCategory,
   PhotoFissionChildrensCategory,
   PhotoFissionResultCount,
+  PantsMainHandVisibility,
 } from '@/lib/types'
 import {
   buildChildrensDressPlannerSlots,
@@ -70,6 +71,7 @@ export function buildPlannerRulePlan(
   hasFaceIdModel?: boolean,
   faceIdImageIndex?: number,
   pantsDetailAvailability?: PantsDetailAvailability,
+  pantsMainHandVisibility?: PantsMainHandVisibility,
 ): PlannerRulePlan | undefined {
   if (category === 'childrens' && childrensCategory) {
     if (childrensCategory === 'suit') {
@@ -89,6 +91,7 @@ export function buildPlannerRulePlan(
           resultCount,
           recentActionHints,
           pantsDetailAvailability,
+          pantsMainHandVisibility,
         ),
         userPrompt: buildPantsPlannerUserPrompt(resultCount, recentActionHints),
         slots: buildPantsPlannerSlots(resultCount),

@@ -195,6 +195,12 @@ export interface PhotoFissionShot {
   pantsPoseCardId?: string
   /** 裤子主图是否露手：hidden 时全批不生成手，也不写手部姿势。 */
   pantsMainHandVisibility?: PantsMainHandVisibility
+  /** 裤子分镜导演输出的方向元数据，仅用于日志和诊断。 */
+  pantsPlannerView?: string
+  /** 裤子分镜导演输出的角度元数据，仅用于日志和诊断。 */
+  pantsPlannerAngle?: string
+  /** 裤子分镜导演输出的自检摘要，仅用于日志和诊断。 */
+  pantsPlannerSelfCheck?: string
   /** 历史兼容字段；当前裤子规则下主图不露手时所有镜头都不露手。 */
   pantsMayRevealHandsWhenMainHidden?: boolean
 }
@@ -227,8 +233,20 @@ export interface FissionPromptCard {
   shotId: string
   role: string
   imagePrompt: string | StructuredImagePrompt
+  /** 裤子品类：LLM 分镜导演写好的、可直接送入生图模型的最终提示词。 */
+  finalPrompt?: string
+  /** 裤子品类：当前 shot 的方向元数据，供后端校验和日志使用。 */
+  view?: string
+  /** 裤子品类：当前 shot 的角度元数据，供后端校验和日志使用。 */
+  angle?: string
+  /** 裤子品类：LLM 对角度、手部模式、姿势去重的自检摘要。 */
+  selfCheck?: string
   /** 裤子品类：DeepSeek 从姿势库选择的姿势卡 id，后端校验合法性 */
   poseCardId?: string
+  /** 裤子 10 张 ActionPlan：LLM 选择的动作族，仅用于后端校验和日志。 */
+  actionFamily?: string
+  /** 裤子 10 张 ActionPlan：LLM 描述的肉眼轮廓 key，仅用于后端校验和日志。 */
+  silhouetteKey?: string
 }
 
 /**

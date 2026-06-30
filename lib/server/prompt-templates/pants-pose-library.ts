@@ -847,6 +847,40 @@ export function isPantsHandDependentVisualFamily(
   return HAND_DEPENDENT_FAMILIES.has(visualFamily)
 }
 
+const PANTS_VISIBLE_HAND_HIDDEN_OR_LOW_PATTERN =
+  /hands?\s+behind|arms?\s+behind|hidden\s+hands?|hands?\s+hidden|behind\s+body|low[-\s]?level\s+hands?|hands?\s+below\s+waistband|both\s+(?:hands|arms)\s+(?:down|hanging|straight|relaxed|natural)|hands?\s+(?:naturally\s+)?(?:at|by)\s+(?:the\s+)?sides?|arms?\s+(?:naturally\s+)?(?:at|by)\s+(?:the\s+)?sides?|双手(?:自然)?(?:下垂|垂落|摆放|放在身体两侧|背在身后|放在身后)|双臂(?:自然)?(?:下垂|垂落|置于身后)|身体后方|躯干后方|收在身后|背在身后|不露出手掌|被身体遮挡|完全遮挡|隐藏|低位/i
+
+const PANTS_VISIBLE_HAND_CONTACT_PATTERN =
+  /hands?\s+on\s+thigh|palms?\s+against\s+(?:pants|thigh|seam)|fingers?\s+along\s+(?:side\s+)?seam|手(?:掌|臂|指).*贴(?:着)?(?:裤|裤缝|大腿外侧)|贴(?:着)?(?:裤|裤缝|大腿外侧).*手(?:掌|臂|指)|沿裤缝/i
+
+const PANTS_VISIBLE_HAND_SAFETY_NEGATION_PATTERN =
+  /不|不能|禁止|避免|远离|离开|不得|不可|不要|保留.*空隙|保持.*空隙|不接触|不遮挡|不出现|不新增/i
+
+const PANTS_VISIBLE_HAND_TRUE_HIDDEN_PATTERN =
+  /hands?\s+behind|arms?\s+behind|hidden\s+hands?|hands?\s+hidden|behind\s+body|身体后方|躯干后方|收在身后|背在身后|不露出手掌|被身体遮挡|完全遮挡|隐藏/i
+
+export function hasPantsDangerousVisibleHandPlanText(text: string): boolean {
+  return text
+    .split(/[。；;，,]/)
+    .some((rawClause) => {
+      const clause = rawClause.trim()
+      if (!clause) return false
+
+      const hasHiddenOrLowRisk =
+        PANTS_VISIBLE_HAND_HIDDEN_OR_LOW_PATTERN.test(clause)
+      const hasContactRisk = PANTS_VISIBLE_HAND_CONTACT_PATTERN.test(clause)
+      if (!hasHiddenOrLowRisk && !hasContactRisk) return false
+
+      const isSafetyNegation =
+        PANTS_VISIBLE_HAND_SAFETY_NEGATION_PATTERN.test(clause)
+      const isTrueHiddenRisk =
+        PANTS_VISIBLE_HAND_TRUE_HIDDEN_PATTERN.test(clause)
+
+      if (isSafetyNegation && !isTrueHiddenRisk) return false
+      return true
+    })
+}
+
 /**
  * 姿势强弱分级：强族一眼可辨、不易塌缩；弱族（staggered/weight-shift/parallel/
  * open-triangle/front-foot-lift/wide-stance）容易被模型渲染成普通站姿。所有受控
@@ -1298,7 +1332,7 @@ export function buildPantsPoseLibraryPrompt(): string {
     '# 裤子受控姿势卡库',
     PANTS_FORBIDDEN_BILATERAL_HANDS_DOWN,
     '使用方式：每个 shotId 最终只能执行后端注入的一张唯一指定姿势卡；Planner 可阅读卡库理解方向和动作边界，但不能输出第二套动作，也不能把“相似姿势”写成替代方案。',
-    '组合原则：不得在最终 imagePrompt 里混用其它姿势卡；差异必须来自当前姿势卡的视觉族、肉眼可见差异点、腿部动作、重心和脚掌落点，不能为了差异化改变主图裤长、裤型、裤脚宽度、人物比例或画面边界。',
+    '组合原则：不得在最终 finalPrompt 里混用其它姿势卡；差异必须来自当前姿势卡的视觉族、肉眼可见差异点、腿部动作、重心和脚掌落点，不能为了差异化改变主图裤长、裤型、裤脚宽度、人物比例或画面边界。',
     '受控支撑物：只有 10 张模式允许低频使用，整批最多 1-2 张；台阶、栏杆、台面必须是白色极简，椅子必须是透明金属椅子；背景、光线和相机距离仍跟随图1，只能出现一个指定支撑物，不能新增其它道具、家具、街景或复杂场景。',
     ...sections,
     '## 条件姿势',
