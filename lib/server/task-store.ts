@@ -31,7 +31,8 @@ import {
   type ShotProgressStatus,
   type TaskParams,
 } from '@/lib/types'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rename, readdir, copyFile, stat } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import sharp from 'sharp'
 
@@ -176,20 +177,18 @@ async function storeAssetFromDataUrl(
   assetId: string,
   mimeTypeHint: string,
   userId: string,
-): Promise<{ url: string; mime: string } | null> {
+): Promise<{ url: string; mime: string }> {
+  // G-fix: 不再静默返回 null。OSS 上传失败时直接抛错，让上传接口返回 500，
+  // 拒绝把 base64 dataUrl 留在 store.json 里（否则 JSON.stringify 内存膨胀 → OOM）。
   const extension = getExtension(mimeTypeHint || 'image/png')
   const filename = `${assetId}.${extension}`
-  try {
-    const result = await storage().putImageFromDataUrl({
-      userId: userId === defaultUserId ? null : userId, // local 兼容旧路径
-      bucket: 'assets',
-      filename,
-      dataUrl,
-    })
-    return { url: result.publicUrl, mime: result.mime }
-  } catch {
-    return null
-  }
+  const result = await storage().putImageFromDataUrl({
+    userId: userId === defaultUserId ? null : userId, // local 兼容旧路径
+    bucket: 'assets',
+    filename,
+    dataUrl,
+  })
+  return { url: result.publicUrl, mime: result.mime }
 }
 
 /**
@@ -344,6 +343,8 @@ export async function createAsset(input: {
   // cloud 模式落 R2。
   // PR4：把 effectiveUserId 透传给 adapter，cloud 模式下 R2 路径前缀
   // `users/{userId}/assets/...` 实现数据隔离。
+  // G-fix：storeAssetFromDataUrl 失败时抛错，由上传接口 catch 返回 500。
+  // 不再静默把 base64 留在 store.json（OOM 导火索）。
   const persistedFile = input.dataUrl
     ? await storeAssetFromDataUrl(input.dataUrl, assetId, input.fileType, effectiveUserId)
     : null
@@ -537,6 +538,30 @@ export async function createTask(input: {
   }
 
   store.tasks.set(taskId, task)
+
+  // G-fix: 把完整 params（含 prompt）写入日志，下次 store 损坏时可从日志恢复提示词。
+  // 用 try/catch 包裹，日志失败绝不影响任务创建。
+  try {
+    const logParams = { ...normalizedParams } as Record<string, unknown>
+    // 截断超长字段防日志爆炸（prompt 4K+ 已足够恢复）
+    const promptVal = logParams.prompt
+    if (typeof promptVal === 'string' && promptVal.length > 8000) {
+      logParams.prompt = promptVal.slice(0, 8000) + '...<truncated>'
+    }
+    console.log(
+      JSON.stringify({
+        evt: 'task.created',
+        taskId,
+        userId: effectiveUserId,
+        featureType: input.featureType,
+        inputAssetIds: input.inputAssetIds,
+        params: logParams,
+      }),
+    )
+  } catch {
+    // 日志失败忽略
+  }
+
   setTimeout(() => {
     // 创建接口必须快速返回；repo shadow write / JSON 落盘 / 后台生成都放到
     // 响应后的 tick，避免拖住前端按钮的“创建任务中”状态。
@@ -1078,6 +1103,9 @@ function wait(ms: number) {
 }
 
 async function loadPersistedStore() {
+  // G-fix: 损坏自恢复。原 catch { return } 会让 store 留空，
+  // 若随后触发 persistStore() 会用空数据覆盖磁盘 → 永久丢失。
+  // 现在的流程：解析失败 → 损坏文件改名保留现场 → 尝试加载最近备份 → 都失败才留空并报错。
   try {
     const raw = await readFile(storeFilePath, 'utf8')
     const data = JSON.parse(raw) as {
@@ -1094,9 +1122,78 @@ async function loadPersistedStore() {
     }
 
     reviveStaleRunningTasks()
-  } catch {
     return
+  } catch (parseError) {
+    // 解析失败：把损坏文件改名保留现场，避免被后续 persistStore 覆盖
+    const corruptTs = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)
+    const corruptBackupPath = `${storeFilePath}.corrupt-${corruptTs}`
+    console.error(
+      `[task-store] store.json 解析失败，正在保留现场到 ${path.basename(corruptBackupPath)} 并尝试加载备份。原因：`,
+      parseError,
+    )
+    try {
+      await rename(storeFilePath, corruptBackupPath)
+    } catch (renameError) {
+      // 原文件可能已不存在，继续尝试备份
+      console.error('[task-store] 损坏文件改名失败（可能已不存在）：', renameError)
+    }
+
+    // 尝试加载最近的备份文件
+    const restored = await tryLoadFromBackup()
+    if (restored) {
+      console.error(`[task-store] 已从备份恢复 store（assets=${store.assets.size}, tasks=${store.tasks.size}）`)
+      reviveStaleRunningTasks()
+      return
+    }
+
+    // 备份也没有：留空但打明显日志，绝不能静默
+    console.error(
+      '[task-store] 无可用备份，store 以空状态启动。新数据会写入，但历史数据已丢失。',
+    )
   }
+}
+
+/**
+ * G-fix: 从 data 目录找最近的 .bak-* 备份并加载。
+ * 按文件修改时间倒序尝试，找到第一个能成功解析的就加载。
+ * 返回 true 表示成功恢复，false 表示无可用备份。
+ */
+async function tryLoadFromBackup(): Promise<boolean> {
+  let files: string[]
+  try {
+    files = await readdir(dataDir)
+  } catch {
+    return false
+  }
+  // 只看 fashion-mvp-store.json.bak-* 备份，按名称时间戳倒序
+  const baseName = path.basename(storeFilePath)
+  const backupNames = files
+    .filter((f) => f.startsWith(`${baseName}.bak-`))
+    .sort()
+    .reverse()
+
+  for (const name of backupNames.slice(0, 10)) {
+    // 最多试 10 个
+    const backupPath = path.join(dataDir, name)
+    try {
+      const raw = await readFile(backupPath, 'utf8')
+      const data = JSON.parse(raw) as {
+        assets?: AssetRecord[]
+        tasks?: GenerationTask[]
+      }
+      if (Array.isArray(data.assets)) {
+        store.assets = new Map(data.assets.map((asset) => [asset.assetId, asset]))
+      }
+      if (Array.isArray(data.tasks)) {
+        store.tasks = new Map(data.tasks.map((task) => [task.taskId, task]))
+      }
+      console.error(`[task-store] 从备份恢复成功：${name}`)
+      return true
+    } catch {
+      continue // 这个备份也坏了，试下一个
+    }
+  }
+  return false
 }
 
 /**
@@ -1160,19 +1257,21 @@ function persistStore(): Promise<void> {
 }
 
 async function writeStoreFile(): Promise<void> {
+  // G-fix: 原子写入。先写到 .tmp 文件，写成功后 rename 覆盖目标。
+  // 这样即使进程在写入中途被 OOM Kill / SIGKILL，原 store.json 仍是完整的。
+  // rename 在同一文件系统内是原子操作（ext4/xfs 保证）。
   await mkdir(dataDir, { recursive: true })
-  await writeFile(
-    storeFilePath,
-    JSON.stringify(
-      {
-        assets: Array.from(store.assets.values()),
-        tasks: Array.from(store.tasks.values()),
-      },
-      null,
-      2,
-    ),
-    'utf8',
+  const tmpPath = `${storeFilePath}.tmp-write`
+  const payload = JSON.stringify(
+    {
+      assets: Array.from(store.assets.values()),
+      tasks: Array.from(store.tasks.values()),
+    },
+    null,
+    2,
   )
+  await writeFile(tmpPath, payload, 'utf8')
+  await rename(tmpPath, storeFilePath)
 }
 
 /**
@@ -2212,10 +2311,51 @@ export async function deleteResultFromTask(
       const ossKey = extractOssKeyFromUrl(targetResult.url)
       const deleteKey = ossKey || targetResult.url
       await storage().deleteImage(deleteKey)
+
+      // 同步删除缩略图，避免 OSS 残留 _thumb.webp 孤儿对象
+      const thumbnailKey = deriveThumbnailKey(deleteKey)
+      if (thumbnailKey) {
+        try {
+          await storage().deleteImage(thumbnailKey)
+        } catch {
+          // 缩略图不存在/已删除：忽略
+        }
+      }
     } catch {
       // 文件不存在/权限问题/并发删除：忽略
     }
   }
 
   return true
+}
+
+// -----------------------------------------------------------------------------
+// G-fix: 优雅停机。pm2 restart/stop 会发 SIGTERM，默认 1600ms 后强杀。
+// 我们注册钩子等 persistChain 写盘完成再退出，避免 store.json 写一半被截断。
+// 配合 ecosystem.config.cjs 的 kill_timeout: 10000，给最多 10s 写盘窗口。
+// -----------------------------------------------------------------------------
+
+let shuttingDown = false
+
+async function gracefulShutdown(signal: string) {
+  if (shuttingDown) return // 防止重复触发
+  shuttingDown = true
+  console.log(`[task-store] 收到 ${signal}，等待 store 写盘完成...`)
+  try {
+    // persistChain 是串行化的：等当前正在写的 + 排队的都写完
+    // 加一个兜底超时（8s），避免卡死导致 pm2 强杀
+    await Promise.race([
+      persistChain,
+      new Promise<void>((resolve) => setTimeout(resolve, 8000)),
+    ])
+    console.log('[task-store] store 写盘完成，安全退出')
+  } catch (error) {
+    console.error('[task-store] 优雅停机写盘失败：', error)
+  }
+  // 不主动 process.exit，让 pm2/Node 自然退出
+}
+
+if (typeof process !== 'undefined') {
+  process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'))
+  process.on('SIGINT', () => void gracefulShutdown('SIGINT'))
 }
