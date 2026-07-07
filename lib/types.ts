@@ -118,6 +118,8 @@ export interface AssetRecord {
   favorited?: boolean
 }
 
+export type PoseBodyPart = 'full' | 'upper' | 'lower'
+
 export interface SavedPose {
   id: string
   userId: string
@@ -126,6 +128,7 @@ export interface SavedPose {
   name: string
   width: number
   height: number
+  bodyPart: PoseBodyPart
   createdAt: string
 }
 
@@ -310,7 +313,9 @@ export interface BackgroundReplaceParams {
 
 export interface PoseFissionParams {
   model: FashionModelId
-  poses: { id: string; url: string; name: string }[]
+  poses: { id: string; url: string; name: string; bodyPart: PoseBodyPart }[]
+  hasFrontDetail?: boolean
+  hasBackDetail?: boolean
   imageRatio: PoseImageRatio
   resolution: PoseResolution
   /** = poses.length，由 normalize 阶段填充 */

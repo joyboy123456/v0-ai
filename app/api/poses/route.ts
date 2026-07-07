@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { jsonErrorResponse } from '@/lib/server/api-error-response'
 import { requireUser } from '@/lib/server/auth/require-user'
 import { addPose, listPoses } from '@/lib/server/saved-pose-store'
+import type { PoseBodyPart } from '@/lib/types'
 
 export const runtime = 'nodejs'
 
@@ -33,13 +34,21 @@ export async function POST(request: NextRequest) {
   const name = readTrimmedString(body.name)
   const width = readPositiveNumber(body.width)
   const height = readPositiveNumber(body.height)
+  const bodyPart = readPoseBodyPart(body.bodyPart)
 
   if (!assetId || !url || !name || width === null || height === null) {
     return NextResponse.json({ error: '姿势参数无效' }, { status: 400 })
   }
 
   try {
-    const pose = await addPose(userId, { assetId, url, name, width, height })
+    const pose = await addPose(userId, {
+      assetId,
+      url,
+      name,
+      width,
+      height,
+      bodyPart,
+    })
     return NextResponse.json(pose, { status: 201 })
   } catch (error) {
     return jsonErrorResponse(error, 400)
@@ -61,4 +70,11 @@ function readPositiveNumber(value: unknown): number | null {
     return null
   }
   return value
+}
+
+function readPoseBodyPart(value: unknown): PoseBodyPart {
+  if (value === 'upper' || value === 'lower') {
+    return value
+  }
+  return 'full'
 }

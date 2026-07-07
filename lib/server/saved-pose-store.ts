@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import type { SavedPose } from '@/lib/types'
+import type { PoseBodyPart, SavedPose } from '@/lib/types'
 
 interface PersistedState {
   [userId: string]: SavedPose[]
@@ -77,7 +77,10 @@ function createId(prefix: string) {
 }
 
 function clonePoses(poses: SavedPose[]): SavedPose[] {
-  return poses.map((pose) => ({ ...pose }))
+  return poses.map((pose) => ({
+    ...pose,
+    bodyPart: readPoseBodyPart(pose.bodyPart),
+  }))
 }
 
 function getUserPoses(userId: string): SavedPose[] {
@@ -88,20 +91,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function readPoseBodyPart(value: unknown): PoseBodyPart {
+  if (value === 'upper' || value === 'lower') {
+    return value
+  }
+  return 'full'
+}
+
 function isSavedPose(value: unknown): value is SavedPose {
   if (!isRecord(value)) return false
-  return (
-    typeof value.id === 'string' &&
-    typeof value.userId === 'string' &&
-    typeof value.assetId === 'string' &&
-    typeof value.url === 'string' &&
-    typeof value.name === 'string' &&
-    typeof value.width === 'number' &&
-    Number.isFinite(value.width) &&
-    typeof value.height === 'number' &&
-    Number.isFinite(value.height) &&
-    typeof value.createdAt === 'string'
-  )
+  if (
+    typeof value.id !== 'string' ||
+    typeof value.userId !== 'string' ||
+    typeof value.assetId !== 'string' ||
+    typeof value.url !== 'string' ||
+    typeof value.name !== 'string' ||
+    typeof value.width !== 'number' ||
+    !Number.isFinite(value.width) ||
+    typeof value.height !== 'number' ||
+    !Number.isFinite(value.height) ||
+    typeof value.createdAt !== 'string'
+  ) {
+    return false
+  }
+
+  value.bodyPart = readPoseBodyPart(value.bodyPart)
+  return true
 }
 
 export async function listPoses(userId: string): Promise<SavedPose[]> {
@@ -117,6 +132,7 @@ export async function addPose(
     name: string
     width: number
     height: number
+    bodyPart: PoseBodyPart
   },
 ): Promise<SavedPose> {
   await ensureReady()
@@ -129,6 +145,7 @@ export async function addPose(
     name: input.name,
     width: input.width,
     height: input.height,
+    bodyPart: input.bodyPart,
     createdAt: new Date().toISOString(),
   }
 
