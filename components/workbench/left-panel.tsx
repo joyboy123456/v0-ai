@@ -441,6 +441,8 @@ export function LeftPanel({
         url: pose.url,
         name: pose.name,
       })),
+      hasFrontDetail: Boolean(poseFrontDetailImage),
+      hasBackDetail: Boolean(poseBackDetailImage),
       imageRatio: poseImageRatio,
       resolution: poseResolution,
       resultCount: selectedPoses.length,
@@ -646,13 +648,28 @@ export function LeftPanel({
 
     if (feature === "pose-fission") {
       if (!poseMainImage) return [];
-      return [
+      const assets: AssetDescriptor[] = [
         {
           assetId: poseMainImage.assetId,
           name: poseMainImage.name,
           role: "主图",
         },
       ];
+      if (poseFrontDetailImage) {
+        assets.push({
+          assetId: poseFrontDetailImage.assetId,
+          name: poseFrontDetailImage.name,
+          role: "产品正面参考图",
+        });
+      }
+      if (poseBackDetailImage) {
+        assets.push({
+          assetId: poseBackDetailImage.assetId,
+          name: poseBackDetailImage.name,
+          role: "产品背面参考图",
+        });
+      }
+      return assets;
     }
 
     if (!activeImage) return [];
@@ -697,6 +714,8 @@ export function LeftPanel({
         {isPoseFission ? (
           <PoseFissionForm
             mainImage={poseMainImage}
+            frontDetailImage={poseFrontDetailImage}
+            backDetailImage={poseBackDetailImage}
             selectedPoses={selectedPoses}
             savedPoses={savedPoses}
             model={poseFissionModel}
@@ -705,7 +724,11 @@ export function LeftPanel({
             helperText={helperText}
             onModelChange={setPoseFissionModel}
             onMainUploaded={setPoseMainImage}
+            onFrontDetailUploaded={setPoseFrontDetailImage}
+            onBackDetailUploaded={setPoseBackDetailImage}
             onMainRemove={() => setPoseMainImage(null)}
+            onFrontDetailRemove={() => setPoseFrontDetailImage(null)}
+            onBackDetailRemove={() => setPoseBackDetailImage(null)}
             onImageRatioChange={setPoseImageRatio}
             onResolutionChange={setPoseResolution}
             onChangeSelectedPoses={onChangeSelectedPoses}
@@ -931,6 +954,8 @@ function FashionModelSelect({
 
 function PoseFissionForm({
   mainImage,
+  frontDetailImage,
+  backDetailImage,
   selectedPoses,
   savedPoses,
   model,
@@ -939,7 +964,11 @@ function PoseFissionForm({
   helperText,
   onModelChange,
   onMainUploaded,
+  onFrontDetailUploaded,
+  onBackDetailUploaded,
   onMainRemove,
+  onFrontDetailRemove,
+  onBackDetailRemove,
   onImageRatioChange,
   onResolutionChange,
   onChangeSelectedPoses,
@@ -948,6 +977,8 @@ function PoseFissionForm({
   onDeletePose,
 }: {
   mainImage: UploadedImage | null;
+  frontDetailImage: UploadedImage | null;
+  backDetailImage: UploadedImage | null;
   selectedPoses: SavedPose[];
   savedPoses: SavedPose[];
   model: FashionModelId;
@@ -956,7 +987,11 @@ function PoseFissionForm({
   helperText: string;
   onModelChange: (value: FashionModelId) => void;
   onMainUploaded: (image: UploadedImage) => void;
+  onFrontDetailUploaded: (image: UploadedImage) => void;
+  onBackDetailUploaded: (image: UploadedImage) => void;
   onMainRemove: () => void;
+  onFrontDetailRemove: () => void;
+  onBackDetailRemove: () => void;
   onImageRatioChange: (value: PoseImageRatio) => void;
   onResolutionChange: (value: PoseResolution) => void;
   onChangeSelectedPoses: (poses: SavedPose[]) => void;
@@ -978,6 +1013,26 @@ function PoseFissionForm({
         image={mainImage}
         onUploaded={onMainUploaded}
         onRemove={onMainRemove}
+        variant="compact"
+      />
+
+      <UploadBox
+        label="产品正面细节图（非必填）"
+        helper="请上传服装的正面特殊细节图，如领口、图案、logo等。仅上传必要细节，图片不是越多越好"
+        image={frontDetailImage}
+        onUploaded={onFrontDetailUploaded}
+        onRemove={onFrontDetailRemove}
+        required={false}
+        variant="compact"
+      />
+
+      <UploadBox
+        label="产品背面细节图（非必填）"
+        helper="请上传服装的完整背面图以及背面特殊细节图等，仅上传必要细节，图片不是越多越好"
+        image={backDetailImage}
+        onUploaded={onBackDetailUploaded}
+        onRemove={onBackDetailRemove}
+        required={false}
         variant="compact"
       />
 

@@ -46,16 +46,22 @@ export function normalizePoseFissionParams(
 
   const model = readFashionModel(params.model)
   const poses = readPoses(params.poses)
+  const hasFrontDetail = readPoseDetailFlag(params.hasFrontDetail)
+  const hasBackDetail = readPoseDetailFlag(params.hasBackDetail)
   const imageRatio = readPoseImageRatio(params.imageRatio)
   const resolution = readPoseResolution(params.resolution)
 
-  if (inputAssetCount !== 1) {
-    throw new Error('姿势裂变仅支持 1 张主图')
+  const expectedInputAssetCount =
+    1 + (hasFrontDetail ? 1 : 0) + (hasBackDetail ? 1 : 0)
+  if (inputAssetCount !== expectedInputAssetCount) {
+    throw new Error('姿势裂变输入素材数量与参数不一致')
   }
 
   return {
     model,
     poses,
+    hasFrontDetail,
+    hasBackDetail,
     imageRatio,
     resolution,
     resultCount: poses.length,
@@ -68,17 +74,36 @@ export function normalizePoseFissionParams(
  * pose-fission pipeline 会按 poses 逐个调用，每次传一个姿势参考图。
  */
 export function buildPoseFissionPrompt(
-  _params: PoseFissionParams,
+  params: PoseFissionParams,
   pose: { id: string; url: string; name: string },
 ): string {
+  const detailOrder: string[] = []
+  if (params.hasFrontDetail) {
+    detailOrder.push('第二张是服装正面细节图')
+  }
+  if (params.hasBackDetail) {
+    detailOrder.push(
+      params.hasFrontDetail
+        ? '第三张是服装背面细节图'
+        : '第二张是服装背面细节图',
+    )
+  }
+
+  const totalImageCount =
+    2 + (params.hasFrontDetail ? 1 : 0) + (params.hasBackDetail ? 1 : 0)
+
   return [
-    '这里有两张图片。第一张是主图，第二张是姿势参考图。',
+    `这里有${totalImageCount}张图片。第一张永远是主图${detailOrder.length ? `，${detailOrder.join('，')}` : ''}，最后一张永远是姿势参考图。`,
     '',
-    '任务：只改变第一张图中人物的姿势和动作，让她摆出与第二张姿势参考图完全一致的身体姿态、四肢角度、身体朝向、手部动作和头部朝向。',
+    '任务：只改变第一张图中人物的姿势和动作，让她摆出与最后一张姿势参考图完全一致的身体姿态、四肢角度、身体朝向、手部动作和头部朝向。',
     '',
     '严格保持第一张图不变：人物的面部长相、五官、发型发色、身材比例和肤色；身上服装的款式、颜色、版型、面料材质、图案印花和所有细节；整体光线风格与背景保持一致或干净简洁。',
     '',
-    '第二张图只用来参考"姿势"这一件事。绝对不要复制第二张图里的人物长相、脸、发型、服装、配饰、背景或道具，也不要改变第一张图人物的穿着。',
+    params.hasFrontDetail || params.hasBackDetail
+      ? '中间出现的服装细节图只用于锁定服装的图案、主色、面料材质和细节，绝对不要从这些细节图学习姿势、动作、人物身份、脸或背景，也不要改变第一张图人物的穿着。'
+      : '最后一张图只用来参考"姿势"这一件事。绝对不要复制姿势参考图里的人物长相、脸、发型、服装、配饰、背景或道具，也不要改变第一张图人物的穿着。',
+    '',
+    '姿势只从最后一张姿势参考图学习，绝对不要从任何服装细节图学习姿势或动作。',
     '',
     '输出：电商主图级画质，人物主体清晰、姿态自然协调；避免手指畸形、多指/少指、肢体扭曲错位、服装变形、脸部崩坏、文字乱码和多余的人或物。',
     '',
@@ -142,6 +167,16 @@ function readPoseResolution(value: unknown): PoseResolution {
   }
 
   throw new Error('姿势裂变分辨率无效')
+}
+
+function readPoseDetailFlag(value: unknown): boolean {
+  if (value === undefined || value === null) {
+    return false
+  }
+  if (typeof value === 'boolean') {
+    return value
+  }
+  throw new Error('姿势裂变细节图标记无效')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -311,6 +311,8 @@ export interface BackgroundReplaceParams {
 export interface PoseFissionParams {
   model: FashionModelId
   poses: { id: string; url: string; name: string }[]
+  hasFrontDetail?: boolean
+  hasBackDetail?: boolean
   imageRatio: PoseImageRatio
   resolution: PoseResolution
   /** = poses.length，由 normalize 阶段填充 */
