@@ -1460,7 +1460,7 @@ function FashionResolutionSelector({
 }) {
   return (
     <div className="space-y-2">
-      <span className="text-sm text-foreground">画质</span>
+      <RequiredLabel label="画质" />
       <div className="grid grid-cols-3 gap-2">
         {FASHION_RESOLUTIONS.map((option) => (
           <button
@@ -1556,7 +1556,7 @@ function ResolutionSelector({
 }) {
   return (
     <div className="space-y-2">
-      <span className="text-sm text-foreground">画质</span>
+      <RequiredLabel label="画质" />
       <div className="grid grid-cols-3 gap-2">
         {POSE_RESOLUTIONS.map((option) => (
           <button
