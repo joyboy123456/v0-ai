@@ -118,6 +118,8 @@ export interface AssetRecord {
   favorited?: boolean
 }
 
+export type PoseBodyPart = 'full' | 'upper' | 'lower'
+
 export interface SavedPose {
   id: string
   userId: string
@@ -126,6 +128,7 @@ export interface SavedPose {
   name: string
   width: number
   height: number
+  bodyPart: PoseBodyPart
   createdAt: string
 }
 
