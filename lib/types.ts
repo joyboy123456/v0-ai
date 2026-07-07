@@ -313,7 +313,7 @@ export interface BackgroundReplaceParams {
 
 export interface PoseFissionParams {
   model: FashionModelId
-  poses: { id: string; url: string; name: string }[]
+  poses: { id: string; url: string; name: string; bodyPart: PoseBodyPart }[]
   hasFrontDetail?: boolean
   hasBackDetail?: boolean
   imageRatio: PoseImageRatio

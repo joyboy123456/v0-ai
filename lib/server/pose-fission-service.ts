@@ -5,6 +5,7 @@ import {
   SELECTABLE_FASHION_MODELS,
   type FashionModelId,
   type PoseFissionParams,
+  type PoseBodyPart,
   type PoseImageRatio,
   type PoseResolution,
   type ResultAsset,
@@ -35,6 +36,13 @@ const poseResolutionIds = new Set<PoseResolution>(
 const fashionModelIds = new Set<FashionModelId>(
   SELECTABLE_FASHION_MODELS.map((option) => option.id),
 )
+
+type PoseFissionPose = {
+  id: string
+  url: string
+  name: string
+  bodyPart: PoseBodyPart
+}
 
 export function normalizePoseFissionParams(
   params: unknown,
@@ -75,36 +83,62 @@ export function normalizePoseFissionParams(
  */
 export function buildPoseFissionPrompt(
   params: PoseFissionParams,
-  pose: { id: string; url: string; name: string },
+  pose: PoseFissionPose,
 ): string {
-  const detailRoleLines: string[] = []
-  if (params.hasFrontDetail) {
-    detailRoleLines.push(
-      '- 第二张 = 服装正面细节图（服装高保真参考）：据此精确还原服装正面的图案、主色与面料材质，只提供服装信息，不提供姿势/动作/人物/背景。',
-    )
-  }
-  if (params.hasBackDetail) {
-    detailRoleLines.push(
-      params.hasFrontDetail
-        ? '- 第三张 = 服装背面细节图（服装高保真参考）：据此精确还原服装背面设计与细节，同样只提供服装信息。'
-        : '- 第二张 = 服装背面细节图（服装高保真参考）：据此精确还原服装背面设计与细节，同样只提供服装信息。',
-    )
-  }
+  const totalImageCount =
+    2 + (params.hasFrontDetail ? 1 : 0) + (params.hasBackDetail ? 1 : 0)
 
-  const promptLines = [
-    '编辑第一张主图：只将主图中人物的姿势与动作，替换为最后一张姿势参考图中的身体姿态、四肢角度、身体朝向、手部动作与头部朝向；人物的长相与服装保持不变。',
+  return [
+    getPoseFissionEditInstruction(pose.bodyPart),
     '',
-    '输入图片角色：',
-    '- 第一张 = 主图（一致性来源）：保持人物脸型五官、发型发色、身材比例、肤色，以及服装的款式、颜色、版型、面料材质与图案印花完全一致；光线风格与背景保持原样或干净简洁。',
-    ...detailRoleLines,
-    '- 最后一张 = 姿势参考图（仅姿势来源）：只借用其姿态、动作与肢体朝向；人物长相、服装、配饰、背景、道具一律以主图为准。',
+    `本次共 ${totalImageCount} 张图，按输入顺序：`,
+    '- 第 1 张 = 主图（一致性来源）：保持人物脸型五官、发型发色、身材比例、肤色，以及服装款式/颜色/版型/面料材质/图案印花完全一致；光线与背景保持原样或干净简洁。',
+    ...(params.hasFrontDetail
+      ? [
+          '- 第 2 张 = 服装正面细节图（服装高保真参考）：据此精确还原服装正面的图案、主色与材质，只提供服装信息，不提供姿势/动作/人物/背景。',
+        ]
+      : []),
+    ...(params.hasBackDetail
+      ? [
+          params.hasFrontDetail
+            ? '- 第 3 张 = 服装背面细节图（服装高保真参考）：据此精确还原服装背面设计与细节，同样只提供服装信息。'
+            : '- 第 2 张 = 服装背面细节图（服装高保真参考）：据此精确还原服装背面设计与细节，同样只提供服装信息。',
+        ]
+      : []),
+    `- 第 ${totalImageCount} 张（最后一张）= 姿势参考图（仅姿势来源）：${getPoseFissionPoseReferenceNote(pose.bodyPart)}`,
     '',
     '输出：电商主图级画质，主体清晰、姿态自然协调、身体比例真实，双手结构自然、手指数量正确、服装贴合形变合理；画面干净整洁，只保留主图中的这一位人物。',
     '',
     `当前姿势：${pose.name}。`,
-  ]
+  ].join('\n')
+}
 
-  return promptLines.join('\n')
+function getPoseFissionEditInstruction(bodyPart: PoseBodyPart): string {
+  switch (bodyPart) {
+    case 'full':
+      return '编辑第一张主图：只将主图中人物的姿势与动作，替换为最后一张姿势参考图中的整体身体姿态、四肢角度、身体朝向、手部动作与头部朝向；人物长相与服装保持主图不变。'
+    case 'upper':
+      return '编辑第一张主图：只改变人物的上半身——上身姿态、肩、双臂、手部动作与头部朝向，按最后一张姿势参考图摆放；下半身（腿部姿势、站/坐位置、脚的位置与朝向）与人物长相、服装严格保持主图不变。'
+    case 'lower':
+      return '编辑第一张主图：只改变人物的下半身——腿部姿势、站姿/步态、髋部与脚的朝向和位置，按最后一张姿势参考图摆放；上半身（头、脸、肩、双臂、手部动作、上身朝向）与人物长相、服装严格保持主图不变。'
+    default:
+      throw new Error('姿势裂变姿势分类无效')
+  }
+}
+
+function getPoseFissionPoseReferenceNote(
+  bodyPart: PoseBodyPart,
+): string {
+  switch (bodyPart) {
+    case 'full':
+      return '只借用其姿态、动作与肢体朝向；人物长相、服装、配饰、背景、道具一律以主图为准。'
+    case 'upper':
+      return '只借上半身姿态，即使它是全身图也不改动下半身；人物长相、服装、配饰、背景、道具一律以主图为准。'
+    case 'lower':
+      return '只借下半身姿态，即使它是全身图也不改动上半身；人物长相、服装、配饰、背景、道具一律以主图为准。'
+    default:
+      throw new Error('姿势裂变姿势分类无效')
+  }
 }
 
 function readFashionModel(value: unknown): FashionModelId {
@@ -117,12 +151,12 @@ function readFashionModel(value: unknown): FashionModelId {
   throw new Error('姿势裂变模型无效')
 }
 
-function readPoses(value: unknown): { id: string; url: string; name: string }[] {
+function readPoses(value: unknown): PoseFissionPose[] {
   if (!Array.isArray(value)) {
     throw new Error('请至少选择一个姿势')
   }
 
-  const trimmed: { id: string; url: string; name: string }[] = []
+  const trimmed: PoseFissionPose[] = []
   const seen = new Set<string>()
   for (const item of value) {
     if (!isRecord(item)) {
@@ -131,12 +165,13 @@ function readPoses(value: unknown): { id: string; url: string; name: string }[] 
     const id = readTrimmedString(item.id)
     const url = readTrimmedString(item.url)
     const name = readTrimmedString(item.name)
+    const bodyPart = readPoseBodyPart(item.bodyPart)
     if (!id || !url || !name) {
       throw new Error('姿势数据无效')
     }
     if (seen.has(id)) continue
     seen.add(id)
-    trimmed.push({ id, url, name })
+    trimmed.push({ id, url, name, bodyPart })
   }
 
   if (trimmed.length < POSE_FISSION_MIN_TEMPLATES) {
@@ -163,6 +198,13 @@ function readPoseResolution(value: unknown): PoseResolution {
   }
 
   throw new Error('姿势裂变分辨率无效')
+}
+
+function readPoseBodyPart(value: unknown): PoseBodyPart {
+  if (value === 'upper' || value === 'lower') {
+    return value
+  }
+  return 'full'
 }
 
 function readPoseDetailFlag(value: unknown): boolean {
@@ -199,7 +241,7 @@ export interface RunPoseFissionPipelineOptions {
 }
 
 interface PoseRunResult {
-  pose: { id: string; url: string; name: string }
+  pose: PoseFissionPose
   result?: ResultAsset
   error?: string
   errorCategory?: string
@@ -303,14 +345,14 @@ export async function runPoseFissionPipeline(
       .filter(
         (
           entry,
-        ): entry is { result: PoseRunResult; pose: { id: string; url: string; name: string } } =>
+        ): entry is { result: PoseRunResult; pose: PoseFissionPose } =>
           Boolean(entry.result?.error && !entry.result.result),
       )
 
     if (failedPoses.length > 0) {
       const failoverGroups = new Map<
         string,
-        { provider: ImageProvider; poses: { id: string; url: string; name: string }[] }
+        { provider: ImageProvider; poses: PoseFissionPose[] }
       >()
 
       for (const { result, pose } of failedPoses) {
@@ -381,7 +423,7 @@ export async function runPoseFissionPipeline(
 interface RunPoseGroupOptions {
   taskId: string
   provider: ImageProvider
-  poses: { id: string; url: string; name: string }[]
+  poses: PoseFissionPose[]
   params: PoseFissionParams
   inputImages: string[]
   apiKey: string

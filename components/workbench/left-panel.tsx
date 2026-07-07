@@ -440,6 +440,7 @@ export function LeftPanel({
         id: pose.id,
         url: pose.url,
         name: pose.name,
+        bodyPart: pose.bodyPart,
       })),
       hasFrontDetail: Boolean(poseFrontDetailImage),
       hasBackDetail: Boolean(poseBackDetailImage),
