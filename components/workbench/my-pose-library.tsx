@@ -29,6 +29,14 @@ const BODY_PART_LABELS: Record<PoseBodyPart, string> = {
   upper: '上半身',
   lower: '下半身',
 }
+const SEGMENTED_GROUP_CLASS =
+  'inline-flex flex-wrap items-center gap-1.5 rounded-2xl border border-border bg-secondary/80 p-1.5'
+const SEGMENTED_OPTION_CLASS = cn(
+  'rounded-xl px-4 py-2 text-xs font-medium transition-colors',
+  'text-muted-foreground hover:text-foreground',
+)
+const SEGMENTED_ACTIVE_CLASS =
+  'border border-border/70 bg-white/5 text-foreground shadow-sm'
 
 interface MyPoseLibraryProps {
   poses: SavedPose[]
@@ -257,7 +265,7 @@ function MyPoseLibraryDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
-        className="w-[min(96vw,88rem)] max-w-7xl bg-[#101010] border-border p-0 overflow-hidden"
+        className="w-[min(96vw,88rem)] max-w-[96vw] sm:max-w-[88rem] bg-[#101010] border-border p-0 overflow-hidden"
         aria-describedby={undefined}
       >
         <DialogTitle className="sr-only">我的姿势库</DialogTitle>
@@ -277,17 +285,15 @@ function MyPoseLibraryDialog({
         </div>
 
         <div className="max-h-[76vh] overflow-y-auto p-5">
-          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-full border border-border bg-secondary/80 p-1">
+          <div className={cn('mb-4', SEGMENTED_GROUP_CLASS)}>
             {BODY_PART_OPTIONS.map((option) => (
               <button
                 key={option.value}
                 type="button"
                 onClick={() => setFilterBodyPart(option.value)}
                 className={cn(
-                  'rounded-full px-4 py-2 text-xs font-medium transition-colors',
-                  filterBodyPart === option.value
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:text-foreground',
+                  SEGMENTED_OPTION_CLASS,
+                  filterBodyPart === option.value && SEGMENTED_ACTIVE_CLASS,
                 )}
               >
                 {option.label}
@@ -295,31 +301,24 @@ function MyPoseLibraryDialog({
             ))}
           </div>
 
-          <div className="mb-4 rounded-2xl border border-border bg-secondary/60 p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-muted-foreground">上传前先选分类：</span>
-              {UPLOAD_BODY_PART_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => setUploadBodyPart(option.value)}
-                  className={cn(
-                    'rounded-full border px-4 py-2 text-xs font-medium transition-colors',
-                    uploadBodyPart === option.value
-                      ? 'border-primary bg-primary text-primary-foreground'
-                      : 'border-border bg-background text-muted-foreground hover:border-primary/60 hover:text-foreground',
-                  )}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              默认高亮全身，上传后会按所选分类保存到姿势库。
-            </p>
+          <div className={cn('mb-4', SEGMENTED_GROUP_CLASS)}>
+            <span className="px-3 text-xs text-muted-foreground">上传分类：</span>
+            {UPLOAD_BODY_PART_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setUploadBodyPart(option.value)}
+                className={cn(
+                  SEGMENTED_OPTION_CLASS,
+                  uploadBodyPart === option.value && SEGMENTED_ACTIVE_CLASS,
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
           </div>
 
-          <div className="grid grid-cols-2 gap-5 md:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-6">
+          <div className="grid grid-cols-3 gap-4 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8">
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
@@ -448,7 +447,7 @@ function PoseCard({
       )}
     >
       <div className="relative aspect-[3/4] bg-white">
-        <img src={pose.url} alt={pose.name} className="h-full w-full object-cover object-top" />
+        <img src={pose.url} alt={pose.name} className="h-full w-full object-contain object-center" />
         <span className="absolute left-2 top-2 rounded-full bg-background/90 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm">
           {BODY_PART_LABELS[pose.bodyPart]}
         </span>
