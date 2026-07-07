@@ -29,6 +29,14 @@ const BODY_PART_LABELS: Record<PoseBodyPart, string> = {
   upper: '上半身',
   lower: '下半身',
 }
+const SEGMENTED_GROUP_CLASS =
+  'inline-flex flex-wrap items-center gap-1.5 rounded-2xl border border-border bg-secondary/80 p-1.5'
+const SEGMENTED_OPTION_CLASS = cn(
+  'rounded-xl px-4 py-2 text-xs font-medium transition-colors',
+  'text-muted-foreground hover:text-foreground',
+)
+const SEGMENTED_ACTIVE_CLASS =
+  'border border-border/70 bg-white/5 text-foreground shadow-sm'
 
 interface MyPoseLibraryProps {
   poses: SavedPose[]
@@ -277,17 +285,15 @@ function MyPoseLibraryDialog({
         </div>
 
         <div className="max-h-[76vh] overflow-y-auto p-5">
-          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-full border border-border bg-secondary/80 p-1">
+          <div className={cn('mb-4', SEGMENTED_GROUP_CLASS)}>
             {BODY_PART_OPTIONS.map((option) => (
               <button
                 key={option.value}
                 type="button"
                 onClick={() => setFilterBodyPart(option.value)}
                 className={cn(
-                  'rounded-full px-4 py-2 text-xs font-medium transition-colors',
-                  filterBodyPart === option.value
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:text-foreground',
+                  SEGMENTED_OPTION_CLASS,
+                  filterBodyPart === option.value && SEGMENTED_ACTIVE_CLASS,
                 )}
               >
                 {option.label}
@@ -295,7 +301,7 @@ function MyPoseLibraryDialog({
             ))}
           </div>
 
-          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-full border border-border bg-secondary/80 p-1">
+          <div className={cn('mb-4', SEGMENTED_GROUP_CLASS)}>
             <span className="px-3 text-xs text-muted-foreground">上传分类：</span>
             {UPLOAD_BODY_PART_OPTIONS.map((option) => (
               <button
@@ -303,10 +309,8 @@ function MyPoseLibraryDialog({
                 type="button"
                 onClick={() => setUploadBodyPart(option.value)}
                 className={cn(
-                  'rounded-full px-4 py-2 text-xs font-medium transition-colors',
-                  uploadBodyPart === option.value
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:text-foreground',
+                  SEGMENTED_OPTION_CLASS,
+                  uploadBodyPart === option.value && SEGMENTED_ACTIVE_CLASS,
                 )}
               >
                 {option.label}
