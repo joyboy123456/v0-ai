@@ -160,10 +160,10 @@ export function UploadBox({
   return (
     <div className={cn("space-y-2.5", className)}>
       <div className="flex items-center gap-1.5">
+        {required && <span className="text-primary text-xs mt-0.5">*</span>}
         <span className="text-[14px] font-medium text-foreground tracking-wide">
           {label}
         </span>
-        {required && <span className="text-primary/70 text-xs mt-0.5">*</span>}
       </div>
 
       {variant === "compact" ? (
