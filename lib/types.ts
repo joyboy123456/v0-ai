@@ -1,9 +1,4 @@
 import {
-  POSE_TEMPLATES_SEED,
-  POSE_TEMPLATES_DEFAULT_TRIO_SEED,
-  POSE_FISSION_CASE_BLACK_DRESS_TEMPLATE_IDS_SEED,
-} from './pose-templates-seed'
-import {
   AI_FASHION_DEMO_TASKS as YIBAI_AI_FASHION_DEMO_TASKS,
 } from './yibai-demo-cases'
 
@@ -57,8 +52,6 @@ export type PoseImageRatio =
   | '16:9'
   | '21:9'
   | 'more'
-export type PoseAgeGroup = 'adult' | 'kid'
-export type PoseBodyPart = 'full' | 'upper' | 'lower'
 export type PoseResolution = '2k' | '4k'
 export type FashionResolution = PoseResolution
 export type ProductCategory = 'tops' | 'bottoms' | 'dress' | 'suit' | 'outerwear'
@@ -123,6 +116,17 @@ export interface AssetRecord {
    * 默认 false（未收藏），由 PATCH /api/assets/[assetId]/favorite 设置。
    */
   favorited?: boolean
+}
+
+export interface SavedPose {
+  id: string
+  userId: string
+  assetId: string
+  url: string
+  name: string
+  width: number
+  height: number
+  createdAt: string
 }
 
 export interface ResultAsset {
@@ -306,20 +310,10 @@ export interface BackgroundReplaceParams {
 
 export interface PoseFissionParams {
   model: FashionModelId
-  /** 用户多选的姿势模板 id 列表，长度 ∈ [1, 9] */
-  poseTemplateIds: string[]
-  /**
-   * 冗余存储的姿势模板快照。
-   * 目的：后续 POSE_TEMPLATES 常量变更（改名 / 改 prompt）不影响历史任务回放，
-   * 也避免 service 层每次重新查表。
-   * 顺序与 poseTemplateIds 一一对应。
-   */
-  poseTemplateSnapshots: PoseTemplate[]
-  hasFrontDetail: boolean
-  hasBackDetail: boolean
+  poses: { id: string; url: string; name: string }[]
   imageRatio: PoseImageRatio
   resolution: PoseResolution
-  /** = poseTemplateIds.length，由 normalize 阶段填充 */
+  /** = poses.length，由 normalize 阶段填充 */
   resultCount: number
   /** PRD D5：MVP 不计费 */
   creditsCost: 0
@@ -356,41 +350,6 @@ export interface FashionReferenceImage {
   width?: number
   height?: number
   modelId?: string
-}
-
-export interface PoseTemplate {
-  id: string
-  /** 中文短描述，如 '站姿1' / '坐姿1' / '儿童跑跳' */
-  name: string
-  /** 姿势示意图 URL（public 下相对路径） */
-  imageUrl: string
-  /** 用于拼到生图 prompt 的姿势描述片段 */
-  prompt: string
-  ageGroup: PoseAgeGroup
-  bodyPart: PoseBodyPart
-}
-
-/**
- * 姿势裂变成片案例：一组「主图 → 多张套图」的预设示例，
- * 供右侧案例库 Tab 展示，用户点「做同款」可一键复刻参数到左侧表单。
- *
- * 与 PhotoFissionCase 形状一致（参考 PRD D3 设计），区别仅在于：
- * - photoFissionCase 用 shotLabels 描述 9 个 shot
- * - poseFissionCase 用 poseTemplateIds 引用 POSE_TEMPLATES，更贴合"一键回填"用法
- */
-export interface PoseFissionCase {
-  id: string
-  featureType: 'pose-fission'
-  name: string
-  description: string
-  mainImageUrl: string
-  /** 已生成的套图路径（顺序与 poseTemplateIds 一一对应；文件可能暂未生成） */
-  resultImageUrls: string[]
-  /** 案例使用的姿势模板 id 列表。前端回填时若某 id 不存在 POSE_TEMPLATES，应 graceful fallback */
-  poseTemplateIds: string[]
-  model: FashionModelId
-  imageRatio: PoseImageRatio
-  resolution: PoseResolution
 }
 
 /**
@@ -547,35 +506,6 @@ export const ELEMENT_REPLACE_TYPES = [
 ] satisfies { id: ElementReplaceType; label: string }[]
 
 /**
- * 姿势裂变姿势模板（POSE_TEMPLATES）。
- *
- * 数据由 scripts/seed-pose-templates.ts 从友商资料按关键词分桶筛选生成，
- * 见 lib/pose-templates-seed.ts。本文件仅做 re-export，保持稳定接口。
- *
- * 关键字段说明：
- * - ageGroup：'adult' | 'kid' 控制 Modal 的「全部/成人/儿童」筛选
- * - bodyPart：'full' | 'upper' | 'lower' 控制 Modal 的「全部/全身/上半身/下半身」筛选
- * - prompt：姿势描述片段，避免提到具体性别 / 服装，姿势 prompt 只负责姿势本身
- */
-export const POSE_TEMPLATES: PoseTemplate[] = POSE_TEMPLATES_SEED
-
-/**
- * 「基础搭配 3 张」一键预设的姿势模板 id 集合（PRD D8）。
- */
-export const POSE_TEMPLATES_DEFAULT_TRIO: string[] = POSE_TEMPLATES_DEFAULT_TRIO_SEED
-
-export const POSE_TEMPLATE_AGE_GROUPS = [
-  { id: 'adult', label: '成人' },
-  { id: 'kid', label: '儿童' },
-] satisfies { id: PoseAgeGroup; label: string }[]
-
-export const POSE_TEMPLATE_BODY_PARTS = [
-  { id: 'full', label: '全身' },
-  { id: 'upper', label: '上半身' },
-  { id: 'lower', label: '下半身' },
-] satisfies { id: PoseBodyPart; label: string }[]
-
-/**
  * 姿势裂变（pose-fission）支持的全部 10 个真实图片比例（PRD D6 与 photo-fission 对齐）。
  * 「更多」按钮只是 UI 概念，不会写入 params。
  */
@@ -710,38 +640,6 @@ export const SELECTABLE_FASHION_MODELS: FashionModelOption[] =
   FASHION_MODELS.filter((option) => option.selectable !== false)
 
 export const DEFAULT_FASHION_MODEL: FashionModelId = 'gemini-3.1-flash-image-preview'
-
-/**
- * 姿势裂变（pose-fission）案例库。
- * MVP 阶段含 1 个 case：现有 6 张 pose-*.jpg 归为一组「黑色蕾丝裙 6 姿势套图」。
- *
- * 注意：
- * - poseTemplateIds 引用 POSE_TEMPLATES 的 id。前端回填时若某 id 在
- *   当前 POSE_TEMPLATES 中不存在，需 graceful fallback（仅忽略该 id 即可）
- * - resultImageUrls 中的文件可能暂未生成，UI 需对每张图做 graceful fallback
- */
-export const POSE_FISSION_CASES: PoseFissionCase[] = [
-  {
-    id: 'pose-black-dress-six-poses',
-    featureType: 'pose-fission',
-    name: '黑色蕾丝裙 6 姿势套图',
-    description:
-      '同一位模特身穿黑色蕾丝连衣裙，覆盖正面招手、侧身行走、回头背影等 6 个常用电商投流姿势。',
-    mainImageUrl: '/cases/pose-front-wave.jpg',
-    resultImageUrls: [
-      '/cases/pose-front-wave.jpg',
-      '/cases/pose-side-walk.jpg',
-      '/cases/pose-back-turn.jpg',
-      '/cases/pose-low-crouch.jpg',
-      '/cases/pose-cross-step.jpg',
-      '/cases/pose-bag-forward.jpg',
-    ],
-    poseTemplateIds: POSE_FISSION_CASE_BLACK_DRESS_TEMPLATE_IDS_SEED,
-    model: DEFAULT_FASHION_MODEL,
-    imageRatio: '3:4',
-    resolution: '4k',
-  },
-]
 
 /**
  * 服装大片裂变（photo-fission）案例库。

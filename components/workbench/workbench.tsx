@@ -5,7 +5,6 @@ import { usePathname, useRouter } from 'next/navigation'
 import { FeatureSidebar } from './feature-sidebar'
 import { LeftPanel } from './left-panel'
 import { RightPanel } from './right-panel'
-import { PoseLibraryDialog } from './pose-library-dialog'
 import { useAuth } from '@/hooks/use-auth'
 import {
   type CompanyModel,
@@ -14,8 +13,7 @@ import {
   type FeatureType,
   type GenerationTask,
   type PhotoFissionCase,
-  type PoseFissionCase,
-  type PoseTemplate,
+  type SavedPose,
 } from '@/lib/types'
 
 const companyModelsStorageKey = 'fashion_company_models'
@@ -42,11 +40,8 @@ export function Workbench() {
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const tasksRef = useRef<GenerationTask[]>([])
   const [tasksLoading, setTasksLoading] = useState(false)
-  // PR3：升级为「已选姿势模板数组」，告别 PR1 阶段 selectedPoseFissionCase 兜底单选。
-  const [selectedPoseTemplates, setSelectedPoseTemplates] = useState<PoseTemplate[]>([])
-  const [poseTemplates, setPoseTemplates] = useState<PoseTemplate[]>([])
-  const [poseLibraryDialogOpen, setPoseLibraryDialogOpen] = useState(false)
-  const [poseFavorites, setPoseFavorites] = useState<Set<string>>(new Set())
+  const [savedPoses, setSavedPoses] = useState<SavedPose[]>([])
+  const [selectedPoses, setSelectedPoses] = useState<SavedPose[]>([])
   const [companyModelLibraryRequestKey, setCompanyModelLibraryRequestKey] = useState(0)
   const [companyModels, setCompanyModels] = useState<CompanyModel[]>([])
   const [companyModelsHydrated, setCompanyModelsHydrated] = useState(false)
@@ -59,13 +54,6 @@ export function Workbench() {
   const [photoFissionCaseRequest, setPhotoFissionCaseRequest] = useState<{
     requestId: number
     case: PhotoFissionCase
-  } | null>(null)
-  // PR4：派发「一键做同款」的 pose-fission 案例，参考 photoFissionCaseRequest 模式。
-  // LeftPanel 在 useEffect 中消费此 request 完成回填，包括把 case 的 poseTemplateIds
-  // 解为 PoseTemplate[] 并通过 onChangeSelectedPoseTemplates 回写到 workbench。
-  const [poseFissionCaseRequest, setPoseFissionCaseRequest] = useState<{
-    requestId: number
-    case: PoseFissionCase
   } | null>(null)
 
   useEffect(() => {
@@ -230,29 +218,6 @@ export function Workbench() {
   }, [loadTasks, user])
 
   useEffect(() => {
-    try {
-      const storedModels = window.localStorage.getItem(companyModelsStorageKey)
-      if (storedModels) {
-        const parsed = JSON.parse(storedModels) as CompanyModel[]
-        // A-fix: 过滤掉历史 blob URL 残留（之前用 URL.createObjectURL，刷新即失效），
-        // 只保留指向 server 的稳定 URL（/generated/...、http(s)://、data:）。
-        const validModels = Array.isArray(parsed)
-          ? parsed.filter((model) => {
-              if (!model || typeof model.preview !== 'string') return false
-              if (model.preview.startsWith('blob:')) return false
-              return true
-            })
-          : []
-        setCompanyModels(validModels)
-      }
-    } catch {
-      // ignore unreadable storage
-    } finally {
-      setCompanyModelsHydrated(true)
-    }
-  }, [])
-
-  useEffect(() => {
     if (!companyModelsHydrated) return
     window.localStorage.setItem(companyModelsStorageKey, JSON.stringify(companyModels))
   }, [companyModels, companyModelsHydrated])
@@ -356,44 +321,10 @@ export function Workbench() {
     })
   }, [])
 
-  // 切到 photo-fission 并把案例参数派发给 LeftPanel 自动回填；不会自动触发生成，
-  // 用户仍需点「立即生成」复刻。
   const handleSelectPhotoFissionCase = useCallback((photoFissionCase: PhotoFissionCase) => {
     setCurrentFeature('photo-fission')
     setPhotoFissionCaseRequest({ requestId: Date.now(), case: photoFissionCase })
   }, [])
-
-  // PR4：与 photo-fission 同样的派发模式：切到 pose-fission，构造一个 requestId
-  // 派发 case 给 LeftPanel，由 LeftPanel 在 useEffect 内回填 model/比例/分辨率
-  // 并通过 onChangeSelectedPoseTemplates 回写已选模板。
-  const handleSelectPoseFissionCase = useCallback((poseFissionCase: PoseFissionCase) => {
-    setCurrentFeature('pose-fission')
-    setPoseFissionCaseRequest({ requestId: Date.now(), case: poseFissionCase })
-  }, [])
-
-  // PR3：组件挂载时一次性 fetch templates，避免 LeftPanel / RightPanel 各自重复请求。
-  // 失败时静默 fallback，等到用户切到 pose-fission 再走 retry（PR4 会做更优雅的 UX）。
-  useEffect(() => {
-    if (!user) return
-    let cancelled = false
-
-    async function loadPoseTemplates() {
-      try {
-        const response = await fetch('/api/pose-fission/templates', { cache: 'no-store' })
-        if (!response.ok) return
-        const data = (await response.json()) as { templates: PoseTemplate[] }
-        if (cancelled) return
-        if (Array.isArray(data.templates)) setPoseTemplates(data.templates)
-      } catch {
-        // 静默失败：用户切到 pose-fission 时如果数组为空，会看到 Modal 空状态
-      }
-    }
-
-    void loadPoseTemplates()
-    return () => {
-      cancelled = true
-    }
-  }, [user])
 
   const handleLogout = useCallback(async () => {
     await logout()
@@ -401,25 +332,63 @@ export function Workbench() {
     router.refresh()
   }, [logout, router])
 
-  const handleConfirmPoseLibrary = useCallback((selectedTemplates: PoseTemplate[]) => {
-    setSelectedPoseTemplates(selectedTemplates)
-    setPoseLibraryDialogOpen(false)
-  }, [])
+  const loadPoses = useCallback(async () => {
+    if (!user) return
+    try {
+      const response = await fetch('/api/poses', { cache: 'no-store' })
+      if (!response.ok) return
+      const data = (await response.json()) as { poses?: SavedPose[] }
+      if (!Array.isArray(data.poses)) return
+      setSavedPoses(data.poses)
+      setSelectedPoses((current) =>
+        current.filter((pose) => data.poses?.some((item) => item.id === pose.id)),
+      )
+    } catch {
+      // ignore pose library load failure; empty state will surface in UI
+    }
+  }, [user])
 
-  const handleTogglePoseFavorite = useCallback((templateId: string) => {
-    setPoseFavorites((current) => {
-      const next = new Set(current)
-      if (next.has(templateId)) {
-        next.delete(templateId)
-      } else {
-        next.add(templateId)
-      }
-      return next
+  useEffect(() => {
+    if (!user) return
+    void loadPoses()
+  }, [loadPoses, user])
+
+  const handleAddPose = useCallback((pose: SavedPose) => {
+    setSavedPoses((current) => {
+      if (current.some((item) => item.id === pose.id)) return current
+      return [pose, ...current]
     })
   }, [])
 
-  // PR4：PoseFissionCaseLibrary 不再做单选高亮，case 卡片直接点「做同款」派发 request。
-  // PR1/PR3 阶段的 selectedPoseFissionCaseId 兜底已可移除。
+  const handleRenamePose = useCallback(async (poseId: string, name: string) => {
+    const response = await fetch(`/api/poses/${encodeURIComponent(poseId)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as { error?: string }
+      throw new Error(data.error ?? `重命名失败：HTTP ${response.status}`)
+    }
+    setSavedPoses((current) =>
+      current.map((pose) => (pose.id === poseId ? { ...pose, name } : pose)),
+    )
+    setSelectedPoses((current) =>
+      current.map((pose) => (pose.id === poseId ? { ...pose, name } : pose)),
+    )
+  }, [])
+
+  const handleDeletePose = useCallback(async (poseId: string) => {
+    const response = await fetch(`/api/poses/${encodeURIComponent(poseId)}`, {
+      method: 'DELETE',
+    })
+    if (!response.ok) {
+      const data = (await response.json().catch(() => ({}))) as { error?: string }
+      throw new Error(data.error ?? `删除失败：HTTP ${response.status}`)
+    }
+    setSavedPoses((current) => current.filter((pose) => pose.id !== poseId))
+    setSelectedPoses((current) => current.filter((pose) => pose.id !== poseId))
+  }, [])
 
   if (isAuthLoading || redirectingToLogin || !user || authError) {
     // 三态视图（彻底解决「文案误导客户」的顽疾）：
@@ -488,21 +457,23 @@ export function Workbench() {
       />
       <LeftPanel
         feature={currentFeature}
-        selectedPoseTemplates={selectedPoseTemplates}
+        selectedPoses={selectedPoses}
+        savedPoses={savedPoses}
         companyModels={companyModels}
         fashionReferences={fashionReferences}
         fashionRemixRequest={fashionRemixRequest}
         photoFissionCaseRequest={photoFissionCaseRequest}
-        poseFissionCaseRequest={poseFissionCaseRequest}
         faceIdModels={faceIdModels}
         selectedFaceIdModel={selectedFaceIdModel}
         onChangeSelectedFaceIdModel={setSelectedFaceIdModel}
-        onChangeSelectedPoseTemplates={setSelectedPoseTemplates}
+        onChangeSelectedPoses={setSelectedPoses}
         onAddFashionReference={handleAddFashionReference}
         onRemoveFashionReference={handleRemoveFashionReference}
         onOpenCompanyModelLibrary={() => setCompanyModelLibraryRequestKey((currentKey) => currentKey + 1)}
         onOpenFaceIdLibrary={() => setFaceIdLibraryRequestKey((currentKey) => currentKey + 1)}
-        onOpenPoseLibrary={() => setPoseLibraryDialogOpen(true)}
+        onAddPose={handleAddPose}
+        onRenamePose={handleRenamePose}
+        onDeletePose={handleDeletePose}
         onTaskCreated={(taskId) => {
           setActiveTaskId(taskId)
           void loadTask(taskId)
@@ -560,21 +531,11 @@ export function Workbench() {
         onSelectFaceIdModel={setSelectedFaceIdModel}
         onAddFashionReference={handleAddFashionReference}
         onUseTaskAsFashionReference={handleUseTaskAsFashionReference}
-        onSelectPoseFissionCase={handleSelectPoseFissionCase}
         onSelectPhotoFissionCase={handleSelectPhotoFissionCase}
         onSelectTask={setActiveTaskId}
         onRefreshTasks={loadTasks}
         onCancelTask={handleCancelTask}
         onDeleteTaskResult={handleDeleteTaskResult}
-      />
-      <PoseLibraryDialog
-        open={poseLibraryDialogOpen}
-        onOpenChange={setPoseLibraryDialogOpen}
-        templates={poseTemplates}
-        favorites={poseFavorites}
-        initialSelectedIds={selectedPoseTemplates.map((tpl) => tpl.id)}
-        onToggleFavorite={handleTogglePoseFavorite}
-        onConfirm={handleConfirmPoseLibrary}
       />
     </main>
   )

@@ -9,6 +9,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { MyPoseLibrary } from "./my-pose-library";
 import { OptionSelector } from "./option-selectors";
 import {
   prepareImageForGenerationUpload,
@@ -44,7 +45,6 @@ import {
   PHOTO_FISSION_RATIOS_MAIN,
   PHOTO_FISSION_RESOLUTIONS,
   PHOTO_FISSION_RESULT_COUNTS,
-  POSE_TEMPLATES,
   POSE_IMAGE_RATIOS,
   POSE_RESOLUTIONS,
   SELECTABLE_FASHION_MODELS,
@@ -64,12 +64,11 @@ import {
   type PhotoFissionResolution,
   type PhotoFissionResultCount,
   type PantsMainHandVisibility,
-  type PoseFissionCase,
   type PoseFissionParams,
   type PoseImageRatio,
   type PoseResolution,
   type AiFashionPhotoParams,
-  type PoseTemplate,
+  type SavedPose,
   type UploadedImage,
 } from "@/lib/types";
 
@@ -94,21 +93,23 @@ interface AssetDescriptor {
 
 interface LeftPanelProps {
   feature: FeatureType;
-  selectedPoseTemplates: PoseTemplate[];
+  selectedPoses: SavedPose[];
+  savedPoses: SavedPose[];
   companyModels: CompanyModel[];
   fashionReferences: FashionReferenceImage[];
   fashionRemixRequest: FashionRemixRequest | null;
   photoFissionCaseRequest: PhotoFissionCaseRequest | null;
-  poseFissionCaseRequest: PoseFissionCaseRequest | null;
   faceIdModels?: CompanyModel[];
   selectedFaceIdModel?: CompanyModel | null;
-  onChangeSelectedPoseTemplates: (templates: PoseTemplate[]) => void;
+  onChangeSelectedPoses: (poses: SavedPose[]) => void;
   onChangeSelectedFaceIdModel?: (model: CompanyModel | null) => void;
   onAddFashionReference: (reference: FashionReferenceImage) => void;
   onRemoveFashionReference: (assetId: string) => void;
   onOpenCompanyModelLibrary: () => void;
   onOpenFaceIdLibrary?: () => void;
-  onOpenPoseLibrary: () => void;
+  onAddPose: (pose: SavedPose) => void;
+  onRenamePose: (poseId: string, name: string) => void;
+  onDeletePose: (poseId: string) => void;
   onTaskCreated: (taskId: string) => void;
 }
 
@@ -117,28 +118,25 @@ interface PhotoFissionCaseRequest {
   case: PhotoFissionCase;
 }
 
-interface PoseFissionCaseRequest {
-  requestId: number;
-  case: PoseFissionCase;
-}
-
 export function LeftPanel({
   feature,
-  selectedPoseTemplates,
+  selectedPoses,
+  savedPoses,
   companyModels,
   fashionReferences,
   fashionRemixRequest,
   photoFissionCaseRequest,
-  poseFissionCaseRequest,
   faceIdModels = [],
   selectedFaceIdModel = null,
-  onChangeSelectedPoseTemplates,
+  onChangeSelectedPoses,
   onChangeSelectedFaceIdModel = () => {},
   onAddFashionReference,
   onRemoveFashionReference,
   onOpenCompanyModelLibrary,
   onOpenFaceIdLibrary = () => {},
-  onOpenPoseLibrary,
+  onAddPose,
+  onRenamePose,
+  onDeletePose,
   onTaskCreated,
 }: LeftPanelProps) {
   const [fashionPrompt, setFashionPrompt] = useState("");
@@ -346,36 +344,109 @@ export function LeftPanel({
     };
   }, [photoFissionCaseRequest]);
 
-  // PR4：pose-fission 案例库「做同款」回填：
-  // 1) 把 case.poseTemplateIds 解为 PoseTemplate[]（找不到的 id 静默忽略，参考 types.ts D3 注释）
-  //    并通过 onChangeSelectedPoseTemplates 回写到 workbench（避免重新打开 PoseLibraryDialog）
-  // 2) 同步 model / 比例 / 分辨率 三个本地字段
-  // 3) 不自动上传 mainImageUrl 作为主图：与 photo-fission 不同，pose-fission 的 case
-  //    主图是"成品参考"而非"输入服装图"，用户必须上传自己的服装主图
-  useEffect(() => {
-    if (!poseFissionCaseRequest) return;
-
-    const { case: poseCase } = poseFissionCaseRequest;
-    const templates: PoseTemplate[] = poseCase.poseTemplateIds
-      .map((id) => POSE_TEMPLATES.find((tpl) => tpl.id === id))
-      .filter((tpl): tpl is PoseTemplate => Boolean(tpl));
-
-    onChangeSelectedPoseTemplates(templates);
-    setPoseFissionModel(
-      SELECTABLE_FASHION_MODELS.some((option) => option.id === poseCase.model)
-        ? poseCase.model
-        : DEFAULT_FASHION_MODEL,
-    );
-    setPoseImageRatio(poseCase.imageRatio);
-    setPoseResolution(poseCase.resolution);
-    setError("");
-  }, [poseFissionCaseRequest, onChangeSelectedPoseTemplates]);
 
   const helperText = useMemo(() => {
     if (feature === "ai-fashion-photo") return "上传服装、姿势或场景参考图";
     if (feature === "photo-fission") return "上传一张已满意的服装大片作为参考";
     return "请上传需要姿势裂变的清晰主图";
   }, [feature]);
+
+  const formatCreateTaskError = (
+    rawError: string | undefined,
+    assets: AssetDescriptor[],
+  ) => {
+    if (!rawError?.startsWith(MISSING_ASSET_ERROR_PREFIX)) {
+      return rawError || "创建任务失败";
+    }
+
+    const missingAssetId = rawError.slice(MISSING_ASSET_ERROR_PREFIX.length).trim();
+    const missingAsset = assets.find((asset) => asset.assetId === missingAssetId);
+    if (!missingAsset) return rawError;
+
+    if (selectedFaceIdModel?.assetId === missingAssetId) {
+      onChangeSelectedFaceIdModel(null);
+    }
+
+    return `素材不存在：${missingAsset.name}（${missingAsset.role}，${missingAsset.assetId}）。请重新上传或重新选择该素材后再生成。`;
+  };
+
+  const getParams = ():
+    | AiFashionPhotoParams
+    | PhotoFissionParams
+    | PoseFissionParams => {
+    if (feature === "ai-fashion-photo") {
+      const trimmedPrompt = fashionPrompt.trim();
+      return {
+        prompt: trimmedPrompt,
+        userPrompt: trimmedPrompt,
+        finalPrompt: trimmedPrompt,
+        promptMode: fashionPromptMode,
+        model: fashionModel,
+        referenceImageCount: fashionReferences.length,
+        imageRatio: fashionImageRatio,
+        resolution: fashionResolution,
+        resultCount: 1,
+        creditsCost: 35,
+      };
+    }
+
+    if (feature === "photo-fission") {
+      const isPantsCategory = photoFissionChildrensCategory === "pants";
+      const frontDetailCount = Math.min(
+        photoFissionFrontDetails.length,
+        isPantsCategory ? 2 : 1,
+      );
+      const sideDetailCount = isPantsCategory
+        ? Math.min(photoFissionSideDetails.length, 2)
+        : 0;
+      const backDetailCount = Math.min(
+        photoFissionBackDetails.length,
+        isPantsCategory ? 2 : 1,
+      );
+      return {
+        model: photoFissionModel,
+        category: photoFissionCategory,
+        childrensCategory: photoFissionChildrensCategory,
+        hasFrontDetail: frontDetailCount > 0,
+        hasSideDetail: sideDetailCount > 0,
+        hasBackDetail: backDetailCount > 0,
+        frontDetailCount,
+        sideDetailCount,
+        backDetailCount,
+        pantsMainHandVisibility: isPantsCategory
+          ? photoFissionPantsMainHandVisibility
+          : undefined,
+        imageRatio: photoFissionImageRatio,
+        resolution: photoFissionResolution,
+        shotPlan: [],
+        resultCount: photoFissionResultCount,
+        faceIdModelId:
+          photoFissionChildrensCategory === "pants"
+            ? null
+            : selectedFaceIdModel?.assetId ?? null,
+        faceMaskAssetId:
+          photoFissionChildrensCategory === "pants"
+            ? null
+            : selectedFaceIdModel
+              ? photoFissionFaceMask?.assetId ?? null
+              : null,
+        plannerReasoningEnabled: photoFissionPlannerReasoningEnabled,
+      };
+    }
+
+    return {
+      model: poseFissionModel,
+      poses: selectedPoses.map((pose) => ({
+        id: pose.id,
+        url: pose.url,
+        name: pose.name,
+      })),
+      imageRatio: poseImageRatio,
+      resolution: poseResolution,
+      resultCount: selectedPoses.length,
+      creditsCost: 0,
+    };
+  };
 
   const handleCreateTask = async () => {
     if (feature === "ai-fashion-photo") {
@@ -406,16 +477,16 @@ export function LeftPanel({
       return;
     }
 
-    if (feature === "pose-fission" && selectedPoseTemplates.length === 0) {
+    if (feature === "pose-fission" && selectedPoses.length === 0) {
       setError("请先去姿势库选择合适的姿势");
       return;
     }
 
     if (
       feature === "pose-fission" &&
-      selectedPoseTemplates.length > 9
+      selectedPoses.length > 9
     ) {
-      setError("姿势模板最多选 9 个");
+      setError("姿势最多选 9 个");
       return;
     }
 
@@ -573,143 +644,24 @@ export function LeftPanel({
       return assets;
     }
 
-    if (!activeImage) return [];
-
     if (feature === "pose-fission") {
-      const assets: AssetDescriptor[] = [
+      if (!poseMainImage) return [];
+      return [
         {
-          assetId: activeImage.assetId,
-          name: activeImage.name,
-          role: "姿势裂变主图",
+          assetId: poseMainImage.assetId,
+          name: poseMainImage.name,
+          role: "主图",
         },
       ];
-      if (poseFrontDetailImage) {
-        assets.push({
-          assetId: poseFrontDetailImage.assetId,
-          name: poseFrontDetailImage.name,
-          role: "姿势裂变正面细节图",
-        });
-      }
-      if (poseBackDetailImage) {
-        assets.push({
-          assetId: poseBackDetailImage.assetId,
-          name: poseBackDetailImage.name,
-          role: "姿势裂变背面细节图",
-        });
-      }
-      return assets;
     }
+
+    if (!activeImage) return [];
 
     return [{
       assetId: activeImage.assetId,
       name: activeImage.name,
       role: "主图",
     }];
-  };
-
-  const formatCreateTaskError = (
-    rawError: string | undefined,
-    assets: AssetDescriptor[],
-  ) => {
-    if (!rawError?.startsWith(MISSING_ASSET_ERROR_PREFIX)) {
-      return rawError || "创建任务失败";
-    }
-
-    const missingAssetId = rawError.slice(MISSING_ASSET_ERROR_PREFIX.length).trim();
-    const missingAsset = assets.find((asset) => asset.assetId === missingAssetId);
-    if (!missingAsset) return rawError;
-
-    if (selectedFaceIdModel?.assetId === missingAssetId) {
-      onChangeSelectedFaceIdModel(null);
-    }
-
-    return `素材不存在：${missingAsset.name}（${missingAsset.role}，${missingAsset.assetId}）。请重新上传或重新选择该素材后再生成。`;
-  };
-
-  const getParams = ():
-    | AiFashionPhotoParams
-    | PhotoFissionParams
-    | PoseFissionParams => {
-    if (feature === "ai-fashion-photo") {
-      const trimmedPrompt = fashionPrompt.trim();
-      // finalPrompt 由后端 composer 重新计算并落库；这里给一个占位以满足类型，后端会覆盖。
-      return {
-        prompt: trimmedPrompt,
-        userPrompt: trimmedPrompt,
-        finalPrompt: trimmedPrompt,
-        promptMode: fashionPromptMode,
-        model: fashionModel,
-        referenceImageCount: fashionReferences.length,
-        imageRatio: fashionImageRatio,
-        resolution: fashionResolution,
-        resultCount: 1,
-        creditsCost: 35,
-      };
-    }
-
-    if (feature === "photo-fission") {
-      const isPantsCategory = photoFissionChildrensCategory === "pants";
-      const frontDetailCount = Math.min(
-        photoFissionFrontDetails.length,
-        isPantsCategory ? 2 : 1,
-      );
-      const sideDetailCount = isPantsCategory
-        ? Math.min(photoFissionSideDetails.length, 2)
-        : 0;
-      const backDetailCount = Math.min(
-        photoFissionBackDetails.length,
-        isPantsCategory ? 2 : 1,
-      );
-      // shotPlan 由后端 normalize 阶段补全，这里仅占位以满足类型。
-      return {
-        model: photoFissionModel,
-        category: photoFissionCategory,
-        childrensCategory: photoFissionChildrensCategory,
-        hasFrontDetail: frontDetailCount > 0,
-        hasSideDetail: sideDetailCount > 0,
-        hasBackDetail: backDetailCount > 0,
-        frontDetailCount,
-        sideDetailCount,
-        backDetailCount,
-        pantsMainHandVisibility: isPantsCategory
-          ? photoFissionPantsMainHandVisibility
-          : undefined,
-        imageRatio: photoFissionImageRatio,
-        resolution: photoFissionResolution,
-        shotPlan: [],
-        resultCount: photoFissionResultCount,
-        faceIdModelId:
-          photoFissionChildrensCategory === "pants"
-            ? null
-            : selectedFaceIdModel?.assetId ?? null,
-        faceMaskAssetId:
-          photoFissionChildrensCategory === "pants"
-            ? null
-            : selectedFaceIdModel
-              ? photoFissionFaceMask?.assetId ?? null
-              : null,
-        plannerReasoningEnabled: photoFissionPlannerReasoningEnabled,
-      };
-    }
-
-    if (feature === "pose-fission") {
-      // PR3：用户已在 PoseLibraryDialog 完成多选；上游 handleCreateTask 已校验非空与上限。
-      const poseTemplateSnapshots: PoseTemplate[] = selectedPoseTemplates;
-      const poseTemplateIds = poseTemplateSnapshots.map((tpl) => tpl.id);
-      return {
-        model: poseFissionModel,
-        poseTemplateIds,
-        poseTemplateSnapshots,
-        hasFrontDetail: Boolean(poseFrontDetailImage),
-        hasBackDetail: Boolean(poseBackDetailImage),
-        imageRatio: poseImageRatio,
-        resolution: poseResolution,
-        resultCount: poseTemplateIds.length,
-        creditsCost: 0,
-      };
-    }
-
-    throw new Error(`Unknown feature: ${feature}`);
   };
 
   const submitDisabled = isCreating || isUploadingFaceMask;
@@ -745,23 +697,21 @@ export function LeftPanel({
         {isPoseFission ? (
           <PoseFissionForm
             mainImage={poseMainImage}
-            frontDetailImage={poseFrontDetailImage}
-            backDetailImage={poseBackDetailImage}
-            selectedPoseTemplates={selectedPoseTemplates}
+            selectedPoses={selectedPoses}
+            savedPoses={savedPoses}
             model={poseFissionModel}
             imageRatio={poseImageRatio}
             resolution={poseResolution}
             helperText={helperText}
             onModelChange={setPoseFissionModel}
             onMainUploaded={setPoseMainImage}
-            onFrontDetailUploaded={setPoseFrontDetailImage}
-            onBackDetailUploaded={setPoseBackDetailImage}
             onMainRemove={() => setPoseMainImage(null)}
-            onFrontDetailRemove={() => setPoseFrontDetailImage(null)}
-            onBackDetailRemove={() => setPoseBackDetailImage(null)}
-            onOpenPoseLibrary={onOpenPoseLibrary}
             onImageRatioChange={setPoseImageRatio}
             onResolutionChange={setPoseResolution}
+            onChangeSelectedPoses={onChangeSelectedPoses}
+            onAddPose={onAddPose}
+            onRenamePose={onRenamePose}
+            onDeletePose={onDeletePose}
           />
         ) : (
           <>
@@ -981,45 +931,39 @@ function FashionModelSelect({
 
 function PoseFissionForm({
   mainImage,
-  frontDetailImage,
-  backDetailImage,
-  selectedPoseTemplates,
+  selectedPoses,
+  savedPoses,
   model,
   imageRatio,
   resolution,
   helperText,
   onModelChange,
   onMainUploaded,
-  onFrontDetailUploaded,
-  onBackDetailUploaded,
   onMainRemove,
-  onFrontDetailRemove,
-  onBackDetailRemove,
-  onOpenPoseLibrary,
   onImageRatioChange,
   onResolutionChange,
+  onChangeSelectedPoses,
+  onAddPose,
+  onRenamePose,
+  onDeletePose,
 }: {
   mainImage: UploadedImage | null;
-  frontDetailImage: UploadedImage | null;
-  backDetailImage: UploadedImage | null;
-  selectedPoseTemplates: PoseTemplate[];
+  selectedPoses: SavedPose[];
+  savedPoses: SavedPose[];
   model: FashionModelId;
   imageRatio: PoseImageRatio;
   resolution: PoseResolution;
   helperText: string;
   onModelChange: (value: FashionModelId) => void;
   onMainUploaded: (image: UploadedImage) => void;
-  onFrontDetailUploaded: (image: UploadedImage) => void;
-  onBackDetailUploaded: (image: UploadedImage) => void;
   onMainRemove: () => void;
-  onFrontDetailRemove: () => void;
-  onBackDetailRemove: () => void;
-  onOpenPoseLibrary: () => void;
   onImageRatioChange: (value: PoseImageRatio) => void;
   onResolutionChange: (value: PoseResolution) => void;
+  onChangeSelectedPoses: (poses: SavedPose[]) => void;
+  onAddPose: (pose: SavedPose) => void;
+  onRenamePose: (poseId: string, name: string) => void;
+  onDeletePose: (poseId: string) => void;
 }) {
-  const hasSelectedPoses = selectedPoseTemplates.length > 0;
-
   return (
     <div className="space-y-4">
       <FashionModelSelect
@@ -1036,76 +980,15 @@ function PoseFissionForm({
         onRemove={onMainRemove}
         variant="compact"
       />
-      <UploadBox
-        label="产品正面细节图（非必填）"
-        helper="请上传模板的正面种类细节图，如领口、图案、logo等。仅上传必要细节，图片不是越多越好"
-        image={frontDetailImage}
-        onUploaded={onFrontDetailUploaded}
-        onRemove={onFrontDetailRemove}
-        required={false}
-        variant="compact"
-      />
-      <UploadBox
-        label="产品背面细节图（非必填）"
-        helper="请上传模板的完整背面图以及背面特殊细节图，图片不是越多越好"
-        image={backDetailImage}
-        onUploaded={onBackDetailUploaded}
-        onRemove={onBackDetailRemove}
-        required={false}
-        variant="compact"
-      />
 
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <RequiredLabel label="选择姿势" />
-          {hasSelectedPoses && (
-            <span className="text-xs text-muted-foreground">
-              {selectedPoseTemplates.length} 张已选 / 最多 9 张
-            </span>
-          )}
-        </div>
-        {hasSelectedPoses ? (
-          <div className="space-y-2 rounded-md border border-primary/60 bg-secondary p-3">
-            <div className="flex flex-wrap gap-2">
-              {selectedPoseTemplates.map((template, index) => (
-                <div
-                  key={template.id}
-                  className="relative h-12 w-12 overflow-hidden rounded border border-border bg-background"
-                  title={`${index + 1}. ${template.name}`}
-                >
-                  <img
-                    src={template.imageUrl}
-                    alt={template.name}
-                    className="h-full w-full object-cover"
-                  />
-                  <span className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[9px] font-medium text-primary-foreground">
-                    {index + 1}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <button
-              type="button"
-              onClick={onOpenPoseLibrary}
-              className="w-full rounded-md border border-dashed border-border bg-card px-3 py-2 text-xs text-muted-foreground transition-colors hover:border-primary/60 hover:text-foreground"
-            >
-              重新选择
-            </button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={onOpenPoseLibrary}
-            className={cn(
-              "flex min-h-[58px] w-full items-center justify-center gap-3 rounded-md border bg-secondary px-3 py-3",
-              "border-border text-center text-xs text-muted-foreground transition-colors hover:border-primary/60 hover:bg-primary/5",
-            )}
-          >
-            <span className="text-2xl leading-none">+</span>
-            <span>去姿势库选择合适的姿势</span>
-          </button>
-        )}
-      </div>
+      <MyPoseLibrary
+        poses={savedPoses}
+        selectedPoses={selectedPoses}
+        onChangeSelectedPoses={onChangeSelectedPoses}
+        onAddPose={onAddPose}
+        onRenamePose={onRenamePose}
+        onDeletePose={onDeletePose}
+      />
 
       <PoseRatioSelector value={imageRatio} onChange={onImageRatioChange} />
       <ResolutionSelector value={resolution} onChange={onResolutionChange} />

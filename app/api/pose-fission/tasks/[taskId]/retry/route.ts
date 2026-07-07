@@ -13,13 +13,13 @@ export const runtime = 'nodejs'
 
 /**
  * POST /api/pose-fission/tasks/:taskId/retry
- * Body: { templateIds: string[] }
+ * Body: { poseIds: string[] }
  *
  * 重跑 pose-fission 任务中失败的姿势。仅 partial/failed 状态可用，
- * 复用原 inputAssetIds 与 poseTemplateSnapshots，流式持久化合并回原 task。
+ * 复用原 inputAssetIds 与 poses，流式持久化合并回原 task。
  *
  * 与 photo-fission 的 /api/tasks/:taskId/retry-shots 形态保持一致：
- * 区别仅在路由前缀（按 feature 分组）和 body 字段名（templateIds vs shotIds）。
+ * 区别仅在路由前缀（按 feature 分组）和 body 字段名（poseIds vs shotIds）。
  *
  * PR4：加 userId 鉴权 + ownership 校验。
  */
@@ -41,23 +41,23 @@ export async function POST(request: NextRequest, context: RouteContext) {
     return NextResponse.json({ error: '请求体格式错误' }, { status: 400 })
   }
 
-  const templateIdsRaw = (body as { templateIds?: unknown }).templateIds
-  if (!Array.isArray(templateIdsRaw) || !templateIdsRaw.length) {
+  const poseIdsRaw = (body as { poseIds?: unknown }).poseIds
+  if (!Array.isArray(poseIdsRaw) || !poseIdsRaw.length) {
     return NextResponse.json(
-      { error: '请传入要重跑的 templateIds 数组' },
+      { error: '请传入要重跑的 poseIds 数组' },
       { status: 400 },
     )
   }
 
-  const templateIds = templateIdsRaw.filter(
+  const poseIds = poseIdsRaw.filter(
     (id): id is string => typeof id === 'string' && id.length > 0,
   )
-  if (!templateIds.length) {
-    return NextResponse.json({ error: 'templateIds 不能为空' }, { status: 400 })
+  if (!poseIds.length) {
+    return NextResponse.json({ error: 'poseIds 不能为空' }, { status: 400 })
   }
 
   try {
-    const task = await retryPoseFissionShots(taskId, templateIds, userId)
+    const task = await retryPoseFissionShots(taskId, poseIds, userId)
     return NextResponse.json(task)
   } catch (error) {
     const message = error instanceof Error ? error.message : '未知错误'

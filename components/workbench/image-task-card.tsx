@@ -16,7 +16,7 @@ interface ImageSlot {
 function getLatestTaskResults(task: GenerationTask): ResultAsset[] {
   const params = task.params as {
     shotPlan?: { shotId?: string }[];
-    poseTemplateIds?: string[];
+    poses?: { id?: string }[];
   };
   const latestByShotId = new Map<string, ResultAsset>();
   const unplanned: ResultAsset[] = [];
@@ -33,9 +33,9 @@ function getLatestTaskResults(task: GenerationTask): ResultAsset[] {
       .filter((item): item is ResultAsset => Boolean(item));
     return [...planned, ...unplanned];
   }
-  if (task.featureType === "pose-fission" && Array.isArray(params.poseTemplateIds)) {
-    const planned = params.poseTemplateIds
-      .map((templateId) => latestByShotId.get(templateId))
+  if (task.featureType === "pose-fission" && Array.isArray(params.poses)) {
+    const planned = params.poses
+      .map((pose, index) => latestByShotId.get(pose.id ?? `pose_${index + 1}`))
       .filter((item): item is ResultAsset => Boolean(item));
     return [...planned, ...unplanned];
   }
