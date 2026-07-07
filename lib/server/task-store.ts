@@ -990,7 +990,7 @@ function updateTask(taskId: string, patch: Partial<GenerationTask>) {
 
 /**
  * 部分 feature（如 photo-fission / pose-fission）允许 per-shot 失败容忍。
- * 这里根据 shotPlan / poseTemplateIds 计划数量与实际成功结果数量决定 status / message。
+ * 这里根据 shotPlan / poses 计划数量与实际成功结果数量决定 status / message。
  */
 function resolveTaskCompletion(task: GenerationTask, results: ResultAsset[]) {
   if (task.featureType === 'photo-fission') {
@@ -1007,7 +1007,7 @@ function resolveTaskCompletion(task: GenerationTask, results: ResultAsset[]) {
   if (task.featureType === 'pose-fission') {
     const params = task.params as PoseFissionParams
     const planned =
-      params.resultCount ?? params.poseTemplateIds?.length ?? results.length
+      params.resultCount ?? params.poses?.length ?? results.length
     if (planned > 0 && results.length < planned) {
       return {
         status: 'partial' as const,
@@ -1652,10 +1652,11 @@ function finishPhotoFissionVariantTask(taskId: string): GenerationTask {
  * 重跑 pose-fission 失败姿势（PRD D10）。
  *
  * 与 retryPhotoFissionShots 同构：校验 task 存在、属于 pose-fission、
- * status ∈ {partial, failed}、templateIds 都在原 poseTemplateIds 中
- * 且当前 results 没有对应 templateId（已成功的不允许重跑）。
- * 然后基于原 inputAssetIds 与原 poseTemplateSnapshots 调
- * runPoseFissionPipeline（targetTemplateIds 过滤），通过 onShotResult 流式持久化合并回原 task。
+ * status ∈ {partial, failed}、poseIds 都在原 poses 中
+ * 且当前 results 没有对应 poseId（已成功的不允许重跑）。
+ * 然后基于原 inputAssetIds 与原 poses 调
+ * runPoseFissionPipeline（targetPoseIds 过滤），通过 onShotResult 流式持久化
+ * 合并回原 task。
  *
  * 完成后用合并后的 results 重新 resolveTaskCompletion 更新 status 与 message。
  * 不另起新 task；credits 不再扣（pose-fission D5：MVP 不计费）。
@@ -1663,14 +1664,14 @@ function finishPhotoFissionVariantTask(taskId: string): GenerationTask {
  * 抽象时机说明（PRD §Out of Scope）：
  * 当前 retryPhotoFissionShots 与本函数结构高度相似，
  * 之所以暂不抽象出通用 retryFissionShots(featureType, ...) 是为了：
- * 1. 两个 feature 的「计划单位」字段不同（shotPlan vs poseTemplateSnapshots）
- * 2. pipeline 调用接口不同（targetShotIds vs targetTemplateIds）
+ * 1. 两个 feature 的「计划单位」字段不同（shotPlan vs poses）
+ * 2. pipeline 调用接口不同（targetShotIds vs targetPoseIds）
  * 3. 错误文案差异（镜头 vs 姿势）
  * 待第三个类似 feature 出现时再抽象，避免过早设计 lowest-common-denominator 契约。
  */
 export async function retryPoseFissionShots(
   taskId: string,
-  templateIds: string[],
+  poseIds: string[],
   userId?: string,
 ): Promise<GenerationTask> {
   await ensureStoreReady()
@@ -1679,7 +1680,6 @@ export async function retryPoseFissionShots(
   if (!task) {
     throw new Error('任务不存在')
   }
-  // PR4：ownership 校验。
   const ownerUserId = task.userId ?? defaultUserId
   if (
     userId &&
@@ -1697,41 +1697,35 @@ export async function retryPoseFissionShots(
   }
 
   const params = task.params as PoseFissionParams
-  if (
-    !Array.isArray(params.poseTemplateSnapshots) ||
-    !params.poseTemplateSnapshots.length
-  ) {
-    throw new Error('任务缺少姿势模板快照，无法重跑')
+  if (!Array.isArray(params.poses) || !params.poses.length) {
+    throw new Error('任务缺少姿势快照，无法重跑')
   }
 
-  const plannedTemplateIds = new Set(
-    params.poseTemplateSnapshots.map((template) => template.id),
-  )
-  const alreadySucceededTemplateIds = new Set(
+  const plannedPoseIds = new Set(params.poses.map((pose) => pose.id))
+  const alreadySucceededPoseIds = new Set(
     task.results
       .map((result) => result.shotId)
       .filter((id): id is string => Boolean(id)),
   )
 
-  const uniqueTemplateIds = Array.from(new Set(templateIds))
-  if (!uniqueTemplateIds.length) {
+  const uniquePoseIds = Array.from(new Set(poseIds))
+  if (!uniquePoseIds.length) {
     throw new Error('请至少选择一个失败姿势')
   }
 
-  for (const templateId of uniqueTemplateIds) {
-    if (!plannedTemplateIds.has(templateId)) {
-      throw new Error(`姿势 ${templateId} 不在原任务计划中`)
+  for (const poseId of uniquePoseIds) {
+    if (!plannedPoseIds.has(poseId)) {
+      throw new Error(`姿势 ${poseId} 不在原任务计划中`)
     }
-    if (alreadySucceededTemplateIds.has(templateId)) {
-      throw new Error(`姿势 ${templateId} 已成功，无需重跑`)
+    if (alreadySucceededPoseIds.has(poseId)) {
+      throw new Error(`姿势 ${poseId} 已成功，无需重跑`)
     }
   }
 
-  // 标记为 running，避免前端轮询误判
   updateTask(taskId, {
     status: 'running',
     progress: 72,
-    message: `正在重跑 ${uniqueTemplateIds.length} 个失败姿势`,
+    message: `正在重跑 ${uniquePoseIds.length} 个失败姿势`,
   })
 
   try {
@@ -1756,13 +1750,12 @@ export async function retryPoseFissionShots(
       params,
       apiKey: process.env.GOOGLE_API_KEY ?? '',
       timeoutMs: Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000),
-      targetTemplateIds: uniqueTemplateIds,
+      targetPoseIds: uniquePoseIds,
       onShotResult: async (result) => {
         await persistOneResult(taskId, result, ownerUserId)
       },
     })
   } catch (error) {
-    // pipeline 全部失败：保留已有 results，标记为 failed/partial（按当前 results 判定）
     const message = error instanceof Error ? error.message : '未知错误'
     const currentTask = store.tasks.get(taskId)
     if (currentTask) {

@@ -31,7 +31,6 @@ import {
   FASHION_PROMPT_MODES,
   FEATURE_LABELS,
   PHOTO_FISSION_CASES,
-  POSE_FISSION_CASES,
   type AssetRecord,
   type CompanyModel,
   type FashionModelId,
@@ -41,7 +40,6 @@ import {
   type GenerationTask,
   type PhotoFissionCase,
   type PhotoFissionParams,
-  type PoseFissionCase,
   type PoseFissionParams,
   type ResultAsset,
   type ShotProgress,
@@ -80,7 +78,7 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
   const showProgress = isPantsFissionTask(task);
   const params = task.params as {
     shotPlan?: { shotId?: string }[];
-    poseTemplateIds?: string[];
+    poses?: { id?: string }[];
   };
   const resultsByShotId = new Map(
     task.results
@@ -108,22 +106,18 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
     return [...plannedItems, ...extraResults];
   }
 
-  if (
-    task.featureType === "pose-fission" &&
-    Array.isArray(params.poseTemplateIds)
-  ) {
-    const plannedItems = params.poseTemplateIds.flatMap<ResultGridItem>(
-      (templateId) => {
-        const result = resultsByShotId.get(templateId);
-        const progress = showProgress
-          ? task.shotProgress?.find((item) => item.shotId === templateId)
-          : undefined;
-        if (result) return [{ kind: "image", image: result, progress }];
-        if (progress) return [{ kind: "progress", progress }];
-        return [];
-      },
-    );
-    const plannedIds = new Set(params.poseTemplateIds);
+  if (task.featureType === "pose-fission" && Array.isArray(params.poses)) {
+    const plannedItems = params.poses.flatMap<ResultGridItem>((pose, index) => {
+      const poseId = pose.id ?? `pose_${index + 1}`;
+      const result = resultsByShotId.get(poseId);
+      const progress = showProgress
+        ? task.shotProgress?.find((item) => item.shotId === poseId)
+        : undefined;
+      if (result) return [{ kind: "image", image: result, progress }];
+      if (progress) return [{ kind: "progress", progress }];
+      return [];
+    });
+    const plannedIds = new Set(params.poses.map((pose, index) => pose.id ?? `pose_${index + 1}`));
     const extraResults = task.results
       .filter((result) => !result.shotId || !plannedIds.has(result.shotId))
       .map<ResultGridItem>((image) => ({ kind: "image", image }));
@@ -136,7 +130,7 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
 function getLatestTaskResults(task: GenerationTask): ResultAsset[] {
   const params = task.params as {
     shotPlan?: { shotId?: string }[];
-    poseTemplateIds?: string[];
+    poses?: { id?: string }[];
   };
   const latestByShotId = new Map<string, ResultAsset>();
   const unplanned: ResultAsset[] = [];
@@ -155,9 +149,9 @@ function getLatestTaskResults(task: GenerationTask): ResultAsset[] {
     return [...planned, ...unplanned];
   }
 
-  if (task.featureType === "pose-fission" && Array.isArray(params.poseTemplateIds)) {
-    const planned = params.poseTemplateIds
-      .map((templateId) => latestByShotId.get(templateId))
+  if (task.featureType === "pose-fission" && Array.isArray(params.poses)) {
+    const planned = params.poses
+      .map((pose, index) => latestByShotId.get(pose.id ?? `pose_${index + 1}`))
       .filter((item): item is ResultAsset => Boolean(item));
     return [...planned, ...unplanned];
   }
@@ -185,7 +179,6 @@ interface RightPanelProps {
   onSelectFaceIdModel: (model: CompanyModel | null) => void;
   onAddFashionReference: (reference: FashionReferenceImage) => void;
   onUseTaskAsFashionReference: (task: GenerationTask) => void;
-  onSelectPoseFissionCase: (poseFissionCase: PoseFissionCase) => void;
   onSelectPhotoFissionCase: (photoFissionCase: PhotoFissionCase) => void;
   onSelectTask: (taskId: string) => void;
   onRefreshTasks: () => void;
@@ -213,7 +206,6 @@ export function RightPanel({
   onSelectFaceIdModel,
   onAddFashionReference,
   onUseTaskAsFashionReference,
-  onSelectPoseFissionCase,
   onSelectPhotoFissionCase,
   onSelectTask,
   onRefreshTasks,
@@ -234,7 +226,6 @@ export function RightPanel({
   const [favoritesHydrated, setFavoritesHydrated] = useState(false);
   const [onlyCurrentFeature, setOnlyCurrentFeature] = useState(true);
   const [onlyFavorites, setOnlyFavorites] = useState(false);
-  const [poseCases, setPoseCases] = useState<PoseFissionCase[]>(POSE_FISSION_CASES);
   const [photoFissionCases, setPhotoFissionCases] =
     useState<PhotoFissionCase[]>(PHOTO_FISSION_CASES);
   const [sameStyleTaskId, setSameStyleTaskId] = useState<string | null>(null);
@@ -364,16 +355,14 @@ export function RightPanel({
     : currentFeatureTasks;
 
   useEffect(() => {
-    if (isPoseFission) {
-      setActiveTab("cases");
-    } else if (isPhotoFission) {
+    if (isPhotoFission) {
       // photo-fission 默认进历史记录，正在跑的 task 在这里能看到进度；
       // 案例库由用户主动点击切换。
       setActiveTab("history");
     } else {
       setActiveTab("current");
     }
-  }, [isPoseFission, isPhotoFission]);
+  }, [isPhotoFission]);
 
   useEffect(() => {
     if (feature === "ai-fashion-photo" && companyModelLibraryRequestKey > 0) {
@@ -386,28 +375,6 @@ export function RightPanel({
       setActiveTab("my-id-photo-library");
     }
   }, [faceIdLibraryRequestKey, feature]);
-
-  useEffect(() => {
-    if (!isPoseFission) return;
-
-    let ignore = false;
-
-    async function loadPoseCases() {
-      const response = await fetch("/api/pose-fission/cases", {
-        cache: "no-store",
-      });
-      if (!response.ok) return;
-
-      const data = (await response.json()) as { cases: PoseFissionCase[] };
-      if (!ignore) setPoseCases(data.cases);
-    }
-
-    void loadPoseCases();
-
-    return () => {
-      ignore = true;
-    };
-  }, [isPoseFission]);
 
   useEffect(() => {
     if (!isPhotoFission) return;
@@ -443,8 +410,8 @@ export function RightPanel({
     if (data.downloadUrl) window.open(data.downloadUrl, "_blank");
   };
 
-  // R5：photo-fission 重跑失败镜头 / PR4：pose-fission 重跑失败姿势。
-  // 两个 feature 的 retry 路由前缀和 body 字段名不同（shotIds vs templateIds），
+  // R5：photo-fission 重跑失败镜头 / pose-fission 重跑失败姿势。
+  // 两个 feature 的 retry 路由前缀和 body 字段名不同（shotIds vs poseIds），
   // 但 RightPanel 的按钮交互保持一致（沿用 photo-fission 视觉与 loading 模式）。
   const handleRetryShots = async (
     task: GenerationTask,
@@ -455,7 +422,7 @@ export function RightPanel({
       ? `/api/pose-fission/tasks/${task.taskId}/retry`
       : `/api/tasks/${task.taskId}/retry-shots`;
     const body = isPoseFissionTask
-      ? { templateIds: shotIds }
+      ? { poseIds: shotIds }
       : { shotIds };
     const response = await fetch(endpoint, {
       method: "POST",
@@ -783,7 +750,7 @@ export function RightPanel({
                 {isAiFashionPhoto ? "案例库" : "当前任务"}
               </button>
             )}
-            {(isPoseFission || isPhotoFission) && (
+            {isPhotoFission && (
               <button
                 onClick={() => setActiveTab("cases")}
                 className={cn(
@@ -840,12 +807,7 @@ export function RightPanel({
         </div>
       </header>
 
-      {isPoseFission && activeTab === "cases" ? (
-        <PoseFissionCaseLibrary
-          cases={poseCases}
-          onSelectCase={onSelectPoseFissionCase}
-        />
-      ) : isPhotoFission && activeTab === "cases" ? (
+      {isPhotoFission && activeTab === "cases" ? (
         <PhotoFissionCaseLibrary
           cases={photoFissionCases}
           onSelectCase={onSelectPhotoFissionCase}
@@ -2046,114 +2008,6 @@ function ModelCard({
  * 底部「做同款」按钮。完全参照 PhotoFissionCaseLibrary 的视觉与交互模式。
  * 结果图缺失时显示「示例图生成中」占位（CaseShotThumb 内自管 onError）。
  */
-function PoseFissionCaseLibrary({
-  cases,
-  onSelectCase,
-}: {
-  cases: PoseFissionCase[];
-  onSelectCase: (poseFissionCase: PoseFissionCase) => void;
-}) {
-  if (!cases.length) {
-    return (
-      <div className="flex-1 overflow-y-auto p-5">
-        <div className="min-h-[420px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mx-4 my-8">
-          <div className="w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
-            <ImageIcon className="w-5 h-5 text-muted-foreground" />
-          </div>
-          <p className="text-[13px] font-medium text-foreground">暂无案例</p>
-          <p className="mt-2 max-w-[360px] text-[12px] text-muted-foreground leading-relaxed">
-            案例库正在筹备中，敬请期待。
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex-1 overflow-y-auto p-5">
-      <div className="space-y-6">
-        {cases.map((poseCase) => {
-          // pose-fission case 每张图对应一个姿势模板（顺序与 poseTemplateIds 对齐），
-          // 没有 shotLabels 字段：用「姿势 N」自动编号即可，足以做视觉占位。
-          const shotCount = poseCase.resultImageUrls.length;
-
-          return (
-            <article
-              key={poseCase.id}
-              className="rounded-md border border-border bg-card p-4"
-            >
-              <div className="flex flex-col gap-4 lg:flex-row">
-                <div className="lg:w-[260px] shrink-0 space-y-3">
-                  <div className="relative aspect-[3/4] overflow-hidden rounded-md border border-border bg-background">
-                    <CaseImage
-                      src={poseCase.mainImageUrl}
-                      alt={poseCase.name}
-                    />
-                    <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded bg-background/85 px-2 py-1 text-[10px] text-foreground">
-                      <ImageIcon className="h-3 w-3" />
-                      姿势裂变
-                    </span>
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-foreground">
-                      {poseCase.name}
-                    </h3>
-                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                      {poseCase.description}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
-                    <span className="rounded border border-border bg-secondary px-2 py-0.5">
-                      比例 {poseCase.imageRatio}
-                    </span>
-                    <span className="rounded border border-border bg-secondary px-2 py-0.5">
-                      分辨率 {poseCase.resolution.toUpperCase()}
-                    </span>
-                    <span className="rounded border border-border bg-secondary px-2 py-0.5">
-                      {shotCount} 个姿势
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex-1 space-y-3">
-                  <p className="text-xs text-muted-foreground">
-                    生成效果（{shotCount} 张）
-                  </p>
-                  <div className="grid grid-cols-3 gap-2">
-                    {poseCase.resultImageUrls.map((url, index) => (
-                      <CaseShotThumb
-                        key={`${poseCase.id}-${index}-${url}`}
-                        src={url}
-                        label={`姿势 ${index + 1}`}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 flex items-center justify-end gap-2 border-t border-border pt-3">
-                <button
-                  type="button"
-                  onClick={() => onSelectCase(poseCase)}
-                  className="inline-flex items-center gap-2 rounded-full border border-primary bg-primary/10 px-4 py-2 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground"
-                >
-                  <Sparkles className="h-3.5 w-3.5" />
-                  做同款
-                </button>
-              </div>
-            </article>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/**
- * 服装大片裂变案例库 Tab：每个 case 一张大卡片，
- * 卡片内：左侧原图+案例信息，右侧 3×3 结果图网格（带 label 角标），底部「使用此案例」按钮。
- * 结果图缺失时显示「示例图生成中」占位（CaseShotThumb 内自管 onError）。
- */
 function PhotoFissionCaseLibrary({
   cases,
   onSelectCase,
@@ -2412,7 +2266,7 @@ function TaskStatusCard({
   const [retryError, setRetryError] = useState<string | null>(null);
 
   // photo-fission：shotPlan 中存在但 results 中没有对应 shotId 的项。
-  // pose-fission：poseTemplateIds 中存在但 results 中没有对应 shotId（=templateId）的项。
+  // pose-fission：poses 中存在但 results 中没有对应 shotId 的项。
   // 仅在 partial 或 (failed && 已有部分结果) 时展示按钮。
   const failedShotIds = useMemo(() => {
     const succeeded = new Set(
@@ -2431,8 +2285,8 @@ function TaskStatusCard({
 
     if (isPoseFission) {
       const params = task.params as Partial<PoseFissionParams>;
-      if (!Array.isArray(params.poseTemplateIds)) return [];
-      return params.poseTemplateIds.filter((id) => !succeeded.has(id));
+      if (!Array.isArray(params.poses)) return [];
+      return params.poses.map((pose, index) => pose.id ?? `pose_${index + 1}`).filter((id) => !succeeded.has(id));
     }
 
     return [] as string[];
