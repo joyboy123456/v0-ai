@@ -1893,6 +1893,59 @@ export async function setAssetsFavoriteBatch(
 }
 
 /**
+ * 按功能类型列出该用户收藏的生成图资产。
+ *
+ * 筛选条件：
+ * - favorited === true（仅收藏的资产）
+ * - fileUrl 含 `/results/`（仅生成图，不含用户上传素材）
+ * - 通过 asset.taskId 关联到 task.featureType，匹配指定功能
+ * - 无 taskId 关联的资产（历史数据）按 ai-fashion-photo 处理（向后兼容）
+ *
+ * @param featureType 功能类型
+ * @param userId 用户 ID（可选，local 模式不校验）
+ * @returns 收藏的资产列表（按 createdAt 倒序）
+ */
+export async function listFavoritedAssetsByFeature(
+  featureType: FeatureType,
+  userId?: string,
+): Promise<AssetRecord[]> {
+  await ensureStoreReady()
+
+  const result: AssetRecord[] = []
+  for (const asset of store.assets.values()) {
+    if (!asset.favorited) continue
+    if (!asset.fileUrl?.includes('/results/')) continue
+
+    // 通过 taskId 关联到 task 的 featureType
+    let assetFeatureType: FeatureType | undefined
+    if (asset.taskId) {
+      const task = store.tasks.get(asset.taskId)
+      if (task) {
+        assetFeatureType = task.featureType
+      }
+    }
+
+    // 无 taskId 关联的历史数据，默认归到 ai-fashion-photo（向后兼容）
+    if (!assetFeatureType) {
+      assetFeatureType = 'ai-fashion-photo'
+    }
+
+    if (assetFeatureType !== featureType) continue
+
+    result.push(asset)
+  }
+
+  // 按 createdAt 倒序排列
+  result.sort((a, b) => {
+    const aMs = parseTimestampMs(a.createdAt) ?? 0
+    const bMs = parseTimestampMs(b.createdAt) ?? 0
+    return bMs - aMs
+  })
+
+  return result
+}
+
+/**
  * 按日期范围查询待清理的生成图资产（只读，不执行删除）。
  *
  * 筛选条件：

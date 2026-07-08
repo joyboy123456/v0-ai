@@ -53,6 +53,16 @@ interface ResultPreview {
   task: GenerationTask;
 }
 
+interface FavoriteCaseAsset {
+  assetId: string;
+  fileName: string;
+  fileUrl: string;
+  width: number;
+  height: number;
+  createdAt: string;
+  taskId: string | null;
+}
+
 type ResultGridItem =
   | { kind: "image"; image: ResultAsset; progress?: ShotProgress }
   | { kind: "progress"; progress: ShotProgress };
@@ -213,7 +223,7 @@ export function RightPanel({
   onDeleteTaskResult,
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<
-    "current" | "history" | "cases" | "my-model-library" | "my-id-photo-library"
+    "current" | "history" | "cases" | "favorites" | "my-model-library" | "my-id-photo-library"
   >("current");
   const [previewResult, setPreviewResult] = useState<ResultPreview | null>(
     null,
@@ -228,6 +238,8 @@ export function RightPanel({
   const [onlyFavorites, setOnlyFavorites] = useState(false);
   const [photoFissionCases, setPhotoFissionCases] =
     useState<PhotoFissionCase[]>(PHOTO_FISSION_CASES);
+  const [favoriteCases, setFavoriteCases] = useState<FavoriteCaseAsset[]>([]);
+  const [favoriteCasesLoading, setFavoriteCasesLoading] = useState(false);
   const [sameStyleTaskId, setSameStyleTaskId] = useState<string | null>(null);
   const [batchSelectMode, setBatchSelectMode] = useState(false);
   const [selectedAssets, setSelectedAssets] = useState<
@@ -305,6 +317,18 @@ export function RightPanel({
       return next;
     });
   }, []);
+
+  // 在案例库 Tab 中取消收藏后刷新列表（移除已取消收藏的图）
+  // 注意：loadFavoriteCases 定义在下方，此处先用 ref 中转避免使用顺序问题
+  const loadFavoriteCasesRef = useRef<(() => void)>(() => {});
+  const handleToggleFavoriteInCases = useCallback(
+    (assetId: string) => {
+      handleToggleFavorite(assetId);
+      // 延迟刷新，等服务端收藏状态更新后重新拉取
+      setTimeout(() => loadFavoriteCasesRef.current(), 300);
+    },
+    [handleToggleFavorite],
+  );
 
   const isPoseFission = feature === "pose-fission";
   const isAiFashionPhoto = feature === "ai-fashion-photo";
@@ -397,6 +421,33 @@ export function RightPanel({
       ignore = true;
     };
   }, [isPhotoFission]);
+
+  // 加载收藏案例（各功能的「案例库」Tab 展示收藏图）
+  const loadFavoriteCases = useCallback(async () => {
+    setFavoriteCasesLoading(true);
+    try {
+      const response = await fetch(
+        `/api/favorites/cases?feature=${feature}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) return;
+      const data = (await response.json()) as { assets: FavoriteCaseAsset[] };
+      setFavoriteCases(data.assets);
+    } catch {
+      // 静默失败
+    } finally {
+      setFavoriteCasesLoading(false);
+    }
+  }, [feature]);
+
+  // 同步 ref，供 handleToggleFavoriteInCases 延迟调用
+  loadFavoriteCasesRef.current = loadFavoriteCases;
+
+  useEffect(() => {
+    if (activeTab === "favorites" || (isAiFashionPhoto && activeTab === "current")) {
+      loadFavoriteCases();
+    }
+  }, [activeTab, loadFavoriteCases, isAiFashionPhoto]);
 
   const handleBatchDownload = async () => {
     if (!visibleTask) return;
@@ -750,12 +801,12 @@ export function RightPanel({
                 {isAiFashionPhoto ? "案例库" : "当前任务"}
               </button>
             )}
-            {isPhotoFission && (
+            {(isPhotoFission || isPoseFission) && (
               <button
-                onClick={() => setActiveTab("cases")}
+                onClick={() => setActiveTab("favorites")}
                 className={cn(
                   "px-4 py-1 text-[12px] font-medium rounded-sm transition-all border border-transparent",
-                  activeTab === "cases"
+                  activeTab === "favorites"
                     ? "bg-primary/20 text-accent-foreground shadow-[0_0_8px_rgba(0,163,255,0.2)] border-primary/30"
                     : "text-muted-foreground hover:text-foreground",
                 )}
@@ -807,12 +858,23 @@ export function RightPanel({
         </div>
       </header>
 
-      {isPhotoFission && activeTab === "cases" ? (
-        <PhotoFissionCaseLibrary
-          cases={photoFissionCases}
-          onSelectCase={onSelectPhotoFissionCase}
-          onDeleteCase={handleDeletePhotoFissionCase}
-          onDeleteShot={handleDeletePhotoFissionShot}
+      {activeTab === "favorites" ? (
+        <FavoriteCasesGallery
+          assets={favoriteCases}
+          loading={favoriteCasesLoading}
+          favorites={favorites}
+          onToggleFavorite={handleToggleFavoriteInCases}
+          onPreviewImage={(asset) => {
+            const image: ResultAsset = {
+              assetId: asset.assetId,
+              url: asset.fileUrl,
+              downloadUrl: asset.fileUrl,
+              width: asset.width,
+              height: asset.height,
+            };
+            setPreviewResult({ image, task: visibleTask ?? activeTask! });
+          }}
+          onRefresh={loadFavoriteCases}
         />
       ) : activeTab === "history" ? (
         <TaskHistory
@@ -849,6 +911,24 @@ export function RightPanel({
           onToggleImageSelection={(assetId, url, downloadUrl) =>
             toggleImageSelection(assetId, url, downloadUrl)
           }
+        />
+      ) : isAiFashionPhoto && activeTab === "current" ? (
+        <FavoriteCasesGallery
+          assets={favoriteCases}
+          loading={favoriteCasesLoading}
+          favorites={favorites}
+          onToggleFavorite={handleToggleFavoriteInCases}
+          onPreviewImage={(asset) => {
+            const image: ResultAsset = {
+              assetId: asset.assetId,
+              url: asset.fileUrl,
+              downloadUrl: asset.fileUrl,
+              width: asset.width,
+              height: asset.height,
+            };
+            setPreviewResult({ image, task: visibleTask ?? activeTask! });
+          }}
+          onRefresh={loadFavoriteCases}
         />
       ) : isAiFashionPhoto ? (
         <AiFashionMasonryGallery
@@ -3141,6 +3221,117 @@ function MyFaceIdLibraryPanel({
         >
           确定
         </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 收藏案例库：展示当前功能下被用户收藏的生成图。
+ *
+ * 三个功能（服装大片 / 照片裂变 / 姿势裂变）共用此组件，
+ * 数据来自 GET /api/favorites/cases?feature=xxx。
+ * 收藏的图常驻展示，不会被清理生成图功能删除。
+ */
+function FavoriteCasesGallery({
+  assets,
+  loading,
+  favorites,
+  onToggleFavorite,
+  onPreviewImage,
+  onRefresh,
+}: {
+  assets: FavoriteCaseAsset[];
+  loading: boolean;
+  favorites: Set<string>;
+  onToggleFavorite: (assetId: string) => void;
+  onPreviewImage: (asset: FavoriteCaseAsset) => void;
+  onRefresh: () => void;
+}) {
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+        <RefreshCw className="size-5 animate-spin" />
+        <span className="ml-2 text-sm">加载案例库…</span>
+      </div>
+    );
+  }
+
+  if (assets.length === 0) {
+    return (
+      <div className="flex-1 overflow-y-auto p-5">
+        <div className="min-h-[420px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mx-4 my-8">
+          <div className="w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
+            <Star className="w-5 h-5 text-muted-foreground" />
+          </div>
+          <p className="text-[13px] font-medium text-foreground">暂无收藏案例</p>
+          <p className="mt-2 max-w-[360px] text-[12px] text-muted-foreground leading-relaxed">
+            在历史记录中点击星标收藏图片，收藏的图会常驻在此案例库中。
+          </p>
+          <button
+            onClick={onRefresh}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground hover:border-primary/60 transition-colors"
+          >
+            <RefreshCw className="size-3.5" />
+            刷新
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-5">
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm font-medium text-foreground">
+          共 <span className="text-primary">{assets.length}</span> 张收藏
+        </p>
+        <button
+          onClick={onRefresh}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground hover:border-primary/60 transition-colors"
+        >
+          <RefreshCw className="size-3.5" />
+          刷新
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        {assets.map((asset) => {
+          const isFavorite = favorites.has(asset.assetId);
+          return (
+            <div
+              key={asset.assetId}
+              className="group relative aspect-[3/4] overflow-hidden rounded-md border border-border bg-card transition-colors hover:border-primary/60"
+            >
+              <img
+                src={getOssThumbnailUrl(asset.fileUrl)}
+                alt={asset.fileName}
+                className="h-full w-full object-cover cursor-pointer"
+                loading="lazy"
+                onClick={() => onPreviewImage(asset)}
+              />
+              <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleFavorite(asset.assetId);
+                  }}
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60"
+                  aria-label={isFavorite ? "取消收藏" : "收藏"}
+                >
+                  <Star
+                    className={cn(
+                      "h-4 w-4",
+                      isFavorite
+                        ? "fill-yellow-400 text-yellow-400"
+                        : "text-white/80",
+                    )}
+                  />
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

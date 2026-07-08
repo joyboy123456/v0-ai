@@ -18,6 +18,7 @@ import { runOpenAIImageEdit } from './openai-image-adapter'
 import { runJimengImageEdit } from './jimeng-image-adapter'
 import { runVolcesImageEdit } from './volces-image-adapter'
 import { runLaozhangImageEdit } from './laozhang-image-adapter'
+import { appendBillingEvent } from './billing/billing-store'
 
 export interface ProviderImageEditInput {
   taskId: string
@@ -54,66 +55,81 @@ export async function runImageEditViaProvider(
   try {
     switch (provider.type) {
       case 'laozhang':
-        return await runLaozhangImageEdit({
-          taskId: input.taskId,
-          apiKey,
-          model: input.model || provider.model || '',
-          timeoutMs,
-          prompt: input.prompt,
-          inputImages: input.inputImages,
-          inputImageLabels: input.inputImageLabels,
-          count: input.count,
-          aspectRatio: input.aspectRatio,
-          imageSize: input.imageSize,
-          traceId: input.traceId,
-          shotId: input.shotId,
-          providerId: provider.id,
-          rateLimitKey,
-          maxIpm: provider.maxIpm,
-          maxRpm: provider.maxRpm,
-          signal: input.signal,
-          onRetryAttempt: input.onRetryAttempt,
-        })
+        return await recordBillingAndReturn(
+          provider.id,
+          input.model || provider.model || '',
+          input.taskId,
+          runLaozhangImageEdit({
+            taskId: input.taskId,
+            apiKey,
+            model: input.model || provider.model || '',
+            timeoutMs,
+            prompt: input.prompt,
+            inputImages: input.inputImages,
+            inputImageLabels: input.inputImageLabels,
+            count: input.count,
+            aspectRatio: input.aspectRatio,
+            imageSize: input.imageSize,
+            traceId: input.traceId,
+            shotId: input.shotId,
+            providerId: provider.id,
+            rateLimitKey,
+            maxIpm: provider.maxIpm,
+            maxRpm: provider.maxRpm,
+            signal: input.signal,
+            onRetryAttempt: input.onRetryAttempt,
+          }),
+        )
 
       case 'openai':
-        return await runOpenAIImageEdit({
-          taskId: input.taskId,
-          apiKey,
-          baseUrl: provider.baseUrl,
-          model: input.model || provider.model || '',
-          timeoutMs,
-          prompt: input.prompt,
-          inputImages: input.inputImages,
-          count: input.count,
-          aspectRatio: input.aspectRatio,
-          imageSize: input.imageSize,
-          traceId: input.traceId,
-          shotId: input.shotId,
-          providerId: provider.id,
-          rateLimitKey,
-          maxIpm: provider.maxIpm,
-          maxRpm: provider.maxRpm,
-        })
+        return await recordBillingAndReturn(
+          provider.id,
+          input.model || provider.model || '',
+          input.taskId,
+          runOpenAIImageEdit({
+            taskId: input.taskId,
+            apiKey,
+            baseUrl: provider.baseUrl,
+            model: input.model || provider.model || '',
+            timeoutMs,
+            prompt: input.prompt,
+            inputImages: input.inputImages,
+            count: input.count,
+            aspectRatio: input.aspectRatio,
+            imageSize: input.imageSize,
+            traceId: input.traceId,
+            shotId: input.shotId,
+            providerId: provider.id,
+            rateLimitKey,
+            maxIpm: provider.maxIpm,
+            maxRpm: provider.maxRpm,
+          }),
+        )
 
       case 'jimeng':
-        return await runJimengImageEdit({
-          taskId: input.taskId,
-          apiKey,
-          model: input.model || provider.model || '',
-          timeoutMs,
-          prompt: input.prompt,
-          inputImages: input.inputImages,
-          count: input.count,
-          aspectRatio: input.aspectRatio,
-          imageSize: input.imageSize,
-          resolvedSize,
-          traceId: input.traceId,
-          shotId: input.shotId,
-          providerId: provider.id,
-          rateLimitKey,
-          maxIpm: provider.maxIpm,
-          maxRpm: provider.maxRpm,
-        })
+        return await recordBillingAndReturn(
+          provider.id,
+          input.model || provider.model || '',
+          input.taskId,
+          runJimengImageEdit({
+            taskId: input.taskId,
+            apiKey,
+            model: input.model || provider.model || '',
+            timeoutMs,
+            prompt: input.prompt,
+            inputImages: input.inputImages,
+            count: input.count,
+            aspectRatio: input.aspectRatio,
+            imageSize: input.imageSize,
+            resolvedSize,
+            traceId: input.traceId,
+            shotId: input.shotId,
+            providerId: provider.id,
+            rateLimitKey,
+            maxIpm: provider.maxIpm,
+            maxRpm: provider.maxRpm,
+          }),
+        )
 
       case 'volces': {
         // 豆包 Seedream 4.5/5.0-lite 使用 "宽x高" 格式的 size 参数。
@@ -130,49 +146,59 @@ export async function runImageEditViaProvider(
         // 尝试 PNG 无损输出：5.0-lite 官方支持；4.5 文档不支持但尝试传入，
         // 若 API 忽略则不影响，若接受则获得高质量输出。
         const volcesOutputFormat = 'png' as const
-        return await runVolcesImageEdit({
-          taskId: input.taskId,
-          apiKey,
-          baseUrl: provider.baseUrl,
-          model: volcesModel,
-          timeoutMs,
-          prompt: input.prompt,
-          inputImages: input.inputImages,
-          count: input.count,
-          size: volcesResolvedSize.size,
-          outputFormat: volcesOutputFormat,
-          resolvedSize: volcesResolvedSize,
-          traceId: input.traceId,
-          shotId: input.shotId,
-          providerId: provider.id,
-          rateLimitKey,
-          maxIpm: provider.maxIpm,
-          maxRpm: provider.maxRpm,
-        })
+        return await recordBillingAndReturn(
+          provider.id,
+          volcesModel,
+          input.taskId,
+          runVolcesImageEdit({
+            taskId: input.taskId,
+            apiKey,
+            baseUrl: provider.baseUrl,
+            model: volcesModel,
+            timeoutMs,
+            prompt: input.prompt,
+            inputImages: input.inputImages,
+            count: input.count,
+            size: volcesResolvedSize.size,
+            outputFormat: volcesOutputFormat,
+            resolvedSize: volcesResolvedSize,
+            traceId: input.traceId,
+            shotId: input.shotId,
+            providerId: provider.id,
+            rateLimitKey,
+            maxIpm: provider.maxIpm,
+            maxRpm: provider.maxRpm,
+          }),
+        )
       }
 
       case 'google':
       default:
-        return await runGoogleImageEdit({
-          taskId: input.taskId,
-          apiKey,
-          model: input.model || provider.model || '',
-          timeoutMs,
-          prompt: input.prompt,
-          inputImages: input.inputImages,
-          inputImageLabels: input.inputImageLabels,
-          count: input.count,
-          aspectRatio: input.aspectRatio,
-          imageSize: input.imageSize,
-          traceId: input.traceId,
-          shotId: input.shotId,
-          providerId: provider.id,
-          rateLimitKey,
-          maxIpm: provider.maxIpm,
-          maxRpm: provider.maxRpm,
-          signal: input.signal,
-          onRetryAttempt: input.onRetryAttempt,
-        })
+        return await recordBillingAndReturn(
+          provider.id,
+          input.model || provider.model || '',
+          input.taskId,
+          runGoogleImageEdit({
+            taskId: input.taskId,
+            apiKey,
+            model: input.model || provider.model || '',
+            timeoutMs,
+            prompt: input.prompt,
+            inputImages: input.inputImages,
+            inputImageLabels: input.inputImageLabels,
+            count: input.count,
+            aspectRatio: input.aspectRatio,
+            imageSize: input.imageSize,
+            traceId: input.traceId,
+            shotId: input.shotId,
+            providerId: provider.id,
+            rateLimitKey,
+            maxIpm: provider.maxIpm,
+            maxRpm: provider.maxRpm,
+            signal: input.signal,
+            onRetryAttempt: input.onRetryAttempt,
+          }),
+        )
     }
   } catch (error) {
     if (error instanceof GoogleImageError && error.category === 'auth_failed') {
@@ -180,6 +206,29 @@ export async function runImageEditViaProvider(
     }
     throw withUpstreamErrorContext(error, provider)
   }
+}
+
+/**
+ * 记录计费事件并返回原始结果。
+ *
+ * 计费写入异步且静默失败，绝不影响生图主流程。
+ * 实际生成图片数 = ResultAsset.length（可能与 input.count 不同：重试后可能多出/少出）。
+ */
+async function recordBillingAndReturn(
+  providerId: string,
+  model: string,
+  taskId: string,
+  resultPromise: Promise<ResultAsset[]>,
+): Promise<ResultAsset[]> {
+  const results = await resultPromise
+  // 静默计费：不 await，不抛错
+  appendBillingEvent({
+    model,
+    count: results.length,
+    providerId,
+    taskId,
+  }).catch(() => undefined)
+  return results
 }
 
 function withUpstreamErrorContext(error: unknown, provider: ImageProvider): unknown {
