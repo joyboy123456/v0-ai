@@ -1,153 +1,150 @@
 # AI 服装电商创作工作台
 
-> 面向服装电商商家的 AI 出图工作台，一站式生成模特大片、详情页图与投流素材。
+面向服装电商商家的 AI 商拍工作台，用参考图、模特素材、服装细节图和姿势图生成商品主图、详情页套图与投流素材。
 
-基于 [Next.js](https://nextjs.org) + [v0](https://v0.app) 搭建的 MVP 项目。生图后端默认接入 **Google Gemini 官方图像 API**（Nano Banana / Nano Banana Pro），并可通过七牛 OpenAI 兼容渠道使用 GPT Image 2。
+项目基于 Next.js 16、React 19 和 TypeScript 构建，前端工作台、任务 API、生图编排与本地持久化位于同一应用中。
 
-## ✨ 核心功能
+## 核心功能
 
-| 功能 | 说明 | 输入 | 输出 |
-| --- | --- | --- | --- |
-| **AI 服装大片** | 上传参考图 + 选择「我的模特」生成高级商拍大片 | 多张参考图 + 模特素材 + Prompt | 1 张大片（1k / 2k / 4k，按任务可切换 Nano Banana / Nano Banana Pro / GPT Image 2） |
-| **服装大片 - 元素替换** | 替换原图中的服装、环境或人像元素 | 原图 + 替换元素图 + Prompt | 4 / 8 / 12 / 16 张 |
-| **服装大片裂变** | 上传产品图，按固定 9 镜头蓝图自动生成全景套图 | 服装产品图（可选正/背面细节） | **9 张固定套图**（支持失败镜头单独重跑） |
-| **姿势裂变** | 从内置 45 个姿势模板里多选 1–9 个，保留服装细节生成同款多姿势素材 | 主图 + 可选正/背面细节 + 多选姿势 | **N 张**（N = 用户选中的姿势数，1 ≤ N ≤ 9） |
+当前产品入口仅开放以下三项功能：
 
-附加能力：
+| 功能 | 主要输入 | 输出与能力 |
+| --- | --- | --- |
+| **AI 服装大片** | 多张人物、服装、姿势或场景参考图，可复用“我的模特”，并填写 Prompt | 每次生成 1 张；支持基础增强/原始提示词、多种比例、2K/4K 和模型切换 |
+| **服装大片裂变** | 1 张满意的模特主图，可补充服装正面、侧面、背面细节图 | 当前开放童装连衣裙、套装、裤子；支持生成 2/4/9/10 张（裤子不提供 9 张），自动规划不同角度、景别与动作 |
+| **姿势裂变** | 人物主图、可选服装正/背面细节图，以及用户姿势库中的 1–9 个姿势 | 选择 N 个姿势生成 N 张结果；保留人物、服装与背景，仅替换人物姿势 |
 
-- 官方模特库（12 位预置模特，支持性别 / 年龄 / 人种 / 发色筛选）
-- 「我的模特」库（浏览器 `localStorage` 持久化）
-- 姿势模板库（45 个真实姿势：正面站姿、侧身、回头背影、半蹲、交叉步、靠墙、抬腿、儿童姿势等）
-- 服装大片裂变 & 姿势裂变案例库（一键回填主图 + 镜头/姿势组合）
-- 任务进度轮询、历史记录、结果下载与收藏
-- Google 生图客户端限流（IPM / RPM）+ 指数退避重试（适配 Free / Tier 1 / Tier 2）
+“元素替换”已从当前产品功能入口和任务类型中移除，不再作为可用功能。
 
-## 🛠 技术栈
+## 服装大片裂变能力
 
-- **框架**：Next.js 16 (App Router) + React 19 + TypeScript 5.7
-- **样式**：Tailwind CSS v4 + shadcn/ui (Radix UI)
-- **表单**：react-hook-form + Zod
+- 使用 LLM 分镜导演生成结构化镜头 Prompt，并按镜头独立生图。
+- 连衣裙、套装支持五官特征锁定；可选择人像小卡并涂抹主图人脸 Mask。
+- 裤子支持正面、侧面、背面细节图，每个角度最多上传 2 张，并可指定主图是否露手。
+- 单个镜头成功后立即持久化；部分失败时保留已成功结果。
+- 支持失败镜头批量重跑、单镜头重新生成和生成结果人脸精修。
+
+## 素材、任务与结果管理
+
+- “我的模特”库、五官人像小卡库和用户自建姿势库。
+- 姿势支持全身、上半身、下半身分类，可上传、重命名和删除。
+- 当前任务、历史任务、案例库和收藏结果统一管理。
+- 支持任务取消、失败重试、单张/批量下载、删除和按时间清理未收藏图片。
+- 前端轮询任务进度；任务状态包括 `pending`、`running`、`success`、`partial`、`failed` 和 `cancelled`。
+- 任务、素材和结果按登录用户隔离。
+
+## 可选模型与供应商路由
+
+当前模型选择器开放：
+
+- Nano Banana（Gemini 3.1 Flash）
+- Nano Banana Pro（Gemini 3 Pro）
+- GPT Image 2
+- 豆包 Seedream 4.5
+
+服务端提供统一的多供应商生图路由，可配置 Google、OpenAI 兼容渠道、即梦、火山引擎和老张 API。供应商池支持加权分配、独立并发与 IPM/RPM 限流、指数退避重试、临时熔断和兼容渠道故障切换，并提供供应商健康检查接口。
+
+## 存储、认证与计费
+
+- **图片存储**：通过 `STORAGE_MODE` 在本地文件系统和阿里云 OSS 之间切换；素材路径按用户隔离。
+- **任务元数据**：当前使用进程内 Map，并通过 JSON 文件持久化，尚未接入独立数据库和消息队列。
+- **认证**：支持密码登录；本地部署也可使用 `LOCAL_AUTH_MODE=super-admin` 的内网超级管理员模式。
+- **计费统计**：记录成功生成的模型、图片数量、单价和金额，可查看今日生成量、今日费用和模型明细。
+- **账户余额**：配置老张 API 管理令牌后，可查询账户剩余额度、已用额度和累计请求次数。
+
+计费模块用于团队侧成本统计，不是面向终端用户的积分或配额扣减系统。
+
+## 技术栈
+
+- **框架**：Next.js 16（App Router）+ React 19 + TypeScript 5.7
+- **样式**：Tailwind CSS v4 + shadcn/ui（Radix UI）
+- **表单与校验**：react-hook-form + Zod
 - **后端**：Next.js API Routes
-- **存储**：进程内 Map + JSON 文件持久化（MVP 阶段，未接数据库）
-- **AI 生图**：
-  - 默认 **Google Gemini 官方 API**（`gemini-3.1-flash-image-preview` Nano Banana / `gemini-3-pro-image-preview` Nano Banana Pro）
-  - 可选 **GPT Image 2**（`gpt-image-2`，需配置支持 `openai/gpt-image-*` 的七牛 `qiniu` provider）
-  - 兜底 **OpenAI 兼容 `/v1/images/edits`**（默认指向 Raycast Local Proxy）
-- **Prompt 工程**：服装大片裂变 Prompt 已基于「一百 AIGC」研究重写镜头描述，强化身份/服装/环境锁定
+- **图片处理**：Sharp
+- **对象存储**：本地文件系统 / 阿里云 OSS
+- **任务持久化**：进程内状态 + JSON 文件
 
-## 🚀 快速开始
+## 快速开始
 
 ```bash
 pnpm install
-cp .env.example .env.local   # 填入 GOOGLE_API_KEY 或切换到 raycast
 pnpm dev
 ```
 
-打开 [http://localhost:3000](http://localhost:3000) 即可使用。
-
-> 🖥️ **Mac mini 生产环境运维**：本项目部署在 Mac mini 上，公网入口 `http://47.96.71.237:3000`。**生产环境跑的是 `next start`（不是 next dev），不会热加载** —— 每次改代码必须 `pnpm build` + `pm2 restart yibai-fission --update-env`。完整的更新流程、登录配置、自愈机制、排查手册请看 👉 [`docs/mac-mini-operations.md`](docs/mac-mini-operations.md)。
->
-
-### Demo 模式
-
-如果暂时没有可用的图像 API，把 `.env.local` 中的 `IMAGE_API_DEMO` 设为 `1`，工作台会回放本地占位图，便于演示和 UI 调试：
+打开 [http://localhost:3000](http://localhost:3000)。调用真实模型前，请在 `.env.local` 中配置至少一个可用生图渠道；仅调试界面时可启用 Demo 模式：
 
 ```env
 IMAGE_API_DEMO=1
 ```
 
-### 环境变量
+常用配置：
 
 | 变量 | 说明 | 默认值 |
 | --- | --- | --- |
-| `IMAGE_API_PROVIDER` | 生图后端：`google`（官方 Gemini）/ `raycast`（兜底） | `google` |
-| `GOOGLE_API_KEY` | Google AI Studio API Key（[申请](https://aistudio.google.com/apikey)） | 空 |
-| `GOOGLE_IMAGE_MODEL` | Gemini 默认模型：`gemini-3.1-flash-image-preview` / `gemini-3-pro-image-preview` | `gemini-3.1-flash-image-preview` |
-| `GOOGLE_IMAGE_TIMEOUT_MS` | Gemini 单图超时（2K/4K + 多图建议 ≥ 480s） | `600000` |
-| `GOOGLE_IMAGE_IPM` | 每分钟最多发起的 image 请求数（Free=2 / Tier1=10 / Tier2=50） | `10` |
-| `GOOGLE_IMAGE_RPM` | 每分钟最多发起的总请求数 | `150` |
-| `GOOGLE_IMAGE_RETRY_ATTEMPTS` | 重试总尝试次数（含首次） | `4` |
-| `GOOGLE_IMAGE_RETRY_BASE_DELAY_MS` | 重试基础退避（毫秒，指数 + jitter） | `1000` |
-| `GOOGLE_IMAGE_RETRY_MAX_DELAY_MS` | 重试最大退避封顶（毫秒） | `60000` |
-| `IMAGE_API_BASE_URL` | Raycast / OpenAI 兼容图像 API 基地址 | `http://127.0.0.1:11436/v1` |
-| `IMAGE_API_KEY` | Raycast / OpenAI 兼容 API Key（可选） | 空 |
-| `IMAGE_API_MODEL` | Raycast / OpenAI 兼容模型名 | `gpt-image-2` |
-| `IMAGE_API_TIMEOUT_MS` | Raycast / OpenAI 兼容超时 | `120000` |
-| `IMAGE_API_SKIP_HEALTHCHECK` | 跳过本地健康检查 | `0` |
-| `IMAGE_API_DEMO` | 启用本地 Demo 模式（不调用任何 provider） | `0` |
-| `STORAGE_MODE` | `local` 本地演示 / `oss` 阿里云 OSS 存储 | `local` |
-| `LOCAL_AUTH_MODE` | local 认证：`super-admin` 内网直进 / `password` 账号登录 | `super-admin` |
-| `LOCAL_IMAGE_ROOT` | local 图片根目录；留空使用 `public/generated` | 空 |
+| `IMAGE_PROVIDERS` | 多供应商 JSON 配置；未配置时从单渠道环境变量构建供应商池 | 空 |
+| `GOOGLE_API_KEY` | Google Gemini API Key | 空 |
+| `QINIU_IMAGE_API_KEY` | OpenAI 兼容图像渠道 API Key | 空 |
+| `VOLCES_API_KEY` | 火山引擎/豆包图像渠道 API Key | 空 |
+| `IMAGE_API_DEMO` | 启用本地 Demo 模式，不调用真实供应商 | `0` |
+| `STORAGE_MODE` | 图片存储模式：`local` / `oss` | `local` |
+| `LOCAL_IMAGE_ROOT` | 本地图片根目录；留空时使用 `public/generated` | 空 |
+| `LOCAL_AUTH_MODE` | `super-admin` 内网直进 / `password` 账号登录 | `super-admin` |
+| `LAOZHANG_ACCESS_TOKEN` | 查询老张 API 账户余额所需的管理令牌 | 空 |
 
-## 📁 目录结构
+阿里云 OSS 模式还需配置 `OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`、`OSS_BUCKET`、`OSS_REGION` 和 `OSS_PUBLIC_URL`。
 
-```
+> Mac mini 生产环境使用 `next start`，代码更新后需要重新执行 `pnpm build` 并重启进程，不会像开发模式一样热更新。部署与排查流程见 [docs/mac-mini-operations.md](docs/mac-mini-operations.md)。
+
+## 目录结构
+
+```text
 app/
-  api/                  # 资产上传、任务、photo-fission/pose-fission 案例 REST 接口
-  layout.tsx, page.tsx
+  api/                         # 上传、任务、姿势库、认证、计费和健康检查接口
 components/
-  workbench/            # 工作台三栏布局：功能侧边栏、参数面板、结果/案例库
-  ui/                   # shadcn/ui 组件
+  workbench/                   # 功能参数、任务结果、案例与素材库界面
 lib/
-  server/               # 任务编排、AI 服务、Google/Raycast 适配器、限流 & 重试
-    google-genai-adapter.ts
-    google-image-throttle.ts
-    google-image-retry.ts
-    photo-fission-service.ts   # 9 张固定镜头蓝图编排
-    pose-fission-service.ts    # 多选姿势裂变编排
-    third-party-image-adapter.ts
-  pose-templates-seed.ts        # 45 个姿势模板种子数据
-  types.ts                       # 全局类型 + 功能/比例/分辨率枚举
-data/                            # MVP 阶段的 JSON 持久化文件
-public/
-  generated/             # 默认本地图片目录；也可用 LOCAL_IMAGE_ROOT 指到仓库外
-  poses/                 # 45 张姿势参考缩略图
-scripts/                 # 姿势模板拉取、维护脚本
+  server/
+    billing/                   # 计费事件、今日统计与账户余额
+    storage/                   # local / OSS 存储适配器
+    ai-fashion-photo-service.ts
+    photo-fission-service.ts
+    pose-fission-service.ts
+    provider-image-router.ts   # 多供应商统一路由
+    task-store.ts              # 任务编排与 JSON 持久化
+  types.ts                     # 功能、任务、模型和参数类型
+data/                           # 本地 JSON / JSONL 状态文件
+public/generated/              # 默认本地图片目录
 ```
 
-## 🔄 生图任务流程
+## 生图任务流程
 
-```
-前端上传素材 ──► POST /api/assets/upload ──► 落盘本地图片目录 / R2
-        │
-        └──► POST /api/tasks ──► 任务进入 pending
-                                    │
-                                    ▼
-                            runTask 异步执行
-                                    │
-              校验素材 → 构造 shotPlan / pose 列表 → 调用 Gemini / Raycast
-                                    │
-                                    ▼
-              限流（IPM/RPM）+ 重试（指数退避 + jitter）+ 并发控制
-                                    │
-                                    ▼
-              结果写入本地图片目录 / R2，状态置为 success
-                                    │
-            前端每 900ms 轮询 GET /api/tasks/[taskId] 更新进度
-            （服装大片裂变支持失败镜头单独重跑：targetShotIds）
+```text
+上传素材
+  -> 创建 pending 任务
+  -> 异步编排 Prompt / 镜头 / 姿势
+  -> 供应商池分配、限流、重试与故障切换
+  -> 每张成功结果立即写入 local 或 OSS
+  -> 更新任务进度与 success / partial / failed 状态
+  -> 前端轮询并展示结果
 ```
 
-## 📌 项目状态
+当前任务直接在 Next.js 进程内异步执行，适合单机或内部部署；如需多实例水平扩容，应进一步接入共享数据库和独立任务队列。
 
-当前为 MVP 阶段，已完成：
+## 项目状态
 
-- ✅ 工作台 UI 与四大功能参数收集
-- ✅ 任务编排、轮询、历史与下载
-- ✅ 模型选择器（Nano Banana / Nano Banana Pro / GPT Image 2）
-- ✅ Raycast / OpenAI 兼容 API 兜底
-- ✅ 服装大片裂变 9 张固定镜头蓝图 + 失败镜头单独重跑
-- ✅ 姿势裂变多选模板（1–9 张）+ 45 个姿势模板种子库
-- ✅ Google 生图客户端限流 + 指数退避重试
-- ✅ Prompt 工程升级（基于「一百 AIGC」研究重写镜头描述）
-- ✅ 本地 Demo 模式
+已完成：
 
-后续可扩展：
+- 三项核心生图工作流及任务结果管理
+- 服装裂变分镜规划、人脸锁定、镜头级重试与精修
+- 用户模特库、人像小卡库和姿势库
+- 多模型选择与多供应商容错路由
+- local / OSS 双存储模式
+- 登录认证、用户数据隔离、收藏与清理
+- 今日成本统计、账户余额和供应商健康检查
 
-- ⏳ 接入真实对象存储（OSS / S3）
-- ⏳ 接入数据库与多用户鉴权
-- ⏳ 增加积分计费与配额管理
+当前仍属于持续迭代中的单机应用，任务元数据和认证会话尚未迁移到适合多实例部署的共享基础设施。
 
-## 📄 License
+## License
 
 MIT
 
