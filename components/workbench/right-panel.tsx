@@ -365,7 +365,9 @@ export function RightPanel({
   const visibleTask =
     activeTab === "current"
       ? activeTask
-      : (currentFeatureTasks[0] ?? activeTask);
+      : activeTask?.featureType === feature
+        ? activeTask
+        : currentFeatureTasks[0];
   const visibleTaskGridItems = visibleTask
     ? getTaskResultGridItems(visibleTask)
     : [];
