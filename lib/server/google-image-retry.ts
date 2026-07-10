@@ -139,7 +139,7 @@ function readPositiveFloat(value: string | undefined, fallback: number) {
 function resolveRetryOptions(input?: RetryOptions) {
   const attempts =
     input?.attempts ??
-    readPositiveInt(process.env.GOOGLE_IMAGE_RETRY_ATTEMPTS, 4)
+    readPositiveInt(process.env.GOOGLE_IMAGE_RETRY_ATTEMPTS, 5)
   const baseDelayMs =
     input?.baseDelayMs ??
     readPositiveInt(process.env.GOOGLE_IMAGE_RETRY_BASE_DELAY_MS, 1000)
@@ -371,7 +371,16 @@ export async function callGoogleImageWithRetry<T>(
           blockReason: error.blockReason,
           reason: `${error.message}（已达单类上限 ${categoryLimit}）`,
         })
-        throw error
+        throw new GoogleImageError({
+          category: error.category,
+          message: `${error.message}（已连续 ${used} 次调用上游均失败）`,
+          retryable: false,
+          httpStatus: error.httpStatus,
+          retryAfterSeconds: error.retryAfterSeconds,
+          finishReason: error.finishReason,
+          blockReason: error.blockReason,
+          cause: error,
+        })
       }
 
       // 已经是最后一次 attempt
@@ -383,7 +392,16 @@ export async function callGoogleImageWithRetry<T>(
           blockReason: error.blockReason,
           reason: `${error.message}（已达总尝试上限 ${maxAttempts}）`,
         })
-        throw error
+        throw new GoogleImageError({
+          category: error.category,
+          message: `${error.message}（已连续 ${maxAttempts} 次调用上游均失败）`,
+          retryable: false,
+          httpStatus: error.httpStatus,
+          retryAfterSeconds: error.retryAfterSeconds,
+          finishReason: error.finishReason,
+          blockReason: error.blockReason,
+          cause: error,
+        })
       }
 
       // 计算下次退避：rate_limit / server_error 优先尊重 Retry-After

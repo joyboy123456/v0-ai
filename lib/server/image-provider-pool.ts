@@ -455,6 +455,30 @@ export function getAvailableProvidersForModel(
   return compatible
 }
 
+/**
+ * 返回起点轮转后的 provider failover 链（每个凭证 key 只出现一次）。
+ *
+ * 与 buildCredentialInterleavedList 的区别：后者按 weight 展开重复条目以支持
+ * dispatchItems 的加权分配；本函数返回去重后的唯一链，适合单图任务（如
+ * ai-fashion-photo）逐个 failover。每次调用 pool.cursor+1，让并发的单图任务
+ * 自动分摊到不同 key，避免全部压在配置里的第一把 key。
+ */
+export function getRotatedProvidersForModel(
+  model: string | undefined,
+): ImageProvider[] {
+  const available = getAvailableProvidersForModel(model)
+  if (available.length <= 1) return available
+
+  const pool = getPool()
+  const lanes = buildProviderDispatchLanes(available, model)
+  if (!lanes.length) return []
+
+  const startIndex = pool.cursor % lanes.length
+  pool.cursor += 1
+  const rotated = lanes.slice(startIndex).concat(lanes.slice(0, startIndex))
+  return rotated.map((lane) => lane.provider)
+}
+
 export function getNoAvailableProviderMessage(model: string | undefined): string {
   if (!model) return '没有可用的生图渠道（所有 provider 均不可用）'
 

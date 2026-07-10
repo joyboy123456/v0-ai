@@ -42,6 +42,18 @@ import {
 
 export type StorageBucket = 'uploads' | 'generated' | 'results' | 'assets'
 
+/**
+ * 按 bucket 区分浏览器缓存时长：
+ * - assets / uploads（上传素材）：用户可能反复使用同一张参考图，缓存 30 天
+ * - results / generated（生成图）：量大且主要看近期，缓存 7 天，避免浏览器缓存条目堆积
+ */
+const CACHE_CONTROL_BY_BUCKET: Record<StorageBucket, string> = {
+  assets: 'public, max-age=2592000, immutable',
+  uploads: 'public, max-age=2592000, immutable',
+  results: 'public, max-age=604800, immutable',
+  generated: 'public, max-age=604800, immutable',
+}
+
 export interface PutImageInput {
   /** 用户身份。local 模式可空（退化为匿名）；cloud 模式必填 */
   userId: string | null
@@ -304,6 +316,7 @@ const ossAdapter: StorageAdapter = {
       key,
       body: input.body,
       contentType: input.contentType,
+      cacheControl: CACHE_CONTROL_BY_BUCKET[input.bucket],
     })
     return {
       key: result.key,

@@ -274,7 +274,7 @@ export function Workbench() {
       }
     }
 
-    const intervalId = window.setInterval(loadInFlightTasks, 900)
+    const intervalId = window.setInterval(loadInFlightTasks, 3000)
     loadInFlightTasks()
     return () => window.clearInterval(intervalId)
   }, [activeTaskId, loadTask, user])

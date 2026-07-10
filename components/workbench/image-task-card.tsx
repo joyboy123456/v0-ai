@@ -99,6 +99,8 @@ function ImageSlotCard({
       <motion.img
         src={getOssThumbnailUrl(image.url)}
         alt={image.finalPrompt ?? ""}
+        loading="lazy"
+        decoding="async"
         draggable={false}
         onLoad={() => onImageLoad(image.assetId, slot.index)}
         initial={{

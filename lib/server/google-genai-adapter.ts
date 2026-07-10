@@ -221,6 +221,9 @@ interface PerformSingleCallInput {
  * 一次 generateContent 调用：发 fetch、读 JSON、按 v4 § 15.4 R2 规则识别错误并抛 GoogleImageError。
  * 成功时返回 inlineData（mimeType + base64 data）。
  *
+ * 无应用层超时：等待上游响应，失败由 callGoogleImageWithRetry 重试。
+ * undici 内置 headersTimeout=300s 仍作为硬兜底存在（触发后归类为 network，可重试）。
+ *
  * 错误分类映射（PRD §15.4 + research/stability-failure-modes.md §5）：
  * - HTTP 400 / status=INVALID_ARGUMENT → bad_request（不重试）
  * - HTTP 401/403 → auth_failed（不重试 + 熔断）
@@ -557,28 +560,23 @@ function extractFinalImage(response: GeminiResponse): GeminiInlineData | null {
 async function fetchWithTimeout(
   url: string,
   init: RequestInit,
-  timeoutMs: number,
+  _timeoutMs: number,
   signal?: AbortSignal,
 ) {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
-  const abortFromParent = () => controller.abort()
-  if (signal?.aborted) controller.abort()
-  signal?.addEventListener('abort', abortFromParent, { once: true })
-
+  // 无应用层超时：等待上游响应，失败由 callGoogleImageWithRetry 重试。
+  // undici 内置 headersTimeout=300s 作为硬兜底（触发后归类 network，可重试）。
   try {
-    return await proxyFetch(url, { ...init, signal: controller.signal })
+    return await proxyFetch(url, signal ? { ...init, signal } : init)
   } catch (error) {
-    // 翻译为带 category 的 GoogleImageError，由 wrapper 决定是否重试
+    // 用户主动取消（parent signal abort）— 不重试
     if (
       error instanceof Error &&
       (error.name === 'AbortError' || error.message.toLowerCase().includes('aborted'))
     ) {
-      const seconds = Math.round(timeoutMs / 1000)
       throw new GoogleImageError({
         category: 'network',
-        message: `Google Gemini API 调用超时（${seconds}s 未返回）`,
-        retryable: true,
+        message: 'Google Gemini API 调用已取消',
+        retryable: false,
         cause: error,
       })
     }
@@ -599,9 +597,6 @@ async function fetchWithTimeout(
       retryable: true,
       cause: error,
     })
-  } finally {
-    signal?.removeEventListener('abort', abortFromParent)
-    clearTimeout(timeoutId)
   }
 }
 

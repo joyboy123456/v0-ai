@@ -1115,7 +1115,7 @@ function ResultImageCard({
       }}
       className="group relative aspect-[3/4] overflow-hidden rounded-md border border-border bg-card transition-colors hover:border-primary/60"
     >
-      <img src={getOssThumbnailUrl(image.url)} alt="" className="h-full w-full object-cover" />
+      <img src={getOssThumbnailUrl(image.url)} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
       <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           type="button"
@@ -1253,6 +1253,8 @@ function AiFashionMasonryGallery({
                   <img
                     src={getOssThumbnailUrl(image.url)}
                     alt=""
+                    loading="lazy"
+                    decoding="async"
                     className="w-full h-auto block bg-secondary"
                   />
 
@@ -1653,6 +1655,8 @@ function GenerationDetailDialog({
                 <img
                   src={getOssThumbnailUrl(resultImage.url)}
                   alt=""
+                  loading="lazy"
+                  decoding="async"
                   className="h-full w-full object-cover"
                 />
               </button>
@@ -2869,6 +2873,8 @@ function TaskHistoryCard({
                 <img
                   src={getOssThumbnailUrl(image.url)}
                   alt=""
+                  loading="lazy"
+                  decoding="async"
                   className="h-full w-full object-cover"
                 />
 

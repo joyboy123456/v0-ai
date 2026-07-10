@@ -11,8 +11,8 @@ import {
   buildAiFashionPhotoPrompt,
 } from './ai-fashion-photo-service'
 import {
-  getAvailableProvidersForModel,
   getNoAvailableProviderMessage,
+  getRotatedProvidersForModel,
   type ImageProvider,
 } from './image-provider-pool'
 import { logImageEvent } from './log'
@@ -197,7 +197,10 @@ async function runGoogleProviderEdits(input: ThirdPartyWorkflowInput) {
 }
 
 function buildSingleImageProviderChain(model: string): ImageProvider[] {
-  return getAvailableProvidersForModel(model)
+  // 轮转起点：每次构建链时 pool.cursor+1，让并发的单图任务（如 ai-fashion-photo）
+  // 自动分摊到不同 key，避免全部压在配置里的第一把 key。failover 语义不变：
+  // 链上某把 key 失败仍会顺着链试下一个。
+  return getRotatedProvidersForModel(model)
 }
 
 function extractGoogleImageOptions(params: TaskParams) {

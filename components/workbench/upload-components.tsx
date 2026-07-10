@@ -131,10 +131,20 @@ export function UploadBox({
         formData.append("height", String(prepared.height));
       }
 
-      const response = await fetch("/api/assets/upload", {
-        method: "POST",
-        body: formData,
-      });
+      // 后端不响应时避免永久转圈：60s 超时
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60_000);
+
+      let response: Response;
+      try {
+        response = await fetch("/api/assets/upload", {
+          method: "POST",
+          body: formData,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       const data = await readJsonResponse<{
         assetId: string;
@@ -151,7 +161,13 @@ export function UploadBox({
         height: data.height,
       });
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "上传失败");
+      const message =
+        uploadError instanceof DOMException && uploadError.name === "AbortError"
+          ? "上传超时，请检查网络后重试"
+          : uploadError instanceof Error
+            ? uploadError.message
+            : "上传失败";
+      setError(message);
     } finally {
       setIsUploading(false);
     }
