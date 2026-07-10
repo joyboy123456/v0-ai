@@ -299,6 +299,28 @@ export function Workbench() {
     )
   }, [])
 
+  const handleReorderFashionReferences = useCallback(
+    (sourceAssetId: string, targetAssetId: string) => {
+      setFashionReferences((currentReferences) => {
+        const sourceIndex = currentReferences.findIndex(
+          (reference) => reference.assetId === sourceAssetId,
+        )
+        const targetIndex = currentReferences.findIndex(
+          (reference) => reference.assetId === targetAssetId,
+        )
+        if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+          return currentReferences
+        }
+
+        const orderedReferences = [...currentReferences]
+        const [movedReference] = orderedReferences.splice(sourceIndex, 1)
+        orderedReferences.splice(targetIndex, 0, movedReference)
+        return orderedReferences
+      })
+    },
+    [],
+  )
+
   const handleUseTaskAsFashionReference = useCallback((task: GenerationTask) => {
     if (task.featureType !== 'ai-fashion-photo') return
 
@@ -469,6 +491,7 @@ export function Workbench() {
         onChangeSelectedPoses={setSelectedPoses}
         onAddFashionReference={handleAddFashionReference}
         onRemoveFashionReference={handleRemoveFashionReference}
+        onReorderFashionReferences={handleReorderFashionReferences}
         onOpenCompanyModelLibrary={() => setCompanyModelLibraryRequestKey((currentKey) => currentKey + 1)}
         onOpenFaceIdLibrary={() => setFaceIdLibraryRequestKey((currentKey) => currentKey + 1)}
         onAddPose={handleAddPose}

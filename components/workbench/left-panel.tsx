@@ -105,6 +105,7 @@ interface LeftPanelProps {
   onChangeSelectedFaceIdModel?: (model: CompanyModel | null) => void;
   onAddFashionReference: (reference: FashionReferenceImage) => void;
   onRemoveFashionReference: (assetId: string) => void;
+  onReorderFashionReferences: (sourceAssetId: string, targetAssetId: string) => void;
   onOpenCompanyModelLibrary: () => void;
   onOpenFaceIdLibrary?: () => void;
   onAddPose: (pose: SavedPose) => void;
@@ -132,6 +133,7 @@ export function LeftPanel({
   onChangeSelectedFaceIdModel = () => {},
   onAddFashionReference,
   onRemoveFashionReference,
+  onReorderFashionReferences,
   onOpenCompanyModelLibrary,
   onOpenFaceIdLibrary = () => {},
   onAddPose,
@@ -772,6 +774,7 @@ export function LeftPanel({
                   });
                 }}
                 onRemoveReference={onRemoveFashionReference}
+                onReorderReferences={onReorderFashionReferences}
                 onPromptChange={setFashionPrompt}
                 onPromptModeChange={setFashionPromptMode}
                 onModelChange={setFashionModel}
@@ -1065,6 +1068,7 @@ function AiFashionPhotoForm({
   onAddUploadReference,
   onAddModelReference,
   onRemoveReference,
+  onReorderReferences,
   onPromptChange,
   onPromptModeChange,
   onModelChange,
@@ -1083,6 +1087,7 @@ function AiFashionPhotoForm({
   onAddUploadReference: (image: UploadedImage) => void;
   onAddModelReference: (model: CompanyModel) => void;
   onRemoveReference: (assetId: string) => void;
+  onReorderReferences: (sourceAssetId: string, targetAssetId: string) => void;
   onPromptChange: (value: string) => void;
   onPromptModeChange: (value: FashionPromptMode) => void;
   onModelChange: (value: FashionModelId) => void;
@@ -1119,6 +1124,7 @@ function AiFashionPhotoForm({
           helperText={helperText}
           onAddUploadReference={onAddUploadReference}
           onRemoveReference={onRemoveReference}
+          onReorderReferences={onReorderReferences}
         />
 
         <CompanyModelStrip
@@ -1275,21 +1281,35 @@ function FashionReferenceUploader({
   helperText,
   onAddUploadReference,
   onRemoveReference,
+  onReorderReferences,
 }: {
   references: FashionReferenceImage[];
   helperText: string;
   onAddUploadReference: (image: UploadedImage) => void;
   onRemoveReference: (assetId: string) => void;
+  onReorderReferences: (sourceAssetId: string, targetAssetId: string) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const externalDragDepthRef = useRef(0);
+  const isUploadingRef = useRef(false);
+  const draggedReferenceAssetIdRef = useRef<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  const [isExternalDragging, setIsExternalDragging] = useState(false);
+  const [draggedReferenceAssetId, setDraggedReferenceAssetId] = useState<string | null>(null);
+  const [dragOverReferenceAssetId, setDragOverReferenceAssetId] = useState<string | null>(null);
   const canAddMore = references.length < 10;
 
-  const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+  const uploadFiles = async (files: File[]) => {
     if (!files.length) return;
+
+    if (isUploadingRef.current) {
+      setUploadError("图片正在上传，请稍候再添加");
+      return;
+    }
+
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    const invalidFileCount = files.length - imageFiles.length;
 
     const availableSlots = 10 - references.length;
     if (availableSlots <= 0) {
@@ -1297,12 +1317,26 @@ function FashionReferenceUploader({
       return;
     }
 
+    const acceptedFiles = imageFiles.slice(0, availableSlots);
+    const messages: string[] = [];
+    if (invalidFileCount > 0) {
+      messages.push(`已忽略 ${invalidFileCount} 个非图片文件`);
+    }
+    if (imageFiles.length > availableSlots) {
+      messages.push("参考图最多上传10张，已自动忽略超出图片");
+    }
+    if (!acceptedFiles.length) {
+      setUploadError(messages.join("；") || "只能上传图片文件");
+      return;
+    }
+
+    isUploadingRef.current = true;
     setIsUploading(true);
     setUploadError("");
 
-    try {
-      for (const file of files.slice(0, availableSlots)) {
-        const preview = URL.createObjectURL(file);
+    const failedFiles: string[] = [];
+    for (const file of acceptedFiles) {
+      try {
         const formData = new FormData();
         formData.append("file", file);
 
@@ -1320,23 +1354,110 @@ function FashionReferenceUploader({
 
         onAddUploadReference({
           assetId: data.assetId,
-          preview,
+          preview: URL.createObjectURL(file),
           name: data.fileName,
           width: data.width,
           height: data.height,
         });
+      } catch (error) {
+        failedFiles.push(
+          `${file.name}：${error instanceof Error ? error.message : "上传失败"}`,
+        );
       }
-
-      const messages: string[] = [];
-      if (files.length > availableSlots) {
-        messages.push("参考图最多上传10张，已自动忽略超出图片");
-      }
-      if (messages.length) setUploadError(messages.join("；"));
-    } catch (error) {
-      setUploadError(error instanceof Error ? error.message : "上传失败");
-    } finally {
-      setIsUploading(false);
     }
+
+    if (failedFiles.length > 0) {
+      messages.push(`上传失败：${failedFiles.join("；")}`);
+    }
+    setUploadError(messages.join("；"));
+    isUploadingRef.current = false;
+    setIsUploading(false);
+  };
+
+  const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    void uploadFiles(files);
+  };
+
+  const hasDraggedFiles = (dataTransfer: DataTransfer) =>
+    Array.from(dataTransfer.types).includes("Files");
+
+  const handleExternalDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    externalDragDepthRef.current += 1;
+    setIsExternalDragging(true);
+  };
+
+  const handleExternalDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = isUploading ? "none" : "copy";
+  };
+
+  const handleExternalDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    externalDragDepthRef.current = Math.max(0, externalDragDepthRef.current - 1);
+    if (externalDragDepthRef.current === 0) {
+      setIsExternalDragging(false);
+    }
+  };
+
+  const handleExternalDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    externalDragDepthRef.current = 0;
+    setIsExternalDragging(false);
+    void uploadFiles(Array.from(event.dataTransfer.files));
+  };
+
+  const resetReferenceDrag = () => {
+    draggedReferenceAssetIdRef.current = null;
+    setDraggedReferenceAssetId(null);
+    setDragOverReferenceAssetId(null);
+  };
+
+  const handleReferenceDragStart = (
+    event: React.DragEvent<HTMLDivElement>,
+    reference: FashionReferenceImage,
+  ) => {
+    draggedReferenceAssetIdRef.current = reference.assetId;
+    setDraggedReferenceAssetId(reference.assetId);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", reference.assetId);
+  };
+
+  const handleReferenceDragOver = (
+    event: React.DragEvent<HTMLDivElement>,
+    targetAssetId: string,
+  ) => {
+    if (draggedReferenceAssetIdRef.current === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+    setDragOverReferenceAssetId(targetAssetId);
+  };
+
+  const handleReferenceDrop = (
+    event: React.DragEvent<HTMLDivElement>,
+    targetAssetId: string,
+  ) => {
+    const sourceAssetId = draggedReferenceAssetIdRef.current;
+    if (sourceAssetId === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (sourceAssetId !== targetAssetId) {
+      onReorderReferences(sourceAssetId, targetAssetId);
+    }
+
+    resetReferenceDrag();
   };
 
   return (
@@ -1347,20 +1468,52 @@ function FashionReferenceUploader({
           {references.length}/10
         </span>
       </div>
-      <div className="max-h-[276px] overflow-y-auto pr-1">
-        <div className="grid grid-cols-4 gap-2">
-          {references.map((reference) => (
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        可从本地拖入多张图片；拖拽缩略图可调整顺序，序号即模型读取顺序
+      </p>
+      <div
+        onDragEnter={handleExternalDragEnter}
+        onDragOver={handleExternalDragOver}
+        onDragLeave={handleExternalDragLeave}
+        onDrop={handleExternalDrop}
+        className={cn(
+          "relative max-h-[276px] overflow-y-auto rounded-lg border border-transparent p-1 pr-1 transition-colors",
+          isExternalDragging && "border-primary bg-primary/10 ring-2 ring-primary/20",
+        )}
+      >
+        <div className="grid grid-cols-4 gap-2" role="list" aria-label="服装大片参考图顺序">
+          {references.map((reference, index) => (
             <div
               key={reference.assetId}
-              className="group relative aspect-square overflow-hidden rounded-md border border-border bg-background"
+              role="listitem"
+              draggable={!isUploading}
+              onDragStart={(event) => handleReferenceDragStart(event, reference)}
+              onDragOver={(event) => handleReferenceDragOver(event, reference.assetId)}
+              onDrop={(event) => handleReferenceDrop(event, reference.assetId)}
+              onDragEnd={resetReferenceDrag}
+              title={`参考图 ${index + 1}，拖拽可调整模型读取顺序`}
+              className={cn(
+                "group relative aspect-square cursor-grab overflow-hidden rounded-md border border-border bg-background transition-all active:cursor-grabbing",
+                draggedReferenceAssetId === reference.assetId && "scale-95 opacity-45",
+                dragOverReferenceAssetId === reference.assetId &&
+                  draggedReferenceAssetId !== reference.assetId &&
+                  "border-primary ring-2 ring-primary/40",
+              )}
             >
               <img
                 src={reference.preview}
                 alt={reference.name}
-                className="h-full w-full object-cover"
+                draggable={false}
+                className="pointer-events-none h-full w-full select-none object-cover"
               />
               <span className="absolute left-1.5 top-1.5 max-w-[72px] truncate rounded bg-background/85 px-1.5 py-0.5 text-[10px] text-foreground">
                 {reference.source === "model" ? "模特" : "参考"}
+              </span>
+              <span
+                className="absolute bottom-1.5 left-1.5 flex h-6 min-w-6 items-center justify-center rounded-full border border-white/70 bg-black/75 px-1.5 text-xs font-semibold text-white shadow"
+                aria-label={`模型读取序号 ${index + 1}`}
+              >
+                {index + 1}
               </span>
               <button
                 type="button"
@@ -1377,7 +1530,8 @@ function FashionReferenceUploader({
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
-              className="aspect-square rounded-md border border-dashed border-border bg-secondary px-3 text-center transition-colors hover:border-primary/60 hover:bg-primary/5"
+              disabled={isUploading}
+              className="aspect-square rounded-md border border-dashed border-border bg-secondary px-3 text-center transition-colors hover:border-primary/60 hover:bg-primary/5 disabled:cursor-wait disabled:opacity-70"
             >
               <span className="flex h-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
                 {isUploading ? (
@@ -1390,6 +1544,11 @@ function FashionReferenceUploader({
             </button>
           )}
         </div>
+        {isExternalDragging && (
+          <div className="pointer-events-none absolute inset-1 z-20 flex items-center justify-center rounded-md bg-background/90 text-center text-sm font-medium text-primary backdrop-blur-sm">
+            {canAddMore ? "松开以上传图片" : "参考图已达 10 张上限"}
+          </div>
+        )}
       </div>
       {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
       <input
