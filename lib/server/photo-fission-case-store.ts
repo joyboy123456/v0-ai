@@ -1,5 +1,8 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import {
+  loadJsonFileWithRecovery,
+  writeJsonFileAtomic,
+} from '@/lib/server/json-file-store'
 import { PHOTO_FISSION_CASES, type PhotoFissionCase } from '@/lib/types'
 
 /**
@@ -45,35 +48,21 @@ const stateReady = loadState().finally(() => {
 })
 
 async function loadState() {
-  try {
-    const raw = await readFile(stateFilePath, 'utf8')
-    const parsed = JSON.parse(raw) as Partial<HiddenState>
+  const parsed = await loadJsonFileWithRecovery({
+    filePath: stateFilePath,
+    label: 'photo-fission-case-store',
+    parse: parseHiddenState,
+  })
+  if (!parsed) return
 
-    if (Array.isArray(parsed.hiddenCaseIds)) {
-      store.hiddenCases = new Set(
-        parsed.hiddenCaseIds.filter(
-          (id): id is string => typeof id === 'string',
-        ),
-      )
+  store.hiddenCases = new Set(parsed.hiddenCaseIds)
+  const hiddenShots = new Map<string, Set<number>>()
+  for (const [caseId, indices] of Object.entries(parsed.hiddenShots)) {
+    if (indices.length) {
+      hiddenShots.set(caseId, new Set(indices))
     }
-
-    if (parsed.hiddenShots && typeof parsed.hiddenShots === 'object') {
-      const map = new Map<string, Set<number>>()
-      for (const [caseId, indices] of Object.entries(parsed.hiddenShots)) {
-        if (!Array.isArray(indices)) continue
-        const numericIndices = indices.filter(
-          (value): value is number =>
-            typeof value === 'number' && Number.isInteger(value) && value >= 0,
-        )
-        if (numericIndices.length) {
-          map.set(caseId, new Set(numericIndices))
-        }
-      }
-      store.hiddenShots = map
-    }
-  } catch {
-    // 首次启动 / 文件不存在：当作空隐藏集合
   }
+  store.hiddenShots = hiddenShots
 }
 
 let persistChain: Promise<void> = Promise.resolve()
@@ -87,7 +76,6 @@ function persistState(): Promise<void> {
 }
 
 async function writeStateFile() {
-  await mkdir(dataDir, { recursive: true })
   const payload: HiddenState = {
     hiddenCaseIds: Array.from(store.hiddenCases),
     hiddenShots: Object.fromEntries(
@@ -97,11 +85,49 @@ async function writeStateFile() {
       ]),
     ),
   }
-  await writeFile(stateFilePath, JSON.stringify(payload, null, 2), 'utf8')
+  await writeJsonFileAtomic(
+    stateFilePath,
+    payload,
+    'photo-fission-case-store',
+  )
 }
 
 async function ensureReady() {
   if (!stateLoaded) await stateReady
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseHiddenState(value: unknown): HiddenState {
+  if (!isRecord(value)) {
+    throw new Error('案例隐藏配置 JSON 根节点必须是对象')
+  }
+
+  const hiddenCaseIds = Array.isArray(value.hiddenCaseIds)
+    ? value.hiddenCaseIds.filter(
+        (id): id is string => typeof id === 'string',
+      )
+    : []
+  const hiddenShots: Record<string, number[]> = {}
+
+  if (isRecord(value.hiddenShots)) {
+    for (const [caseId, indices] of Object.entries(value.hiddenShots)) {
+      if (!Array.isArray(indices)) continue
+      const numericIndices = indices.filter(
+        (index): index is number =>
+          typeof index === 'number' &&
+          Number.isInteger(index) &&
+          index >= 0,
+      )
+      if (numericIndices.length) {
+        hiddenShots[caseId] = numericIndices
+      }
+    }
+  }
+
+  return { hiddenCaseIds, hiddenShots }
 }
 
 /**

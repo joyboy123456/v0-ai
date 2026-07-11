@@ -21,7 +21,7 @@
  * 使用方式：先 pm2 stop yibai-fission，再 node scripts/rebuild-tasks-from-oss.mjs
  */
 import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync } from 'fs'
-import { join } from 'path'
+import { basename, join } from 'path'
 import OSS from 'ali-oss'
 
 const cwd = process.cwd()
@@ -184,7 +184,7 @@ for (const taskId of ossTaskIds) {
     newAssets.push({
       assetId,
       userId: 'usr_local_user01',
-      fileName: img.'`${(),||''}
+      fileName: basename(img.key),
       fileUrl: url,
       fileType: img.key.endsWith('.png') ? 'image/png' : 'image/jpeg',
       width: 0,

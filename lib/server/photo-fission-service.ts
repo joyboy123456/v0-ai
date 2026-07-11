@@ -116,7 +116,7 @@ const pantsPoseHistoryByKey = new Map<
   string,
   { generationCount: number; generations: string[][] }
 >()
-const DEFAULT_PHOTO_FISSION_CONCURRENCY = 3
+const DEFAULT_PHOTO_FISSION_CONCURRENCY = 4
 
 function buildFaceIdSimilarityGuard(faceIdImageIndex: number): string {
   return [
@@ -1574,6 +1574,7 @@ function buildNegativeSection(
 }
 
 export interface RunPhotoFissionPipelineOptions {
+  userId: string
   taskId: string
   inputImages: string[]
   faceMaskImage?: string | null
@@ -1608,6 +1609,7 @@ interface ShotRunResult {
 }
 
 export interface RunPhotoFissionFaceRefineOptions {
+  userId: string
   taskId: string
   params: PhotoFissionParams
   sourceResult: ResultAsset
@@ -1739,6 +1741,7 @@ export async function runPhotoFissionPipeline(
   const groupPromises = Array.from(groups.values()).map(
     ({ provider, items: groupShots }) => {
       return runShotGroup({
+        userId: options.userId,
         taskId,
         provider,
         shots: groupShots,
@@ -1810,6 +1813,7 @@ export async function runPhotoFissionPipeline(
         await Promise.all(
           Array.from(failoverGroups.values()).map(({ provider, shots }) =>
             runShotGroup({
+              userId: options.userId,
               taskId,
               provider,
               shots,
@@ -1869,6 +1873,7 @@ export async function runPhotoFissionFaceRefine(
   for (const provider of providers) {
     try {
       const result = await runImageEditViaProvider({
+        userId: options.userId,
         taskId: options.taskId,
         provider,
         fallbackApiKey: provider.apiKey || options.apiKey,
@@ -1931,6 +1936,7 @@ function buildFaceRefinePrompt(sourceResult: ResultAsset): string {
 }
 
 interface RunShotGroupOptions {
+  userId: string
   taskId: string
   provider: ImageProvider
   shots: PhotoFissionShot[]
@@ -1955,6 +1961,7 @@ interface RunShotGroupOptions {
 async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
   const {
     taskId,
+    userId,
     provider,
     shots,
     params,
@@ -2017,6 +2024,7 @@ async function runShotGroup(options: RunShotGroupOptions): Promise<void> {
           ? getPantsShotInputImageLabels(pantsAvailability, pantsView ?? 'front')
           : undefined
         const single = await runImageEditViaProvider({
+          userId,
           taskId,
           provider,
           fallbackApiKey: apiKey,

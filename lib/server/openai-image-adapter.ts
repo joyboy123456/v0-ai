@@ -50,6 +50,7 @@ interface ResolvedOpenAIModel {
 }
 
 export interface OpenAIEditInput {
+  userId: string
   taskId: string
   apiKey: string
   /** 老张 API API base URL（默认 https://api.qnaigc.com） */
@@ -75,6 +76,7 @@ export interface OpenAIEditInput {
   maxIpm?: number
   /** 该 provider 的 RPM 上限 */
   maxRpm?: number
+  signal?: AbortSignal
 }
 
 interface OpenAIImageItem {
@@ -168,7 +170,7 @@ export async function runOpenAIImageEdit(input: OpenAIEditInput): Promise<Result
     }
 
     return callGoogleImageWithRetry(
-      async (attempt) => {
+      async (attempt, attemptSignal) => {
         const callStart = Date.now()
         logImageEvent('gimg.attempt', { ...ctx, attempt }, {
           adapter: 'openai',
@@ -189,6 +191,7 @@ export async function runOpenAIImageEdit(input: OpenAIEditInput): Promise<Result
             body: JSON.stringify(buildOpenAIRequestBody(input, resolvedModel)),
           },
           input.timeoutMs,
+          attemptSignal,
         )
 
         const data = (await readJsonResponse(response)) as OpenAIImageResponse
@@ -228,6 +231,13 @@ export async function runOpenAIImageEdit(input: OpenAIEditInput): Promise<Result
         rateLimitKey: input.rateLimitKey,
         maxIpm: input.maxIpm,
         maxRpm: input.maxRpm,
+        signal: input.signal,
+        scheduler: {
+          userId: input.userId,
+          taskId: input.taskId,
+          providerId: input.providerId ?? input.apiKey,
+          resolution: input.imageSize,
+        },
       },
       {
         // 老张 API中转：server_error(502/503) / rate_limit(429) 第一次失败就交给上层
@@ -507,9 +517,13 @@ async function fetchWithTimeout(
   url: string,
   init: RequestInit,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  const onAbort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) onAbort()
+  else signal?.addEventListener('abort', onAbort, { once: true })
 
   try {
     return await fetch(url, { ...init, signal: controller.signal })
@@ -518,6 +532,14 @@ async function fetchWithTimeout(
       error instanceof Error &&
       (error.name === 'AbortError' || error.message.toLowerCase().includes('aborted'))
     ) {
+      if (signal?.aborted) {
+        throw new GoogleImageError({
+          category: 'network',
+          message: '老张 API API 调用已取消',
+          retryable: false,
+          cause: error,
+        })
+      }
       const seconds = Math.round(timeoutMs / 1000)
       throw new GoogleImageError({
         category: 'network',
@@ -535,6 +557,7 @@ async function fetchWithTimeout(
     })
   } finally {
     clearTimeout(timeoutId)
+    signal?.removeEventListener('abort', onAbort)
   }
 }
 

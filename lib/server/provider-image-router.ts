@@ -9,8 +9,10 @@ import type { ResultAsset } from '@/lib/types'
 import { runGoogleImageEdit } from './google-genai-adapter'
 import { resolveImageSize } from './image-size-policy'
 import {
+  beginProviderRequest,
+  finishProviderRequest,
   getProviderRateLimitKey,
-  tripProviderCircuit,
+  type ProviderFailureCategory,
   type ImageProvider,
 } from './image-provider-pool'
 import { GoogleImageError } from './google-image-retry'
@@ -21,6 +23,7 @@ import { runLaozhangImageEdit } from './laozhang-image-adapter'
 import { appendBillingEvent } from './billing/billing-store'
 
 export interface ProviderImageEditInput {
+  userId: string
   taskId: string
   provider: ImageProvider
   /** 降级 apiKey（provider.apiKey 为空时使用） */
@@ -51,15 +54,25 @@ export async function runImageEditViaProvider(
   const timeoutMs = provider.timeoutMs || 600000
   const resolvedSize = resolveImageSize(input.aspectRatio, input.imageSize)
   const rateLimitKey = getProviderRateLimitKey(provider)
+  const requestToken = beginProviderRequest(provider.id)
+  if (!requestToken) {
+    throw new GoogleImageError({
+      category: 'server_error',
+      message: `生图渠道 ${provider.id} 当前处于熔断或半开探测状态，请稍后重试`,
+      retryable: true,
+    })
+  }
 
   try {
-    switch (provider.type) {
+    const results = await (async () => {
+      switch (provider.type) {
       case 'laozhang':
         return await recordBillingAndReturn(
           provider.id,
           input.model || provider.model || '',
           input.taskId,
           runLaozhangImageEdit({
+            userId: input.userId,
             taskId: input.taskId,
             apiKey,
             model: input.model || provider.model || '',
@@ -87,6 +100,7 @@ export async function runImageEditViaProvider(
           input.model || provider.model || '',
           input.taskId,
           runOpenAIImageEdit({
+            userId: input.userId,
             taskId: input.taskId,
             apiKey,
             baseUrl: provider.baseUrl,
@@ -103,6 +117,7 @@ export async function runImageEditViaProvider(
             rateLimitKey,
             maxIpm: provider.maxIpm,
             maxRpm: provider.maxRpm,
+            signal: input.signal,
           }),
         )
 
@@ -112,6 +127,7 @@ export async function runImageEditViaProvider(
           input.model || provider.model || '',
           input.taskId,
           runJimengImageEdit({
+            userId: input.userId,
             taskId: input.taskId,
             apiKey,
             model: input.model || provider.model || '',
@@ -128,6 +144,7 @@ export async function runImageEditViaProvider(
             rateLimitKey,
             maxIpm: provider.maxIpm,
             maxRpm: provider.maxRpm,
+            signal: input.signal,
           }),
         )
 
@@ -151,6 +168,7 @@ export async function runImageEditViaProvider(
           volcesModel,
           input.taskId,
           runVolcesImageEdit({
+            userId: input.userId,
             taskId: input.taskId,
             apiKey,
             baseUrl: provider.baseUrl,
@@ -168,6 +186,7 @@ export async function runImageEditViaProvider(
             rateLimitKey,
             maxIpm: provider.maxIpm,
             maxRpm: provider.maxRpm,
+            signal: input.signal,
           }),
         )
       }
@@ -179,6 +198,7 @@ export async function runImageEditViaProvider(
           input.model || provider.model || '',
           input.taskId,
           runGoogleImageEdit({
+            userId: input.userId,
             taskId: input.taskId,
             apiKey,
             model: input.model || provider.model || '',
@@ -199,13 +219,35 @@ export async function runImageEditViaProvider(
             onRetryAttempt: input.onRetryAttempt,
           }),
         )
-    }
+      }
+    })()
+    finishProviderRequest(requestToken, { category: 'success' })
+    return results
   } catch (error) {
-    if (error instanceof GoogleImageError && error.category === 'auth_failed') {
-      tripProviderCircuit(provider.id)
-    }
+    finishProviderRequest(requestToken, {
+      category: classifyProviderFailure(error),
+    })
     throw withUpstreamErrorContext(error, provider)
   }
+}
+
+function classifyProviderFailure(error: unknown): ProviderFailureCategory {
+  if (!(error instanceof GoogleImageError)) return 'other_failure'
+  if (error.category === 'rate_limit' || error.httpStatus === 429) return 'rate_limit'
+  if (
+    error.category === 'auth_failed' ||
+    error.httpStatus === 401 ||
+    error.httpStatus === 403
+  ) return 'auth_failed'
+  if (
+    error.category === 'network' &&
+    /timeout|timed out|超时|aborted/i.test(error.message)
+  ) return 'timeout'
+  if (
+    error.category === 'server_error' ||
+    (typeof error.httpStatus === 'number' && error.httpStatus >= 500)
+  ) return 'server_error'
+  return 'other_failure'
 }
 
 /**

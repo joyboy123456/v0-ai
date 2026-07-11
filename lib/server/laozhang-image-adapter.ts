@@ -44,6 +44,7 @@ const MODEL_ID_MAPPING: Record<string, string> = {
 }
 
 export interface LaozhangEditInput {
+  userId: string
   taskId: string
   /** 老张 API Key（sk-xxx 格式） */
   apiKey: string
@@ -90,6 +91,7 @@ export async function runLaozhangImageEdit(input: LaozhangEditInput): Promise<Re
   if (isGeminiModel) {
     // Gemini 模型：使用 Google 原生格式（runGoogleImageEdit）
     const googleInput: GoogleEditInput = {
+      userId: input.userId,
       taskId: input.taskId,
       apiKey: input.apiKey,
       baseUrl: LAOZHANG_GOOGLE_BASE_URL,
@@ -116,6 +118,7 @@ export async function runLaozhangImageEdit(input: LaozhangEditInput): Promise<Re
     // GPT/SeeDream 模型：使用 OpenAI Images API 格式（runOpenAIImageEdit）
     const baseUrl = 'https://api.laozhang.ai'
     const qiniuInput: OpenAIEditInput = {
+      userId: input.userId,
       taskId: input.taskId,
       apiKey: input.apiKey,
       baseUrl,
@@ -132,9 +135,9 @@ export async function runLaozhangImageEdit(input: LaozhangEditInput): Promise<Re
       rateLimitKey: input.rateLimitKey,
       maxIpm: input.maxIpm,
       maxRpm: input.maxRpm,
+      signal: input.signal,
     }
 
     return runOpenAIImageEdit(qiniuInput)
   }
 }
-

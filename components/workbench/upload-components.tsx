@@ -108,6 +108,12 @@ export function UploadBox({
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState("");
 
+  const releaseCurrentPreview = () => {
+    if (image?.preview.startsWith("blob:")) {
+      URL.revokeObjectURL(image.preview);
+    }
+  };
+
   const handleChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -123,7 +129,6 @@ export function UploadBox({
         optimizeForGeneration,
       );
 
-      const preview = URL.createObjectURL(prepared.file);
       const formData = new FormData();
       formData.append("file", prepared.file);
       if (prepared.width > 0 && prepared.height > 0) {
@@ -153,6 +158,8 @@ export function UploadBox({
         height: number;
       }>(response, "上传失败");
 
+      const preview = URL.createObjectURL(prepared.file);
+      releaseCurrentPreview();
       onUploaded({
         assetId: data.assetId,
         preview,
@@ -219,12 +226,14 @@ export function UploadBox({
                   tabIndex={0}
                   onClick={(event) => {
                     event.stopPropagation();
+                    releaseCurrentPreview();
                     onRemove();
                   }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
                       event.stopPropagation();
+                      releaseCurrentPreview();
                       onRemove();
                     }
                   }}
@@ -268,12 +277,14 @@ export function UploadBox({
                 tabIndex={0}
                 onClick={(event) => {
                   event.stopPropagation();
+                  releaseCurrentPreview();
                   onRemove();
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     event.stopPropagation();
+                    releaseCurrentPreview();
                     onRemove();
                   }
                 }}

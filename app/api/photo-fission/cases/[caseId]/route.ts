@@ -1,4 +1,6 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { requireUser } from '@/lib/server/auth/require-user'
+import { readLocalSuperAdminUsername } from '@/lib/server/auth/local-auth-mode'
 import { hideCase } from '@/lib/server/photo-fission-case-store'
 
 interface RouteContext {
@@ -17,7 +19,16 @@ interface RouteContext {
  * 404：caseId 在 PHOTO_FISSION_CASES 中不存在
  * 200：成功（含幂等）
  */
-export async function DELETE(_request: Request, context: RouteContext) {
+export async function DELETE(request: NextRequest, context: RouteContext) {
+  const userResult = await requireUser(request)
+  if (userResult instanceof NextResponse) return userResult
+  if (userResult.user.username !== readLocalSuperAdminUsername()) {
+    return NextResponse.json(
+      { ok: false, error: 'FORBIDDEN' },
+      { status: 403 },
+    )
+  }
+
   const { caseId } = await context.params
 
   const ok = await hideCase(caseId)

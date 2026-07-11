@@ -21,7 +21,15 @@ import {
 } from './image-provider-pool'
 import { GoogleImageError } from './google-image-retry'
 import { logImageEvent } from './log'
+import {
+  buildPoseFissionInputImageLabels,
+  buildPoseFissionPrompt,
+} from './pose-fission-prompt'
 import { runImageEditViaProvider } from './provider-image-router'
+import {
+  downloadSafeRemoteImage,
+  MAX_INPUT_IMAGE_BYTES,
+} from './safe-remote-image'
 import { getLocalImageForPublicUrl } from './storage/storage-adapter'
 
 const POSE_FISSION_MIN_TEMPLATES = 1
@@ -79,97 +87,6 @@ export function normalizePoseFissionParams(
     resolution,
     resultCount: poses.length,
     creditsCost: POSE_FISSION_CREDITS_COST,
-  }
-}
-
-/**
- * 构建针对「单个姿势」的生图 prompt。
- * pose-fission pipeline 会按 poses 逐个调用，每次传一个姿势参考图。
- */
-export function buildPoseFissionPrompt(
-  params: PoseFissionParams,
-  pose: PoseFissionPose,
-): string {
-  const totalImageCount =
-    2 + (params.hasFrontDetail ? 1 : 0) + (params.hasBackDetail ? 1 : 0)
-  const lowerBodyMainArmVisibility =
-    params.lowerBodyMainArmVisibility ?? 'hidden'
-
-  return [
-    getPoseFissionEditInstruction(pose.bodyPart, lowerBodyMainArmVisibility),
-    '',
-    `本次共 ${totalImageCount} 张图，按输入顺序：`,
-    '- 第 1 张 = 主图（人物、服装、背景与构图来源）：保持这位儿童的脸型五官、年龄感、发型发色、身体比例、肤色，以及童装款式、颜色、版型、面料材质和图案印花一致。',
-    ...(params.hasFrontDetail
-      ? [
-          '- 第 2 张 = 服装正面细节图（服装高保真参考）：据此精确还原服装正面的图案、主色与材质，只提供服装信息，不提供姿势/动作/人物/背景。',
-        ]
-      : []),
-    ...(params.hasBackDetail
-      ? [
-          params.hasFrontDetail
-            ? '- 第 3 张 = 服装背面细节图（服装高保真参考）：据此精确还原服装背面设计与细节，同样只提供服装信息。'
-            : '- 第 2 张 = 服装背面细节图（服装高保真参考）：据此精确还原服装背面设计与细节，同样只提供服装信息。',
-        ]
-      : []),
-    `- 第 ${totalImageCount} 张（最后一张）= 姿势参考图（姿势与必要动作道具来源）：${getPoseFissionPoseReferenceNote(pose.bodyPart, lowerBodyMainArmVisibility)}`,
-    '',
-    '背景与构图：保持主图的场景类型、背景元素、光线方向和色调；姿势参考图的场景与背景不得迁移。仅允许为容纳目标姿势进行必要裁切、人物位置调整和有限扩图，不得主动更换场景。若姿势成立需要椅子、凳子、台阶等身体支撑道具，可以从姿势参考图迁移该道具，同时继续保持主图背景。',
-    '',
-    '输出：儿童童装电商主图级画质，主体清晰、姿态自然协调、身体比例和受力关系真实，服装随动作产生合理贴合与褶皱；画面只保留主图中的这一位儿童。画面中出现手部时，双手结构自然、手指数量正确。',
-    '',
-    `当前姿势：${pose.name}。`,
-  ].join('\n')
-}
-
-function buildPoseFissionInputImageLabels(
-  params: PoseFissionParams,
-): string[] {
-  return [
-    '主图：人物、服装、背景与构图来源。',
-    ...(params.hasFrontDetail
-      ? ['服装正面细节图：只提供服装正面信息。']
-      : []),
-    ...(params.hasBackDetail
-      ? ['服装背面细节图：只提供服装背面信息。']
-      : []),
-    '姿势参考图：姿势与必要动作道具来源。',
-  ]
-}
-
-function getPoseFissionEditInstruction(
-  bodyPart: PoseBodyPart,
-  lowerBodyMainArmVisibility: PoseMainArmVisibility,
-): string {
-  switch (bodyPart) {
-    case 'full':
-      return '编辑第一张主图：只将主图中儿童的姿势与动作替换为最后一张姿势参考图中的整体身体姿态、四肢角度、身体朝向、手部动作与头部朝向；人物身份、长相与服装保持主图不变。迁移完成该动作所必需的支撑道具或手部道具，不迁移姿势图人物的服装、配饰和背景。'
-    case 'upper':
-      return '编辑第一张主图：将儿童的上半身姿态、肩、双臂、手部动作与头部朝向按最后一张姿势参考图摆放；下半身整体站位、站坐状态、腿部动作以及脚的位置和朝向保持主图。仅允许为维持真实重心，对髋部、膝部和脚踝做最小幅度联动调整。人物身份、长相与服装保持主图不变；可以迁移完成上半身动作所必需的支撑道具或手部道具。'
-    case 'lower':
-      return lowerBodyMainArmVisibility === 'visible'
-        ? '编辑第一张主图：将儿童的下半身腿部姿势、站坐状态、步态、髋部和脚的朝向与位置按最后一张姿势参考图摆放。主图原始裁切允许手或手臂进入画面，因此手部也以姿势参考图为准：严格复刻手是否出现、出现数量、位置和动作；仅为实现该手部动作，对手臂位置做必要的最小联动。头、脸、肩和上身朝向尽量保持主图，人物身份、长相与服装保持主图不变。可以迁移完成姿势所必需的身体支撑道具和手部动作道具。'
-        : '编辑第一张主图：将儿童的下半身腿部姿势、站坐状态、步态、髋部和脚的朝向与位置按最后一张姿势参考图摆放。主图原始画面完全不露手和手臂，主图上方裁切边界是不可突破的硬边界：不得向上扩图、补全、生成或露出任何手和手臂，即使姿势参考图中出现手或手臂也必须忽略。头、脸、肩、双臂、手部动作和上身朝向不得成为新增画面内容，人物身份、长相与服装保持主图不变。仅迁移椅子、凳子、台阶等身体支撑道具；舍弃手提包、扶栏等依赖手部出现或抓握的道具。左右和下方仅允许为容纳腿脚动作做最小幅度扩图。'
-    default:
-      throw new Error('姿势裂变姿势分类无效')
-  }
-}
-
-function getPoseFissionPoseReferenceNote(
-  bodyPart: PoseBodyPart,
-  lowerBodyMainArmVisibility: PoseMainArmVisibility,
-): string {
-  switch (bodyPart) {
-    case 'full':
-      return '借用其整体姿态、动作、肢体朝向及完成动作必需的道具；不借用人物长相、服装、普通配饰和背景。'
-    case 'upper':
-      return '只借上半身姿态、手部动作及完成动作必需的道具，即使它是全身图也不改变主图下半身整体站位；不借用人物长相、服装、普通配饰和背景。'
-    case 'lower':
-      return lowerBodyMainArmVisibility === 'visible'
-        ? '借用下半身姿态，并复刻其手是否出现、数量、位置、动作及完成姿势必需的道具；不借用人物长相、服装、普通配饰和背景。'
-        : '只借用下半身姿态及椅子、凳子、台阶等身体支撑道具；忽略其中所有手、手臂、手部动作和依赖手部的道具，不借用人物长相、服装、普通配饰和背景。'
-    default:
-      throw new Error('姿势裂变姿势分类无效')
   }
 }
 
@@ -270,12 +187,14 @@ function readTrimmedString(value: unknown): string | null {
 }
 
 export interface RunPoseFissionPipelineOptions {
+  userId: string
   taskId: string
   /** 顺序：[主图]。姿势图会在内部按 pose.url 逐个解析。 */
   inputImages: string[]
   params: PoseFissionParams
   apiKey: string
   timeoutMs: number
+  signal?: AbortSignal
   /** 单 pose 成功后立刻回调；用于流式持久化已成功的图。 */
   onShotResult?: (result: ResultAsset) => Promise<void>
   /** 失败 pose 重跑入口。只跑这些 pose.id；不传或空数组时跑全部 pose。 */
@@ -364,6 +283,7 @@ export async function runPoseFissionPipeline(
   const groupPromises = Array.from(groups.values()).map(
     ({ provider, items: groupPoses }) => {
       return runPoseGroup({
+        userId: options.userId,
         taskId,
         provider,
         poses: groupPoses,
@@ -373,6 +293,7 @@ export async function runPoseFissionPipeline(
         aspectRatio,
         imageSize,
         onShotResult: options.onShotResult,
+        signal: options.signal,
         poseIndexMap,
         allPoseResults,
       })
@@ -430,6 +351,7 @@ export async function runPoseFissionPipeline(
         await Promise.all(
           Array.from(failoverGroups.values()).map(({ provider, poses }) =>
             runPoseGroup({
+              userId: options.userId,
               taskId,
               provider,
               poses,
@@ -439,6 +361,7 @@ export async function runPoseFissionPipeline(
               aspectRatio,
               imageSize,
               onShotResult: options.onShotResult,
+              signal: options.signal,
               poseIndexMap,
               allPoseResults,
             }),
@@ -463,6 +386,7 @@ export async function runPoseFissionPipeline(
 }
 
 interface RunPoseGroupOptions {
+  userId: string
   taskId: string
   provider: ImageProvider
   poses: PoseFissionPose[]
@@ -472,6 +396,7 @@ interface RunPoseGroupOptions {
   aspectRatio: string | undefined
   imageSize: string
   onShotResult?: (result: ResultAsset) => Promise<void>
+  signal?: AbortSignal
   poseIndexMap: Map<string, number>
   allPoseResults: PoseRunResult[]
 }
@@ -479,6 +404,7 @@ interface RunPoseGroupOptions {
 async function runPoseGroup(options: RunPoseGroupOptions): Promise<void> {
   const {
     taskId,
+    userId,
     provider,
     poses: groupPoses,
     params,
@@ -487,6 +413,7 @@ async function runPoseGroup(options: RunPoseGroupOptions): Promise<void> {
     aspectRatio,
     imageSize,
     onShotResult,
+    signal,
     poseIndexMap,
     allPoseResults,
   } = options
@@ -504,6 +431,7 @@ async function runPoseGroup(options: RunPoseGroupOptions): Promise<void> {
       const currentIndex = nextIndex
       nextIndex += 1
       if (currentIndex >= groupPoses.length) return
+      if (signal?.aborted) return
 
       const pose = groupPoses[currentIndex]
       const globalIndex = poseIndexMap.get(pose.id)
@@ -515,6 +443,7 @@ async function runPoseGroup(options: RunPoseGroupOptions): Promise<void> {
       try {
         const poseReferenceImage = await resolvePoseReferenceToDataUrl(pose.url)
         const single = await runImageEditViaProvider({
+          userId,
           taskId,
           provider,
           fallbackApiKey: apiKey,
@@ -527,6 +456,7 @@ async function runPoseGroup(options: RunPoseGroupOptions): Promise<void> {
           imageSize,
           traceId: `${taskId}_${pose.id}`,
           shotId: pose.id,
+          signal,
         })
 
         const first = single[0]
@@ -596,24 +526,11 @@ async function resolvePoseReferenceToDataUrl(poseUrl: string): Promise<string> {
   if (poseUrl.startsWith('data:')) return poseUrl
 
   if (poseUrl.startsWith('http://') || poseUrl.startsWith('https://')) {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 30_000)
-    try {
-      const response = await fetch(poseUrl, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'YibaiFission/1.0',
-        },
-      })
-      if (!response.ok) {
-        throw new Error(`姿势参考图下载失败：HTTP ${response.status}`)
-      }
-      const buffer = Buffer.from(await response.arrayBuffer())
-      const mimeType = normalizeImageMime(response.headers.get('content-type')) ?? 'image/png'
-      return `data:${mimeType};base64,${buffer.toString('base64')}`
-    } finally {
-      clearTimeout(timeoutId)
-    }
+    const downloaded = await downloadSafeRemoteImage(poseUrl, {
+      maxBytes: MAX_INPUT_IMAGE_BYTES,
+    })
+    const mimeType = normalizeImageMime(downloaded.contentType) ?? 'image/png'
+    return `data:${mimeType};base64,${downloaded.buffer.toString('base64')}`
   }
 
   if (poseUrl.startsWith('/')) {

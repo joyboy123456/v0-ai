@@ -1,5 +1,8 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import {
+  loadJsonFileWithRecovery,
+  writeJsonFileAtomic,
+} from '@/lib/server/json-file-store'
 import type { PoseBodyPart, SavedPose } from '@/lib/types'
 
 interface PersistedState {
@@ -28,23 +31,20 @@ const stateReady = loadState().finally(() => {
 })
 
 async function loadState() {
-  try {
-    const raw = await readFile(stateFilePath, 'utf8')
-    const parsed = JSON.parse(raw) as unknown
-    if (!isRecord(parsed)) return
+  const parsed = await loadJsonFileWithRecovery({
+    filePath: stateFilePath,
+    label: 'saved-pose-store',
+    parse: parsePersistedState,
+  })
+  if (!parsed) return
 
-    const next = new Map<string, SavedPose[]>()
-    for (const [userId, poses] of Object.entries(parsed)) {
-      if (!Array.isArray(poses)) continue
-      const validPoses = poses.filter(isSavedPose)
-      if (validPoses.length) {
-        next.set(userId, validPoses)
-      }
+  const next = new Map<string, SavedPose[]>()
+  for (const [userId, poses] of Object.entries(parsed)) {
+    if (poses.length) {
+      next.set(userId, poses)
     }
-    store.posesByUserId = next
-  } catch {
-    // 首次启动 / 文件不存在：当作空姿势库。
   }
+  store.posesByUserId = next
 }
 
 let persistChain: Promise<void> = Promise.resolve()
@@ -58,14 +58,13 @@ function persistState(): Promise<void> {
 }
 
 async function writeStateFile() {
-  await mkdir(dataDir, { recursive: true })
   const payload: PersistedState = Object.fromEntries(
     Array.from(store.posesByUserId.entries()).map(([userId, poses]) => [
       userId,
       poses,
     ]),
   )
-  await writeFile(stateFilePath, JSON.stringify(payload, null, 2), 'utf8')
+  await writeJsonFileAtomic(stateFilePath, payload, 'saved-pose-store')
 }
 
 async function ensureReady() {
@@ -89,6 +88,22 @@ function getUserPoses(userId: string): SavedPose[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parsePersistedState(value: unknown): PersistedState {
+  if (!isRecord(value)) {
+    throw new Error('姿势库 JSON 根节点必须是对象')
+  }
+
+  const parsed: PersistedState = {}
+  for (const [userId, poses] of Object.entries(value)) {
+    if (!Array.isArray(poses)) continue
+    const validPoses = poses.filter(isSavedPose)
+    if (validPoses.length) {
+      parsed[userId] = validPoses
+    }
+  }
+  return parsed
 }
 
 function readPoseBodyPart(value: unknown): PoseBodyPart {

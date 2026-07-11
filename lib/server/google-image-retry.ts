@@ -1,4 +1,8 @@
 import { acquireGoogleImageSlot } from './google-image-throttle'
+import {
+  ImageQueueFullError,
+  scheduleImageWork,
+} from './image-work-scheduler'
 import { logImageEvent, type LogContext } from './log'
 
 /**
@@ -99,6 +103,16 @@ interface RetryAcquireOptions {
   maxRpm?: number
   /** 自定义 Retry-After 解析器，兼容非 Google provider 的 header 表达 */
   parseRetryAfter?: (value: string | null | undefined) => number | undefined
+  /**
+   * 全局公平调度元数据。只包裹单次真实上游 attempt；节流等待与退避 sleep
+   * 均发生在调度槽之外，避免失败请求长期占槽。
+   */
+  scheduler?: {
+    userId: string
+    taskId: string
+    providerId: string
+    resolution?: string
+  }
 }
 
 /**
@@ -274,7 +288,7 @@ export function classifyUnknownError(error: unknown): GoogleImageError {
  * acquireOptions 由调用方传入 apiKey；wrapper 在每次 attempt 进入 fn 前 acquire 一次。
  */
 export async function callGoogleImageWithRetry<T>(
-  fn: (attempt: number) => Promise<T>,
+  fn: (attempt: number, signal?: AbortSignal) => Promise<T>,
   context: LogContext,
   acquireOptions: RetryAcquireOptions,
   options?: RetryOptions,
@@ -324,9 +338,23 @@ export async function callGoogleImageWithRetry<T>(
     })
 
     try {
-      const result = await fn(attempt)
+      const scheduler = acquireOptions.scheduler
+      const result = scheduler
+        ? await scheduleImageWork({
+            ...scheduler,
+            signal: acquireOptions.signal,
+            run: (signal) => fn(attempt, signal),
+          })
+        : await fn(attempt, acquireOptions.signal)
       return result
     } catch (rawError) {
+      if (rawError instanceof ImageQueueFullError) throw rawError
+      if (
+        rawError instanceof Error &&
+        rawError.name === 'AbortError'
+      ) {
+        throw rawError
+      }
       const error =
         rawError instanceof GoogleImageError
           ? rawError

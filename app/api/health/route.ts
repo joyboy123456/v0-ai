@@ -3,9 +3,7 @@
  *
  * 设计要点：
  * - **公开端点**：不走 requireUser，middleware 白名单已加 `/api/health`。
- * - **不抛 5xx**：哪怕底层服务挂了，本路由也返回 200 + `error: ...`。
- *   原因：health 是状态报告，不是 critical failure；curl/监控脚本看到 200
- *   再解析 services 子项，比看到 5xx 更稳定。
+ * - **依赖异常返回 503**：让看门狗只检查 HTTP 状态码也能发现 OSS 故障。
  * - **STORAGE_MODE=local**：services 全部 `'skipped'`。
  * - **STORAGE_MODE=oss**：
  *   - oss: 检查 OSS 连通性
@@ -72,6 +70,7 @@ export async function GET() {
 
   if (STORAGE_MODE === 'oss') {
     payload.services.oss = await probeOss()
+    payload.ok = payload.services.oss === 'ok'
   }
 
   // 获取 provider 健康状态（延迟加载以避免循环依赖）
@@ -87,5 +86,5 @@ export async function GET() {
     // provider pool 加载失败不影响 health 状态
   }
 
-  return NextResponse.json(payload, { status: 200 })
+  return NextResponse.json(payload, { status: payload.ok ? 200 : 503 })
 }

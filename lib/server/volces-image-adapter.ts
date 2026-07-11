@@ -108,6 +108,7 @@ const RATIO_TO_SIZE_MAP: Record<string, VolcesSizeMapping> = {
 type VolcesResolution = '2K' | '3K' | '4K'
 
 export interface VolcesEditInput {
+  userId: string
   taskId: string
   apiKey: string
   /** 火山引擎 API base URL（默认 https://ark.cn-beijing.volces.com） */
@@ -147,6 +148,7 @@ export interface VolcesEditInput {
   maxIpm?: number
   /** 该 provider 的 RPM 上限 */
   maxRpm?: number
+  signal?: AbortSignal
 }
 
 interface VolcesImageItem {
@@ -281,17 +283,16 @@ async function callVolcesOnce(
     outputFormat: requestBody.output_format,
   })
 
-  const response = await callGoogleImageWithRetry(
-    async () => {
-      const res = await fetch(url, {
+  return callGoogleImageWithRetry(
+    async (_attempt, attemptSignal) => {
+      const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${input.apiKey}`,
         },
         body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(input.timeoutMs),
-      })
+      }, input.timeoutMs, attemptSignal)
 
       if (!res.ok) {
         const text = await res.text().catch(() => '')
@@ -319,7 +320,40 @@ async function callVolcesOnce(
         })
       }
 
-      return res
+      const text = await res.text()
+      let json: VolcesImageResponse
+      try {
+        json = JSON.parse(text)
+      } catch {
+        throw new GoogleImageError({
+          category: 'api_error',
+          message: `火山引擎 API 返回非 JSON 格式响应: ${text.slice(0, 500)}`,
+        })
+      }
+
+      if (!json.data || !Array.isArray(json.data) || json.data.length === 0) {
+        throw new GoogleImageError({
+          category: 'api_error',
+          message: `火山引擎 API 返回空数据: ${JSON.stringify(json).slice(0, 300)}`,
+        })
+      }
+
+      const item = json.data[0]
+      if (!item.url && !item.b64_json) {
+        throw new GoogleImageError({
+          category: 'api_error',
+          message: `火山引擎 API 返回的图片项缺少 url 或 b64_json: ${JSON.stringify(item).slice(0, 300)}`,
+        })
+      }
+
+      logImageEvent('volces.success', logCtx, {
+        hasUrl: Boolean(item.url),
+        hasB64: Boolean(item.b64_json),
+        size: item.size,
+        usage: json.usage,
+      })
+
+      return item
     },
     logCtx,
     {
@@ -329,43 +363,35 @@ async function callVolcesOnce(
       maxIpm: input.maxIpm || 500, // 豆包 Seedream 4.5 IPM 默认 500
       maxRpm: input.maxRpm || 150,
       parseRetryAfter,
+      signal: input.signal,
+      scheduler: {
+        userId: input.userId,
+        taskId: input.taskId,
+        providerId: input.providerId ?? input.apiKey,
+        resolution: input.resolvedSize?.resolution ?? input.size,
+      },
     },
   )
+}
 
-  const text = await response.text()
-  let json: VolcesImageResponse
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  const onAbort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) onAbort()
+  else signal?.addEventListener('abort', onAbort, { once: true })
+
   try {
-    json = JSON.parse(text)
-  } catch {
-    throw new GoogleImageError({
-      category: 'api_error',
-      message: `火山引擎 API 返回非 JSON 格式响应: ${text.slice(0, 500)}`,
-    })
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timeoutId)
+    signal?.removeEventListener('abort', onAbort)
   }
-
-  if (!json.data || !Array.isArray(json.data) || json.data.length === 0) {
-    throw new GoogleImageError({
-      category: 'api_error',
-      message: `火山引擎 API 返回空数据: ${JSON.stringify(json).slice(0, 300)}`,
-    })
-  }
-
-  const item = json.data[0]
-  if (!item.url && !item.b64_json) {
-    throw new GoogleImageError({
-      category: 'api_error',
-      message: `火山引擎 API 返回的图片项缺少 url 或 b64_json: ${JSON.stringify(item).slice(0, 300)}`,
-    })
-  }
-
-  logImageEvent('volces.success', logCtx, {
-    hasUrl: Boolean(item.url),
-    hasB64: Boolean(item.b64_json),
-    size: item.size,
-    usage: json.usage,
-  })
-
-  return item
 }
 
 /**

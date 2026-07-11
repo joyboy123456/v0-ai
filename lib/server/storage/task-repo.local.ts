@@ -77,6 +77,9 @@ function taskToRow(task: GenerationTask): TaskRow {
       errorMessage: task.errorMessage,
       creditsUsed: task.creditsUsed,
       userId: task.userId,
+      recoveryAttempts: task.recoveryAttempts,
+      lastRecoveredAt: task.lastRecoveredAt,
+      recoveryExecutionKey: task.recoveryExecutionKey,
     }),
     resultJson: safeJson({
       resultAssetIds: task.resultAssetIds,
@@ -100,6 +103,9 @@ function rowToTask(row: TaskRow): GenerationTask {
     errorMessage?: string
     creditsUsed?: number
     userId?: string
+    recoveryAttempts?: number
+    lastRecoveredAt?: string
+    recoveryExecutionKey?: string
   }>(row.payloadJson)
   const result = safeParse<{
     resultAssetIds?: string[]
@@ -121,6 +127,9 @@ function rowToTask(row: TaskRow): GenerationTask {
     shotProgress: payload?.shotProgress,
     errorMessage: payload?.errorMessage,
     creditsUsed: payload?.creditsUsed ?? 0,
+    recoveryAttempts: payload?.recoveryAttempts,
+    lastRecoveredAt: payload?.lastRecoveredAt,
+    recoveryExecutionKey: payload?.recoveryExecutionKey,
     resultAssetIds: result?.resultAssetIds ?? [],
     results: result?.results ?? [],
     createdAt: new Date(row.createdAt).toISOString(),
@@ -220,6 +229,9 @@ export function createLocalTaskRepo(): TaskRepo {
           creditsUsed?: number
           inputAssetIds?: string[]
           params?: TaskParams
+          recoveryAttempts?: number
+          lastRecoveredAt?: string
+          recoveryExecutionKey?: string
         }>(patch.payloadJson)
         if (parsed) {
           if (parsed.progress !== undefined) next.progress = parsed.progress
@@ -238,6 +250,15 @@ export function createLocalTaskRepo(): TaskRepo {
           }
           if (parsed.params !== undefined) {
             next.params = parsed.params
+          }
+          if (parsed.recoveryAttempts !== undefined) {
+            next.recoveryAttempts = parsed.recoveryAttempts
+          }
+          if (parsed.lastRecoveredAt !== undefined) {
+            next.lastRecoveredAt = parsed.lastRecoveredAt
+          }
+          if (parsed.recoveryExecutionKey !== undefined) {
+            next.recoveryExecutionKey = parsed.recoveryExecutionKey
           }
         }
       }

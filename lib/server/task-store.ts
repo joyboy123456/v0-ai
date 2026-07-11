@@ -12,6 +12,16 @@ import {
   runPhotoFissionPipeline,
 } from '@/lib/server/photo-fission-service'
 import { isLocalSuperAdminEnabled } from '@/lib/server/auth/local-auth-mode'
+import { cancelScheduledTask } from '@/lib/server/image-work-scheduler'
+import {
+  decideInterruptedTaskRecovery,
+  shouldStartInterruptedTaskRecovery,
+} from '@/lib/server/task-recovery'
+import {
+  downloadSafeRemoteImage,
+  MAX_GENERATED_IMAGE_BYTES,
+  MAX_INPUT_IMAGE_BYTES,
+} from '@/lib/server/safe-remote-image'
 import {
   getLocalImageForPublicUrl,
   getStorageAdapter,
@@ -42,6 +52,8 @@ const globalStore = globalThis as typeof globalThis & {
     tasks: Map<string, GenerationTask>
   }
   fashionMvpTaskControllers?: Map<string, AbortController>
+  fashionMvpRecoveryExecutionKeys?: Set<string>
+  fashionMvpRecoveryStarted?: boolean
 }
 
 const store = globalStore.fashionMvpStore ?? {
@@ -53,6 +65,9 @@ globalStore.fashionMvpStore = store
 const runningTaskControllers =
   globalStore.fashionMvpTaskControllers ?? new Map<string, AbortController>()
 globalStore.fashionMvpTaskControllers = runningTaskControllers
+const activeRecoveryExecutionKeys =
+  globalStore.fashionMvpRecoveryExecutionKeys ?? new Set<string>()
+globalStore.fashionMvpRecoveryExecutionKeys = activeRecoveryExecutionKeys
 
 const defaultUserId = 'demo_user'
 const defaultProjectId = 'demo_project'
@@ -121,6 +136,9 @@ function buildTaskRow(task: GenerationTask): TaskRow {
       errorMessage: task.errorMessage,
       creditsUsed: task.creditsUsed,
       userId: task.userId,
+      recoveryAttempts: task.recoveryAttempts,
+      lastRecoveredAt: task.lastRecoveredAt,
+      recoveryExecutionKey: task.recoveryExecutionKey,
     }),
     resultJson: JSON.stringify({
       resultAssetIds: task.resultAssetIds,
@@ -223,15 +241,14 @@ async function storeResultFromResultAsset(
     throw new Error(`生成图归档失败：URL 协议不支持（${result.url}）`)
   }
 
-  const response = await fetch(result.url)
-  if (!response.ok) {
-    throw new Error(`生成图归档失败：HTTP ${response.status}（${result.url}）`)
-  }
-  const buffer = Buffer.from(await response.arrayBuffer())
+  const downloaded = await downloadSafeRemoteImage(result.url, {
+    maxBytes: MAX_GENERATED_IMAGE_BYTES,
+  })
+  const buffer = downloaded.buffer
   const imageMetadata = await readImageMetadataFromBuffer(buffer)
   const mimeType =
     imageMetadata.mimeType ??
-    normalizeImageMime(response.headers.get('content-type')) ??
+    normalizeImageMime(downloaded.contentType) ??
     'image/png'
   const persisted = await storage().putImage({
     userId: userId === defaultUserId ? null : userId,
@@ -447,19 +464,7 @@ export async function cancelTask(taskId: string, userId?: string) {
     throw new Error('当前任务状态不允许取消')
   }
 
-  const photoParams =
-    task.featureType === 'photo-fission'
-      ? (task.params as Partial<PhotoFissionParams>)
-      : null
-  const childrensCategory = photoParams?.childrensCategory
-  if (
-    childrensCategory !== 'dress' &&
-    childrensCategory !== 'suit' &&
-    childrensCategory !== 'pants'
-  ) {
-    throw new Error('当前任务不支持取消')
-  }
-
+  cancelScheduledTask(taskId, '任务已手动取消')
   runningTaskControllers.get(taskId)?.abort()
   const resultCount = task.results.length
   const succeededShotIds = new Set(
@@ -506,11 +511,14 @@ export async function createTask(input: {
   const effectiveUserId =
     input.userId && input.userId.trim() ? input.userId : defaultUserId
 
-  const missingAsset = input.inputAssetIds.find(
-    (assetId) => !store.assets.has(assetId),
-  )
-  if (missingAsset) {
-    throw new Error(`素材不存在：${missingAsset}`)
+  const inaccessibleAsset = input.inputAssetIds.find((assetId) => {
+    const asset = store.assets.get(assetId)
+    if (!asset) return true
+    if (shouldBypassOwnership(effectiveUserId)) return false
+    return (asset.userId ?? defaultUserId) !== effectiveUserId
+  })
+  if (inaccessibleAsset) {
+    throw new Error(`素材不存在或无权访问：${inaccessibleAsset}`)
   }
 
   validatePhotoFissionFaceMaskAsset(
@@ -691,12 +699,15 @@ function updateAllShotProgress(
   taskId: string,
   status: ShotProgressStatus,
   message: string,
+  targetShotIds?: ReadonlySet<string>,
 ) {
   const task = store.tasks.get(taskId)
   if (!task) return
   updateTask(taskId, {
     shotProgress: ensureShotProgress(task).map((item) => {
-      if (item.status === 'success' || item.status === 'failed') return item
+      if (targetShotIds && !targetShotIds.has(item.shotId)) return item
+      if (item.status === 'success') return item
+      if (!targetShotIds && item.status === 'failed') return item
       return { ...item, status, message }
     }),
   })
@@ -756,12 +767,37 @@ function hydrateTaskInputAssets(task: GenerationTask): GenerationTask {
   }
 }
 
-async function runTask(taskId: string) {
+interface RunTaskOptions {
+  targetUnitIds?: string[]
+  recoveryExecutionKey?: string
+}
+
+function mergeResultsByAssetId(
+  existing: ResultAsset[],
+  incoming: ResultAsset[],
+): ResultAsset[] {
+  const merged = new Map(existing.map((result) => [result.assetId, result]))
+  for (const result of incoming) merged.set(result.assetId, result)
+  return [...merged.values()]
+}
+
+async function runTask(taskId: string, options: RunTaskOptions = {}) {
   console.log('[task-store] runTask 开始执行:', taskId)
   await storeReady
   const task = store.tasks.get(taskId)
   if (!task) {
     console.log('[task-store] runTask 找不到任务:', taskId)
+    return
+  }
+  if (task.status !== 'pending' && task.status !== 'running') {
+    console.log('[task-store] runTask 跳过终态任务:', taskId, task.status)
+    return
+  }
+  if (
+    options.recoveryExecutionKey &&
+    task.recoveryExecutionKey !== options.recoveryExecutionKey
+  ) {
+    console.log('[task-store] runTask 跳过已过期的恢复批次:', taskId)
     return
   }
   console.log('[task-store] runTask 找到任务，状态:', task.status)
@@ -770,6 +806,10 @@ async function runTask(taskId: string) {
   const ownerUserId = task.userId ?? defaultUserId
   const controller = new AbortController()
   runningTaskControllers.set(taskId, controller)
+  const targetUnitIds = options.targetUnitIds?.length
+    ? Array.from(new Set(options.targetUnitIds))
+    : undefined
+  const targetUnitIdSet = targetUnitIds ? new Set(targetUnitIds) : undefined
 
   try {
     updateTask(taskId, {
@@ -778,9 +818,12 @@ async function runTask(taskId: string) {
       message: '正在校验上传素材',
       shotProgress: ensureShotProgress(task).map((item) => ({
         ...item,
-        status: 'prompting',
-        message: '正在写提示词...',
+        ...(targetUnitIdSet && !targetUnitIdSet.has(item.shotId)
+          ? {}
+          : { status: 'prompting' as const, message: '正在写提示词...' }),
       })),
+      finishedAt: undefined,
+      errorMessage: undefined,
     })
 
     await wait(500)
@@ -796,7 +839,12 @@ async function runTask(taskId: string) {
       progress: 72,
       message: '正在调用第三方生图 API',
     })
-    updateAllShotProgress(taskId, 'generating', '正在生图...')
+    updateAllShotProgress(
+      taskId,
+      'generating',
+      '正在生图...',
+      targetUnitIdSet,
+    )
 
     const inputImages = (
       await Promise.all(
@@ -835,18 +883,22 @@ async function runTask(taskId: string) {
       // 避免双重 Google 调用与 demo 路径分叉（demo 模式仍在 runThirdPartyWorkflow 内处理 photo-fission，
       // pose-fission demo 退化为占位 case 输出由后续 PR 处理；此 PR 关注真实生产路径）。
       results = await runPoseFissionPipeline({
+        userId: ownerUserId,
         taskId,
         inputImages,
         params: task.params as PoseFissionParams,
         apiKey: process.env.GOOGLE_API_KEY ?? '',
         timeoutMs: Number(process.env.GOOGLE_IMAGE_TIMEOUT_MS ?? 600000),
+        signal: controller.signal,
         onShotResult,
+        targetPoseIds: targetUnitIds,
       })
     } else {
       const faceMaskImage = isPhotoFission
         ? await resolvePhotoFissionFaceMaskDataUrl(task.params as PhotoFissionParams)
         : null
       results = await runThirdPartyWorkflow({
+        userId: ownerUserId,
         taskId,
         featureType: task.featureType,
         workflowId: task.workflowId,
@@ -862,15 +914,21 @@ async function runTask(taskId: string) {
           })
         },
         onShotResult,
+        targetShotIds: targetUnitIds,
       })
     }
     assertTaskNotCancelled(taskId, controller.signal)
 
     // photo-fission / pose-fission：results 已在 onShotResult 内全部持久化，禁止再走 saveResults 重复写盘。
     // 其他 feature：批量持久化生成 resultAssetIds。
-    const finalResults = useStreamingPersist ? persistedResults : results
+    const finalResults = useStreamingPersist
+      ? mergeResultsByAssetId(
+          task.results,
+          store.tasks.get(taskId)?.results ?? persistedResults,
+        )
+      : results
     const resultAssetIds = useStreamingPersist
-      ? persistedResults.map((item) => item.assetId)
+      ? finalResults.map((item) => item.assetId)
       : await saveResults(results, taskId, ownerUserId)
 
     const { status, message } = resolveTaskCompletion(task, finalResults)
@@ -902,15 +960,28 @@ async function runTask(taskId: string) {
     }
     const reason = error instanceof Error ? error.message : '未知错误'
     markMissingShotProgressFailed(taskId, '重跑失败')
+    const preservedResults = currentTask?.results ?? []
+    const completion = currentTask
+      ? resolveTaskCompletion(currentTask, preservedResults)
+      : null
     updateTask(taskId, {
-      status: 'failed',
+      status:
+        preservedResults.length > 0 && completion
+          ? completion.status
+          : 'failed',
       progress: 100,
-      message: '生成失败',
+      message:
+        preservedResults.length > 0 && completion
+          ? completion.message
+          : '生成失败',
       errorMessage: reason,
       finishedAt: new Date().toISOString(),
     })
   } finally {
     runningTaskControllers.delete(taskId)
+    if (options.recoveryExecutionKey) {
+      activeRecoveryExecutionKeys.delete(options.recoveryExecutionKey)
+    }
   }
 }
 
@@ -928,6 +999,10 @@ async function persistOneResult(
   result: ResultAsset,
   ownerUserId: string = defaultUserId,
 ) {
+  const existingTask = store.tasks.get(taskId)
+  if (existingTask?.results.some((item) => item.assetId === result.assetId)) {
+    return
+  }
   // PR3：通过 storage-adapter 写「生成结果图」。local 模式落本地图片目录，
   // cloud 模式落 R2 `users/{userId}/results/`。
   // PR4：把 ownerUserId 透传给 adapter，cloud 模式下 R2 路径按用户隔离。
@@ -1121,7 +1196,7 @@ async function loadPersistedStore() {
       store.tasks = new Map(data.tasks.map((task) => [task.taskId, task]))
     }
 
-    reviveStaleRunningTasks()
+    await recoverInterruptedTasksOnColdStart()
     return
   } catch (parseError) {
     // 解析失败：把损坏文件改名保留现场，避免被后续 persistStore 覆盖
@@ -1142,7 +1217,7 @@ async function loadPersistedStore() {
     const restored = await tryLoadFromBackup()
     if (restored) {
       console.error(`[task-store] 已从备份恢复 store（assets=${store.assets.size}, tasks=${store.tasks.size}）`)
-      reviveStaleRunningTasks()
+      await recoverInterruptedTasksOnColdStart()
       return
     }
 
@@ -1196,42 +1271,91 @@ async function tryLoadFromBackup(): Promise<boolean> {
   return false
 }
 
-/**
- * C-fix: 进程冷启动时把"卡死"的 pending / running 任务标记为 failed。
- * 判定：任务创建超过 STALE_RUNNING_TIMEOUT_MS 仍未结束，认为是上一次进程崩溃留下的脏数据。
- *
- * 阈值从 15 min 提升到 60 min 的原因：
- * photo-fission 单次任务固定生成 9 张套图，单 shot 最坏耗时约 2 min（Gemini 3 系列 + 多图 + 2K/4K），
- * 并发为 2 时整体最坏耗时约 9 / 2 × 2 ≈ 9 min，叠加冷启动、网络抖动、上游 silent hang 可能逼近 15 min，
- * 触发误判把还在跑的任务标 failed。提到 60 min 留足余量，且 revive 时只改 status 不清空 results 数组，
- * 即使被 revive 标 failed，已通过流式回调持久化的图片依然保留可见。
- */
-const STALE_RUNNING_TIMEOUT_MS = 60 * 60 * 1000
+const MAX_TASK_RECOVERY_ATTEMPTS = Math.max(
+  0,
+  Number.parseInt(process.env.TASK_RECOVERY_MAX_ATTEMPTS ?? '2', 10) || 2,
+)
 
-function reviveStaleRunningTasks() {
-  const now = Date.now()
-  let revivedCount = 0
+async function recoverInterruptedTasksOnColdStart() {
+  if (!shouldStartInterruptedTaskRecovery(
+    process.env.NODE_ENV,
+    globalStore.fashionMvpRecoveryStarted === true,
+  )) {
+    return
+  }
+
+  // 先占用本进程的冷启动恢复权，避免模块重载或并发初始化重复执行。
+  globalStore.fashionMvpRecoveryStarted = true
+  await recoverInterruptedTasks()
+}
+
+async function recoverInterruptedTasks() {
+  const recoveries: Array<{
+    taskId: string
+    targetUnitIds: string[]
+    executionKey: string
+  }> = []
+  let changed = false
+  const recoveredAt = new Date().toISOString()
 
   for (const task of store.tasks.values()) {
-    if (task.status !== 'pending' && task.status !== 'running') continue
+    const decision = decideInterruptedTaskRecovery(
+      task,
+      MAX_TASK_RECOVERY_ATTEMPTS,
+    )
+    if (decision.kind === 'ignore') continue
 
-    const startTime = new Date(task.createdAt).getTime()
-    if (Number.isNaN(startTime)) continue
-    if (now - startTime < STALE_RUNNING_TIMEOUT_MS) continue
+    changed = true
+    if (decision.kind === 'complete') {
+      store.tasks.set(task.taskId, {
+        ...task,
+        status: 'success',
+        progress: 100,
+        message: '生成完成',
+        errorMessage: undefined,
+        finishedAt: recoveredAt,
+      })
+      continue
+    }
+    if (decision.kind === 'fail') {
+      store.tasks.set(task.taskId, {
+        ...task,
+        status: task.results.length > 0 ? 'partial' : 'failed',
+        progress: 100,
+        message: task.results.length > 0 ? '部分结果已保留，自动恢复已停止' : '生成失败',
+        errorMessage: decision.reason,
+        finishedAt: recoveredAt,
+      })
+      continue
+    }
 
     store.tasks.set(task.taskId, {
       ...task,
-      status: 'failed',
-      progress: 100,
-      message: '生成失败',
-      errorMessage: '服务重启时任务未完成（已自动标记为失败，请重新生成）',
-      finishedAt: new Date().toISOString(),
+      status: 'pending',
+      message: `服务重启，正在恢复未完成内容（第 ${decision.attempt}/${MAX_TASK_RECOVERY_ATTEMPTS} 次）`,
+      recoveryAttempts: decision.attempt,
+      lastRecoveredAt: recoveredAt,
+      recoveryExecutionKey: decision.executionKey,
+      errorMessage: undefined,
+      finishedAt: undefined,
     })
-    revivedCount += 1
+    recoveries.push({
+      taskId: task.taskId,
+      targetUnitIds: decision.targetUnitIds,
+      executionKey: decision.executionKey,
+    })
   }
 
-  if (revivedCount > 0) {
-    void persistStore()
+  if (changed) await persistStore()
+  for (const recovery of recoveries) {
+    if (activeRecoveryExecutionKeys.has(recovery.executionKey)) continue
+    activeRecoveryExecutionKeys.add(recovery.executionKey)
+    setTimeout(() => {
+      void runTask(recovery.taskId, {
+        targetUnitIds: recovery.targetUnitIds,
+        recoveryExecutionKey: recovery.executionKey,
+      })
+    }, 0)
   }
 }
 
@@ -1312,26 +1436,16 @@ async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null>
         }
       }
 
-      // 非 OSS URL、无法提取 key，或认证下载失败时，尝试直接 fetch（兼容其他存储服务）
-      // 添加超时限制（30秒），防止外部图片下载长期挂起。
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 30_000)
-
-      const response = await fetch(fileUrl, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'YibaiFission/1.0',
-        },
+      // 非 OSS URL、无法提取 key，或认证下载失败时，使用统一安全下载器。
+      // DNS 在实际建连时校验，重定向逐跳复检，响应体超过上限立即中止。
+      const downloaded = await downloadSafeRemoteImage(fileUrl, {
+        maxBytes: MAX_INPUT_IMAGE_BYTES,
       })
-      clearTimeout(timeoutId)
-
-      if (!response.ok) return null
-
-      const buffer = Buffer.from(await response.arrayBuffer())
+      const buffer = downloaded.buffer
 
       const mimeType = fileType?.startsWith('image/')
         ? fileType
-        : (response.headers.get('content-type') ?? `image/${getExtension(fileType ?? 'image/png')}`)
+        : (downloaded.contentType ?? `image/${getExtension(fileType ?? 'image/png')}`)
       return `data:${mimeType};base64,${buffer.toString('base64')}`
     } catch (error) {
       console.warn('[task-store] 解析外部图片 URL 失败，跳过：', fileUrl, error)
@@ -1480,6 +1594,7 @@ export async function retryPhotoFissionShots(
     const faceMaskImage = await resolvePhotoFissionFaceMaskDataUrl(params)
 
     await runPhotoFissionPipeline({
+      userId: ownerUserId,
       taskId,
       inputImages,
       faceMaskImage,
@@ -1568,6 +1683,7 @@ export async function regeneratePhotoFissionShot(
     }
     const faceMaskImage = await resolvePhotoFissionFaceMaskDataUrl(params)
     await runPhotoFissionPipeline({
+      userId: ownerUserId,
       taskId,
       inputImages,
       faceMaskImage,
@@ -1643,6 +1759,7 @@ export async function refinePhotoFissionFace(
     const faceIdImage = await resolveRequiredAssetToDataUrl(faceIdAsset, '人像小卡')
     const faceMaskImage = await resolveRequiredAssetToDataUrl(maskAsset, '重修脸 mask')
     const result = await runPhotoFissionFaceRefine({
+      userId: ownerUserId,
       taskId,
       params,
       sourceResult,
@@ -1844,6 +1961,7 @@ export async function retryPoseFissionShots(
     }
 
     await runPoseFissionPipeline({
+      userId: ownerUserId,
       taskId,
       inputImages,
       params,
@@ -2009,11 +2127,20 @@ export async function listFavoritedAssetsByFeature(
   userId?: string,
 ): Promise<AssetRecord[]> {
   await ensureStoreReady()
+  const normalizedUserId = userId?.trim()
+  const bypassOwnership = shouldBypassOwnership(normalizedUserId)
 
   const result: AssetRecord[] = []
   for (const asset of store.assets.values()) {
     if (!asset.favorited) continue
     if (!asset.fileUrl?.includes('/results/')) continue
+    if (
+      normalizedUserId &&
+      !bypassOwnership &&
+      (asset.userId ?? defaultUserId) !== normalizedUserId
+    ) {
+      continue
+    }
 
     // 通过 taskId 关联到 task 的 featureType
     let assetFeatureType: FeatureType | undefined
@@ -2059,6 +2186,7 @@ export async function listFavoritedAssetsByFeature(
 export async function countAssetsByDateRange(
   startDate: string,
   endDate: string,
+  userId: string,
 ): Promise<{
   total: number
   assets: Array<{
@@ -2083,6 +2211,7 @@ export async function countAssetsByDateRange(
   }> = []
 
   for (const asset of store.assets.values()) {
+    if (asset.userId !== userId) continue
     if (asset.favorited) continue
     if (!asset.fileUrl?.includes('/results/')) continue
     const createdMs = parseTimestampMs(asset.createdAt)
@@ -2118,6 +2247,7 @@ export async function countAssetsByDateRange(
 export async function cleanupAssetsByDateRange(
   startDate: string,
   endDate: string,
+  userId: string,
 ): Promise<{
   deletedAssets: number
   deletedObjects: number
@@ -2133,6 +2263,7 @@ export async function cleanupAssetsByDateRange(
 
   const expired: AssetRecord[] = []
   for (const asset of store.assets.values()) {
+    if (asset.userId !== userId) continue
     if (asset.favorited) continue
     if (!asset.fileUrl?.includes('/results/')) continue
     const createdMs = parseTimestampMs(asset.createdAt)

@@ -7,7 +7,11 @@ const DEFAULT_LOCAL_SUPER_ADMIN_USERNAME = 'user01'
 export function readLocalAuthMode(): LocalAuthMode {
   if (!(isLocal() || isOss())) return 'password'
   const raw = process.env.LOCAL_AUTH_MODE?.trim().toLowerCase()
-  return raw === 'password' ? 'password' : 'super-admin'
+  if (raw === 'password' || raw === 'super-admin') return raw
+
+  // 生产环境配置缺失或拼写错误时必须 fail closed，禁止意外免登录。
+  if (process.env.NODE_ENV === 'production') return 'password'
+  return 'super-admin'
 }
 
 export function isLocalSuperAdminEnabled(): boolean {

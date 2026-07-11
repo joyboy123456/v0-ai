@@ -9,10 +9,84 @@ import {
 
 export const runtime = 'nodejs'
 
-// TODO(PR5): IP-based KV rate limit（防止暴力破解 5 个测试账号）。
-// 5 人内测期可不做，但上线前要在 middleware 或本路由前加一层。
-
 const SESSION_COOKIE_NAME = 'session_id'
+const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000
+const LOGIN_RATE_LIMIT_MAX_FAILURES = 5
+const LOGIN_RATE_LIMIT_MAX_KEYS = 10_000
+
+interface LoginRateLimitEntry {
+  failures: number
+  resetAt: number
+}
+
+const loginRateLimits = new Map<string, LoginRateLimitEntry>()
+
+function getClientIp(request: Request): string {
+  const forwardedIp =
+    request.headers.get('x-real-ip') ??
+    request.headers.get('cf-connecting-ip') ??
+    request.headers.get('x-forwarded-for')?.split(',')[0]
+  return forwardedIp?.trim().slice(0, 128) || 'unknown'
+}
+
+function getRateLimitKey(request: Request, username: string): string {
+  return `${getClientIp(request)}:${username.trim().toLowerCase()}`
+}
+
+function getRetryAfterSeconds(key: string, now: number): number | null {
+  const entry = loginRateLimits.get(key)
+  if (!entry) return null
+  if (entry.resetAt <= now) {
+    loginRateLimits.delete(key)
+    return null
+  }
+  if (entry.failures < LOGIN_RATE_LIMIT_MAX_FAILURES) return null
+  return Math.max(1, Math.ceil((entry.resetAt - now) / 1000))
+}
+
+function ensureRateLimitCapacity(now: number): void {
+  if (loginRateLimits.size < LOGIN_RATE_LIMIT_MAX_KEYS) return
+
+  for (const [key, entry] of loginRateLimits) {
+    if (entry.resetAt <= now) loginRateLimits.delete(key)
+  }
+
+  if (loginRateLimits.size >= LOGIN_RATE_LIMIT_MAX_KEYS) {
+    const oldestKey = loginRateLimits.keys().next().value
+    if (oldestKey) loginRateLimits.delete(oldestKey)
+  }
+}
+
+function recordLoginFailure(key: string, now: number): void {
+  const current = loginRateLimits.get(key)
+  if (current && current.resetAt > now) {
+    current.failures += 1
+    return
+  }
+
+  ensureRateLimitCapacity(now)
+  loginRateLimits.set(key, {
+    failures: 1,
+    resetAt: now + LOGIN_RATE_LIMIT_WINDOW_MS,
+  })
+}
+
+function rateLimitedResponse(retryAfterSeconds: number): NextResponse {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: 'TOO_MANY_ATTEMPTS',
+      retryAfterSeconds,
+    },
+    {
+      status: 429,
+      headers: {
+        'Cache-Control': 'no-store',
+        'Retry-After': String(retryAfterSeconds),
+      },
+    },
+  )
+}
 
 /**
  * 决定 session cookie 是否设置 Secure 标志。
@@ -72,8 +146,15 @@ export async function POST(request: Request) {
   }
 
   const { username, password } = parsed.data
+  const rateLimitKey = getRateLimitKey(request, username)
+  const retryAfterSeconds = getRetryAfterSeconds(rateLimitKey, Date.now())
+  if (retryAfterSeconds !== null) {
+    return rateLimitedResponse(retryAfterSeconds)
+  }
+
   try {
     const { sessionId, user } = await loginWithPassword(username, password)
+    loginRateLimits.delete(rateLimitKey)
     const response = NextResponse.json({ ok: true, user })
 
     response.cookies.set({
@@ -88,12 +169,12 @@ export async function POST(request: Request) {
     return response
   } catch (error) {
     if (error instanceof AuthError && error.code === 'INVALID_CREDENTIALS') {
+      recordLoginFailure(rateLimitKey, Date.now())
       return NextResponse.json(
         { ok: false, error: 'INVALID_CREDENTIALS' },
         { status: 401 },
       )
     }
-    // eslint-disable-next-line no-console
     console.error('[auth/login] unexpected error:', error)
     return NextResponse.json(
       { ok: false, error: 'INTERNAL_ERROR' },

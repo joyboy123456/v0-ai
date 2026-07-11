@@ -14,6 +14,12 @@
  */
 
 import { logImageEvent } from './log'
+import {
+  computeProviderSelectionScore,
+  percentile,
+} from './image-provider-metrics'
+
+export { computeProviderSelectionScore, percentile } from './image-provider-metrics'
 
 export type ImageProviderType = 'google' | 'openai' | 'jimeng' | 'volces' | 'laozhang'
 
@@ -55,6 +61,12 @@ interface ProviderPool {
   cursor: number
   /** per-provider 临时熔断到期时间戳 */
   circuitOpenUntil: Map<string, number>
+  circuitReason: Map<string, ProviderFailureCategory>
+  halfOpenProbeCredentials: Set<string>
+  activeByProvider: Map<string, number>
+  recentResults: Map<string, ProviderRequestResult[]>
+  consecutiveInfrastructureFailures: Map<string, number>
+  circuitTripsByProvider: Map<string, number>
 }
 
 interface ProviderDispatchLane {
@@ -68,6 +80,12 @@ function getPool(): ProviderPool {
       providers: loadProviders(),
       cursor: 0,
       circuitOpenUntil: new Map(),
+      circuitReason: new Map(),
+      halfOpenProbeCredentials: new Set(),
+      activeByProvider: new Map(),
+      recentResults: new Map(),
+      consecutiveInfrastructureFailures: new Map(),
+      circuitTripsByProvider: new Map(),
     }
   }
   return globalAny[globalKey]
@@ -247,7 +265,29 @@ function normalizeProviderConfig(raw: RawProviderJson, index: number): ImageProv
 
 // ---- 健康状态管理 ----
 
-const CIRCUIT_OPEN_DURATION_MS = 30_000
+const METRICS_WINDOW_MS = 5 * 60_000
+const AUTH_CIRCUIT_DURATION_MS = 5 * 60_000
+const INFRA_CIRCUIT_DURATION_MS = 60_000
+const INFRA_FAILURE_THRESHOLD = 3
+
+export type ProviderFailureCategory =
+  | 'rate_limit'
+  | 'auth_failed'
+  | 'timeout'
+  | 'server_error'
+  | 'other_failure'
+
+interface ProviderRequestResult {
+  at: number
+  durationMs: number
+  category: 'success' | ProviderFailureCategory
+}
+
+export interface ProviderRequestToken {
+  providerId: string
+  startedAt: number
+  halfOpenProbe: boolean
+}
 
 function isProviderAvailable(pool: ProviderPool, provider: ImageProvider): boolean {
   if (!provider.enabled) return false
@@ -256,18 +296,20 @@ function isProviderAvailable(pool: ProviderPool, provider: ImageProvider): boole
   const until = pool.circuitOpenUntil.get(provider.id)
   if (until !== undefined) {
     if (Date.now() < until) return false
-    // 熔断窗口已过，清除标记
-    pool.circuitOpenUntil.delete(provider.id)
+    return !pool.halfOpenProbeCredentials.has(getProviderCredentialKey(provider))
   }
 
   return true
 }
 
-/**
- * 标记某个 provider 进入熔断状态（30s 不可用）。
- * 用于 auth_failed (401/403) 等不可恢复错误场景。
- */
-export function tripProviderCircuit(providerId: string): void {
+/** 标记 provider 凭证组进入熔断；认证失败默认 5 分钟，基础设施故障默认 60 秒。 */
+export function tripProviderCircuit(
+  providerId: string,
+  category: ProviderFailureCategory = 'auth_failed',
+  durationMs = category === 'auth_failed'
+    ? AUTH_CIRCUIT_DURATION_MS
+    : INFRA_CIRCUIT_DURATION_MS,
+): void {
   const pool = getPool()
   const provider = pool.providers.find((item) => item.id === providerId)
   const providerIds = provider
@@ -278,15 +320,118 @@ export function tripProviderCircuit(providerId: string): void {
         )
         .map((item) => item.id)
     : [providerId]
-  const circuitOpenUntil = Date.now() + CIRCUIT_OPEN_DURATION_MS
+  const circuitOpenUntil = Date.now() + durationMs
   for (const id of providerIds) {
     pool.circuitOpenUntil.set(id, circuitOpenUntil)
+    pool.circuitReason.set(id, category)
+    pool.circuitTripsByProvider.set(
+      id,
+      (pool.circuitTripsByProvider.get(id) ?? 0) + 1,
+    )
+  }
+  if (provider) {
+    pool.halfOpenProbeCredentials.delete(getProviderCredentialKey(provider))
   }
   logImageEvent(
     'pool.circuit',
     { traceId: 'pool', taskId: '' },
-    { providerId, providerIds, durationMs: CIRCUIT_OPEN_DURATION_MS },
+    { providerId, providerIds, category, durationMs },
   )
+}
+
+/**
+ * 在统一 provider router 开始真实请求前调用。
+ * 熔断到期后，同一凭证组只允许一个半开探测请求进入上游。
+ */
+export function beginProviderRequest(
+  providerId: string,
+  now = Date.now(),
+): ProviderRequestToken | null {
+  const pool = getPool()
+  const provider = pool.providers.find((item) => item.id === providerId)
+  if (!provider || !provider.enabled || !provider.apiKey) return null
+  const credentialKey = getProviderCredentialKey(provider)
+  const openUntil = pool.circuitOpenUntil.get(providerId)
+  let halfOpenProbe = false
+  if (openUntil !== undefined) {
+    if (now < openUntil) return null
+    if (pool.halfOpenProbeCredentials.has(credentialKey)) return null
+    pool.halfOpenProbeCredentials.add(credentialKey)
+    halfOpenProbe = true
+  }
+  pool.activeByProvider.set(providerId, (pool.activeByProvider.get(providerId) ?? 0) + 1)
+  return { providerId, startedAt: now, halfOpenProbe }
+}
+
+export function finishProviderRequest(
+  token: ProviderRequestToken,
+  result: { category: 'success' | ProviderFailureCategory; now?: number },
+): void {
+  const pool = getPool()
+  const now = result.now ?? Date.now()
+  const provider = pool.providers.find((item) => item.id === token.providerId)
+  pool.activeByProvider.set(
+    token.providerId,
+    Math.max(0, (pool.activeByProvider.get(token.providerId) ?? 1) - 1),
+  )
+  const history = pruneProviderHistory(pool, token.providerId, now)
+  history.push({
+    at: now,
+    durationMs: Math.max(0, now - token.startedAt),
+    category: result.category,
+  })
+
+  if (!provider) return
+  const credentialKey = getProviderCredentialKey(provider)
+  if (token.halfOpenProbe) pool.halfOpenProbeCredentials.delete(credentialKey)
+
+  if (result.category === 'success') {
+    closeCredentialCircuit(pool, provider)
+    pool.consecutiveInfrastructureFailures.set(token.providerId, 0)
+    return
+  }
+
+  if (result.category === 'auth_failed') {
+    tripProviderCircuit(token.providerId, 'auth_failed')
+    return
+  }
+
+  const infrastructureFailure =
+    result.category === 'timeout' || result.category === 'server_error'
+  const consecutive = infrastructureFailure
+    ? (pool.consecutiveInfrastructureFailures.get(token.providerId) ?? 0) + 1
+    : 0
+  pool.consecutiveInfrastructureFailures.set(token.providerId, consecutive)
+  if (
+    (token.halfOpenProbe && infrastructureFailure) ||
+    consecutive >= INFRA_FAILURE_THRESHOLD
+  ) {
+    tripProviderCircuit(token.providerId, result.category)
+  }
+}
+
+function closeCredentialCircuit(pool: ProviderPool, provider: ImageProvider): void {
+  const credentialKey = getProviderCredentialKey(provider)
+  for (const item of pool.providers) {
+    if (getProviderCredentialKey(item) !== credentialKey) continue
+    pool.circuitOpenUntil.delete(item.id)
+    pool.circuitReason.delete(item.id)
+    pool.consecutiveInfrastructureFailures.set(item.id, 0)
+  }
+  pool.halfOpenProbeCredentials.delete(credentialKey)
+}
+
+function pruneProviderHistory(
+  pool: ProviderPool,
+  providerId: string,
+  now: number,
+): ProviderRequestResult[] {
+  const cutoff = now - METRICS_WINDOW_MS
+  const history = (pool.recentResults.get(providerId) ?? []).filter(
+    (item) => item.at >= cutoff,
+  )
+  pool.recentResults.set(providerId, history)
+  return history
 }
 
 // ---- 调度 API ----
@@ -314,6 +459,24 @@ export interface ProviderHealthEntry {
   maxRpm: number
   circuitOpenUntil: number | null
   circuitRemainMs: number | null
+  circuitReason: ProviderFailureCategory | null
+  halfOpenProbe: boolean
+  active: number
+  concurrencyLimit: number
+  channelId: string
+  samples: number
+  successRate: number | null
+  p50DurationMs: number | null
+  p95DurationMs: number | null
+  failures: {
+    rateLimit: number
+    auth: number
+    timeout: number
+    serverError: number
+    other: number
+  }
+  consecutiveInfrastructureFailures: number
+  circuitTrips: number
 }
 
 export function getProviderHealthSnapshot(): ProviderHealthEntry[] {
@@ -322,6 +485,9 @@ export function getProviderHealthSnapshot(): ProviderHealthEntry[] {
   return pool.providers.map((p) => {
     const until = pool.circuitOpenUntil.get(p.id) ?? null
     const circuitOpen = until !== null && now < until
+    const history = pruneProviderHistory(pool, p.id, now)
+    const successes = history.filter((item) => item.category === 'success')
+    const durations = history.map((item) => item.durationMs)
     return {
       id: p.id,
       type: p.type,
@@ -333,6 +499,28 @@ export function getProviderHealthSnapshot(): ProviderHealthEntry[] {
       maxRpm: p.maxRpm,
       circuitOpenUntil: circuitOpen ? until : null,
       circuitRemainMs: circuitOpen ? Math.max(0, (until as number) - now) : null,
+      circuitReason: until !== null ? (pool.circuitReason.get(p.id) ?? null) : null,
+      halfOpenProbe:
+        until !== null &&
+        now >= until &&
+        pool.halfOpenProbeCredentials.has(getProviderCredentialKey(p)),
+      active: pool.activeByProvider.get(p.id) ?? 0,
+      concurrencyLimit: readProviderConcurrency(p),
+      channelId: p.type === 'laozhang' ? 'laozhang' : p.id,
+      samples: history.length,
+      successRate: history.length ? successes.length / history.length : null,
+      p50DurationMs: percentile(durations, 0.5),
+      p95DurationMs: percentile(durations, 0.95),
+      failures: {
+        rateLimit: history.filter((item) => item.category === 'rate_limit').length,
+        auth: history.filter((item) => item.category === 'auth_failed').length,
+        timeout: history.filter((item) => item.category === 'timeout').length,
+        serverError: history.filter((item) => item.category === 'server_error').length,
+        other: history.filter((item) => item.category === 'other_failure').length,
+      },
+      consecutiveInfrastructureFailures:
+        pool.consecutiveInfrastructureFailures.get(p.id) ?? 0,
+      circuitTrips: pool.circuitTripsByProvider.get(p.id) ?? 0,
     }
   })
 }
@@ -635,16 +823,16 @@ function buildCredentialInterleavedList(
   model: string | undefined,
   startCursor: number,
 ): ImageProvider[] {
-  const lanes = buildProviderDispatchLanes(providers, model)
+  const offset = providers.length ? startCursor % providers.length : 0
+  const rotatedProviders = providers.slice(offset).concat(providers.slice(0, offset))
+  const lanes = buildProviderDispatchLanes(rotatedProviders, model)
   if (!lanes.length) return []
 
-  const startIndex = startCursor % lanes.length
-  const rotated = lanes.slice(startIndex).concat(lanes.slice(0, startIndex))
-  const maxWeight = Math.max(...rotated.map((lane) => lane.weight))
+  const maxWeight = Math.max(...lanes.map((lane) => lane.weight))
   const list: ImageProvider[] = []
 
   for (let round = 0; round < maxWeight; round++) {
-    for (const lane of rotated) {
+    for (const lane of lanes) {
       if (round < lane.weight) {
         list.push(lane.provider)
       }
@@ -666,12 +854,17 @@ function buildProviderDispatchLanes(
     groups.set(key, group)
   }
 
+  const pool = getPool()
   return Array.from(groups.values()).map((group) => {
     const provider = pickPreferredProviderForModel(group, model)
     return {
       provider,
       weight: readProviderWeight(provider),
     }
+  }).sort((left, right) => {
+    const scoreDiff = getProviderSelectionScore(pool, right.provider) -
+      getProviderSelectionScore(pool, left.provider)
+    return scoreDiff
   })
 }
 
@@ -720,6 +913,32 @@ function normalizeImageModelId(model: string | undefined): string {
 
 function readProviderWeight(provider: ImageProvider): number {
   return Math.min(Math.max(1, Math.floor(provider.weight)), 10)
+}
+
+function readProviderConcurrency(provider: ImageProvider): number {
+  return Math.max(
+    1,
+    Math.floor(
+      provider.maxConcurrency ??
+      readPositiveInt(process.env.IMAGE_PER_PROVIDER_CONCURRENCY, 2),
+    ),
+  )
+}
+
+function getProviderSelectionScore(
+  pool: ProviderPool,
+  provider: ImageProvider,
+): number {
+  const now = Date.now()
+  const history = pruneProviderHistory(pool, provider.id, now)
+  const successCount = history.filter((item) => item.category === 'success').length
+  return computeProviderSelectionScore({
+    weight: readProviderWeight(provider),
+    active: pool.activeByProvider.get(provider.id) ?? 0,
+    limit: readProviderConcurrency(provider),
+    successRate: history.length ? successCount / history.length : null,
+    p95DurationMs: percentile(history.map((item) => item.durationMs), 0.95),
+  })
 }
 
 // ---- 测试工具 ----

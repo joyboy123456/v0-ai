@@ -53,6 +53,7 @@ interface GeminiResponse {
 }
 
 export interface GoogleEditInput {
+  userId: string
   taskId: string
   apiKey: string
   /** 可选自定义 baseUrl（用于老张等第三方 Gemini 兼容 API） */
@@ -118,14 +119,29 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
     },
   )
 
-  const normalizedInputImages = await normalizeGoogleInputImages(input.inputImages)
-  const requestInput = { ...input, inputImages: normalizedInputImages }
-  const requestBody = buildRequestBody(requestInput)
+  type PreparedRequest = {
+    requestBody: ReturnType<typeof buildRequestBody>
+    serializedBody: string
+    requestBodyBytes: number
+    imageCount: number
+    referenceCount: number
+  }
+  let preparedRequest: PreparedRequest | undefined
 
-  // 本地只计算真实请求体大小用于日志和上游 413 诊断，不再提前拦截。
-  const serializedBody = JSON.stringify(requestBody)
-  const requestBodyBytes = Buffer.byteLength(serializedBody, 'utf8')
-  const imageCount = normalizedInputImages.length
+  const prepareRequest = async (): Promise<PreparedRequest> => {
+    if (preparedRequest) return preparedRequest
+    const normalizedInputImages = await normalizeGoogleInputImages(input.inputImages)
+    const requestBody = buildRequestBody({ ...input, inputImages: normalizedInputImages })
+    const serializedBody = JSON.stringify(requestBody)
+    preparedRequest = {
+      requestBody,
+      serializedBody,
+      requestBodyBytes: Buffer.byteLength(serializedBody, 'utf8'),
+      imageCount: normalizedInputImages.length,
+      referenceCount: normalizedInputImages.length,
+    }
+    return preparedRequest
+  }
 
   // Gemini's generateContent returns one candidate per request, so we issue `count` calls in series.
   // 每个 call 由 callGoogleImageWithRetry 包装，独立计算 attempts / backoff / throttle。
@@ -138,28 +154,36 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
     }
 
     const inline = await callGoogleImageWithRetry(
-      async (attempt) => {
+      async (attempt, attemptSignal) => {
+        const prepared = await prepareRequest()
         const callStart = Date.now()
         logImageEvent('gimg.attempt', { ...ctx, attempt }, {
           model: input.model,
           promptLen: input.prompt.length,
-          refs: normalizedInputImages.length,
+          refs: prepared.referenceCount,
           aspect: input.aspectRatio,
           size: input.imageSize,
           providerId: input.providerId,
-          bodyBytes: requestBodyBytes,
-          imageCount,
+          bodyBytes: prepared.requestBodyBytes,
+          imageCount: prepared.imageCount,
         })
 
-        const data = await performSingleCall({
-          url,
-          apiKey: input.apiKey,
-          body: requestBody,
-          serializedBody,
-          requestBodyBytes,
-          timeoutMs: input.timeoutMs,
-          signal: input.signal,
-        })
+        let data: GeminiInlineData
+        try {
+          data = await performSingleCall({
+            url,
+            apiKey: input.apiKey,
+            body: prepared.requestBody,
+            serializedBody: prepared.serializedBody,
+            requestBodyBytes: prepared.requestBodyBytes,
+            timeoutMs: input.timeoutMs,
+            signal: attemptSignal,
+          })
+        } catch (error) {
+          // 退避等待期间不保留大型序列化请求体；下一次 attempt 在拿到调度槽后重建。
+          preparedRequest = undefined
+          throw error
+        }
 
         logImageEvent('gimg.success', { ...ctx, attempt }, {
           tookMs: Date.now() - callStart,
@@ -177,6 +201,12 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
         maxRpm: input.maxRpm,
         signal: input.signal,
         onRetryAttempt: input.onRetryAttempt,
+        scheduler: {
+          userId: input.userId,
+          taskId: input.taskId,
+          providerId: input.providerId ?? input.apiKey,
+          resolution: input.imageSize,
+        },
       },
     )
 

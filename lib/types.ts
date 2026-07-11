@@ -148,6 +148,10 @@ export interface ResultAsset {
   thumbnailUrl?: string
 }
 
+export type ImageSchedulerState =
+  | 'queued'
+  | 'active'
+
 export interface GenerationTask {
   taskId: string
   /**
@@ -170,6 +174,19 @@ export interface GenerationTask {
   resultAssetIds: string[]
   results: ResultAsset[]
   shotProgress?: ShotProgress[]
+  /** 当前任务在全局生图调度器中的位置与执行状态；历史任务可能没有这些字段。 */
+  queuePosition?: number
+  estimatedStartAt?: string
+  activeUnits?: number
+  completedUnits?: number
+  totalUnits?: number
+  schedulerState?: ImageSchedulerState
+  /** 进程异常退出后已尝试恢复的次数；历史任务可能没有该字段。 */
+  recoveryAttempts?: number
+  /** 最近一次把中断任务重新放回执行队列的时间。 */
+  lastRecoveredAt?: string
+  /** 当前恢复执行的幂等键，用于避免同一恢复批次被重复启动。 */
+  recoveryExecutionKey?: string
   errorMessage?: string
   createdAt: string
   finishedAt?: string

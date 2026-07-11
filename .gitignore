@@ -39,3 +39,9 @@ logs/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# 临时测试/调试产物（脚本、contact sheet、日志等）
+.tmp/
+
+# Trellis 运行时会话数据
+.trellis/.runtime/

@@ -123,14 +123,13 @@ curl -sS -o /dev/null -w "%{http_code}\n" http://47.96.71.237:3000/login
 
 ```bash
 LOCAL_AUTH_MODE=password      # 必须输用户名+密码登录（生产推荐）
+LOCAL_SUPER_ADMIN_USERNAME=user01
+LOCAL_ADMIN_PASSWORD=请替换为独立强密码
 # 或
 LOCAL_AUTH_MODE=super-admin   # 跳过登录，自动以 LOCAL_SUPER_ADMIN_USERNAME 进入（演示/调试用）
 ```
 
-**默认内置账号**（`lib/server/auth/user-repo.ts:47`）：
-- 用户名 `user01`
-- 密码 `shixue123`
-- bcrypt hash 在进程启动时生成（**密码不入库**）
+生产环境不再提供内置默认密码；缺少 `LOCAL_ADMIN_PASSWORD` 时账号仓储会保持为空，密码登录和超级管理员直进都会失败。密码只从进程环境读取，并在启动时生成 bcrypt hash，不写入仓库或数据文件。
 
 切换模式后必须 `pm2 restart yibai-fission --update-env` 才生效。
 

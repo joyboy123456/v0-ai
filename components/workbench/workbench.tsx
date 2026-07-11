@@ -24,6 +24,12 @@ function isTaskInFlight(task: GenerationTask) {
   return task.status === 'pending' || task.status === 'running'
 }
 
+function releaseBlobPreview(preview: string | undefined) {
+  if (preview?.startsWith('blob:')) {
+    URL.revokeObjectURL(preview)
+  }
+}
+
 export function Workbench() {
   const router = useRouter()
   const pathname = usePathname()
@@ -39,6 +45,8 @@ export function Workbench() {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const tasksRef = useRef<GenerationTask[]>([])
+  const taskRequestSequenceRef = useRef(0)
+  const latestTaskResponseRef = useRef(new Map<string, number>())
   const [tasksLoading, setTasksLoading] = useState(false)
   const [savedPoses, setSavedPoses] = useState<SavedPose[]>([])
   const [selectedPoses, setSelectedPoses] = useState<SavedPose[]>([])
@@ -83,6 +91,7 @@ export function Workbench() {
   }, [pathname, router])
 
   const loadTasks = useCallback(async () => {
+    const requestSequence = ++taskRequestSequenceRef.current
     setTasksLoading(true)
     try {
       const response = await fetch('/api/tasks', { cache: 'no-store' })
@@ -93,7 +102,28 @@ export function Workbench() {
       if (!response.ok) return
 
       const data = (await response.json()) as { tasks: GenerationTask[] }
-      setTasks(data.tasks)
+      setTasks((currentTasks) => {
+        const currentById = new Map(currentTasks.map((task) => [task.taskId, task]))
+        const serverTaskIds = new Set(data.tasks.map((task) => task.taskId))
+        const nextTasks = data.tasks.map((task) => {
+          const latestSequence = latestTaskResponseRef.current.get(task.taskId) ?? 0
+          if (latestSequence > requestSequence) {
+            return currentById.get(task.taskId) ?? task
+          }
+          latestTaskResponseRef.current.set(task.taskId, requestSequence)
+          return task
+        })
+
+        for (const task of currentTasks) {
+          if (
+            !serverTaskIds.has(task.taskId) &&
+            (latestTaskResponseRef.current.get(task.taskId) ?? 0) > requestSequence
+          ) {
+            nextTasks.push(task)
+          }
+        }
+        return nextTasks
+      })
     } finally {
       setTasksLoading(false)
     }
@@ -114,6 +144,13 @@ export function Workbench() {
         }
         throw new Error(data.error ?? `删除失败：HTTP ${response.status}`)
       }
+
+      const currentTask = tasksRef.current.find((task) => task.taskId === taskId)
+      const willRemoveTask = currentTask
+        ? currentTask.results.filter((item) => item.assetId !== assetId).length === 0 &&
+          currentTask.resultAssetIds.filter((id) => id !== assetId).length === 0
+        : false
+      latestTaskResponseRef.current.set(taskId, ++taskRequestSequenceRef.current)
 
       setTasks((currentTasks) => {
         const next: GenerationTask[] = []
@@ -139,8 +176,9 @@ export function Workbench() {
         return next
       })
 
-      // 如果当前选中的就是这个 task 且已被删空，清掉 activeTaskId 以触发空状态
-      setActiveTaskId((current) => (current === taskId ? null : current))
+      if (willRemoveTask) {
+        setActiveTaskId((current) => (current === taskId ? null : current))
+      }
     },
     [],
   )
@@ -158,6 +196,7 @@ export function Workbench() {
       }
 
       const task = (await response.json()) as GenerationTask
+      latestTaskResponseRef.current.set(task.taskId, ++taskRequestSequenceRef.current)
       setTasks((currentTasks) =>
         currentTasks.map((item) =>
           item.taskId === task.taskId ? task : item,
@@ -168,6 +207,7 @@ export function Workbench() {
   )
 
   const loadTask = useCallback(async (taskId: string) => {
+    const requestSequence = ++taskRequestSequenceRef.current
     const response = await fetch(`/api/tasks/${taskId}`, { cache: 'no-store' })
     if (response.status === 401) {
       redirectToLogin()
@@ -176,6 +216,8 @@ export function Workbench() {
     if (!response.ok) return
 
     const task = (await response.json()) as GenerationTask
+    if ((latestTaskResponseRef.current.get(taskId) ?? 0) > requestSequence) return
+    latestTaskResponseRef.current.set(taskId, requestSequence)
     setTasks((currentTasks) => {
       const existingIndex = currentTasks.findIndex((item) => item.taskId === task.taskId)
 
@@ -221,6 +263,27 @@ export function Workbench() {
     if (!companyModelsHydrated) return
     window.localStorage.setItem(companyModelsStorageKey, JSON.stringify(companyModels))
   }, [companyModels, companyModelsHydrated])
+
+  useEffect(() => {
+    try {
+      const storedModels = window.localStorage.getItem(companyModelsStorageKey)
+      if (storedModels) {
+        const parsed = JSON.parse(storedModels) as CompanyModel[]
+        const validModels = Array.isArray(parsed)
+          ? parsed.filter((model) => {
+              if (!model || typeof model.preview !== 'string') return false
+              if (model.preview.startsWith('blob:')) return false
+              return true
+            })
+          : []
+        setCompanyModels(validModels)
+      }
+    } catch {
+      // ignore unreadable storage
+    } finally {
+      setCompanyModelsHydrated(true)
+    }
+  }, [])
 
   useEffect(() => {
     try {
@@ -283,10 +346,20 @@ export function Workbench() {
 
   const handleAddFashionReference = useCallback((reference: FashionReferenceImage) => {
     setFashionReferences((currentReferences) => {
-      if (currentReferences.some((item) => item.assetId === reference.assetId)) {
+      const existingReference = currentReferences.find(
+        (item) => item.assetId === reference.assetId,
+      )
+      if (existingReference) {
+        if (
+          reference.source === 'upload' &&
+          existingReference.preview !== reference.preview
+        ) {
+          releaseBlobPreview(reference.preview)
+        }
         return currentReferences
       }
       if (currentReferences.length >= maxFashionReferences) {
+        if (reference.source === 'upload') releaseBlobPreview(reference.preview)
         return currentReferences
       }
       return [...currentReferences, reference]
@@ -294,9 +367,13 @@ export function Workbench() {
   }, [])
 
   const handleRemoveFashionReference = useCallback((assetId: string) => {
-    setFashionReferences((currentReferences) =>
-      currentReferences.filter((item) => item.assetId !== assetId),
-    )
+    setFashionReferences((currentReferences) => {
+      const removedReference = currentReferences.find((item) => item.assetId === assetId)
+      if (removedReference?.source === 'upload') {
+        releaseBlobPreview(removedReference.preview)
+      }
+      return currentReferences.filter((item) => item.assetId !== assetId)
+    })
   }, [])
 
   const handleReorderFashionReferences = useCallback(
@@ -336,7 +413,12 @@ export function Workbench() {
 
     setCurrentFeature('ai-fashion-photo')
     setActiveTaskId(task.taskId)
-    setFashionReferences(nextReferences)
+    setFashionReferences((currentReferences) => {
+      currentReferences.forEach((reference) => {
+        if (reference.source === 'upload') releaseBlobPreview(reference.preview)
+      })
+      return nextReferences
+    })
     setFashionRemixRequest({
       requestId: Date.now(),
       task,

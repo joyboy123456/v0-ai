@@ -44,6 +44,11 @@ interface CleanupResult {
   details?: Array<{ assetId: string; key: string; error?: string }>;
 }
 
+interface CleanupCriteria {
+  startDate: string;
+  endDate: string;
+}
+
 const MAX_PREVIEW_THUMBNAILS = 20;
 
 export function CleanupDialog({
@@ -57,6 +62,8 @@ export function CleanupDialog({
   const [cleaning, setCleaning] = useState(false);
   const [previewAssets, setPreviewAssets] = useState<PreviewAsset[]>([]);
   const [previewTotal, setPreviewTotal] = useState(0);
+  const [previewCriteria, setPreviewCriteria] =
+    useState<CleanupCriteria | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [result, setResult] = useState<CleanupResult | null>(null);
@@ -65,6 +72,7 @@ export function CleanupDialog({
   function resetState() {
     setPreviewAssets([]);
     setPreviewTotal(0);
+    setPreviewCriteria(null);
     setPreviewError(null);
     setResult(null);
     setResultError(null);
@@ -84,6 +92,7 @@ export function CleanupDialog({
     setPreviewError(null);
     setPreviewAssets([]);
     setPreviewTotal(0);
+    setPreviewCriteria(null);
     setResult(null);
     setResultError(null);
 
@@ -101,9 +110,11 @@ export function CleanupDialog({
       const data = (await response.json()) as {
         total: number;
         assets: PreviewAsset[];
+        criteria: CleanupCriteria;
       };
       setPreviewTotal(data.total);
       setPreviewAssets(data.assets);
+      setPreviewCriteria(data.criteria);
     } catch (error) {
       setPreviewError(
         error instanceof Error ? error.message : "查询失败，请重试",
@@ -114,6 +125,7 @@ export function CleanupDialog({
   }
 
   async function handleConfirmCleanup() {
+    if (!previewCriteria) return;
     setCleaning(true);
     setResultError(null);
     setResult(null);
@@ -122,7 +134,7 @@ export function CleanupDialog({
       const response = await fetch("/api/cleanup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ startDate, endDate }),
+        body: JSON.stringify(previewCriteria),
       });
       if (!response.ok) {
         const data = (await response.json().catch(() => ({}))) as {
@@ -143,7 +155,7 @@ export function CleanupDialog({
     }
   }
 
-  const hasPreview = previewTotal > 0 || previewAssets.length > 0;
+  const hasPreview = previewCriteria !== null && previewTotal > 0;
   const previewThumbnails = previewAssets.slice(0, MAX_PREVIEW_THUMBNAILS);
   const remainingCount = Math.max(0, previewTotal - MAX_PREVIEW_THUMBNAILS);
 
@@ -170,7 +182,10 @@ export function CleanupDialog({
                 <Input
                   type="date"
                   value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
+                  onChange={(e) => {
+                    setStartDate(e.target.value);
+                    resetState();
+                  }}
                   className="h-9"
                 />
               </div>
@@ -181,7 +196,10 @@ export function CleanupDialog({
                 <Input
                   type="date"
                   value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
+                  onChange={(e) => {
+                    setEndDate(e.target.value);
+                    resetState();
+                  }}
                   className="h-9"
                 />
               </div>
@@ -297,7 +315,9 @@ export function CleanupDialog({
           <AlertDialogHeader>
             <AlertDialogTitle>确认清理？</AlertDialogTitle>
             <AlertDialogDescription>
-              将永久删除 {previewTotal} 张生成图（含原图及缩略图），此操作不可撤销。已收藏的图片不受影响。
+              将永久删除 {previewTotal} 张生成图（含原图及缩略图），日期范围为
+              {previewCriteria?.startDate} 至 {previewCriteria?.endDate}
+              。此操作不可撤销，已收藏的图片不受影响。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -88,7 +88,9 @@ IMAGE_API_DEMO=1
 | `IMAGE_API_DEMO` | 启用本地 Demo 模式，不调用真实供应商 | `0` |
 | `STORAGE_MODE` | 图片存储模式：`local` / `oss` | `local` |
 | `LOCAL_IMAGE_ROOT` | 本地图片根目录；留空时使用 `public/generated` | 空 |
-| `LOCAL_AUTH_MODE` | `super-admin` 内网直进 / `password` 账号登录 | `super-admin` |
+| `LOCAL_AUTH_MODE` | `super-admin` 内网直进 / `password` 账号登录；生产缺失或非法时按 `password` 处理 | 开发 `super-admin`，生产 `password` |
+| `LOCAL_SUPER_ADMIN_USERNAME` | 本地管理员用户名 | `user01` |
+| `LOCAL_ADMIN_PASSWORD` | 本地管理员密码；生产环境必须显式配置，不提供默认值 | 开发环境为兼容旧流程保留默认值，生产为空 |
 | `LAOZHANG_ACCESS_TOKEN` | 查询老张 API 账户余额所需的管理令牌 | 空 |
 
 阿里云 OSS 模式还需配置 `OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`、`OSS_BUCKET`、`OSS_REGION` 和 `OSS_PUBLIC_URL`。

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { requireUser } from '@/lib/server/auth/require-user'
 import { getTask } from '@/lib/server/task-store'
+import { withTaskScheduling } from '@/lib/server/task-scheduling-view'
 
 interface RouteContext {
   params: Promise<{
@@ -24,5 +25,5 @@ export async function GET(request: NextRequest, context: RouteContext) {
     return NextResponse.json({ error: '任务不存在' }, { status: 404 })
   }
 
-  return NextResponse.json(task)
+  return NextResponse.json(withTaskScheduling(task))
 }

@@ -4,11 +4,9 @@
  * 由 `05-19-cloudflare-backend-foundation` PR4 引入。
  *
  * 设计要点（参考任务说明 §1）：
- * 1. 优先读 middleware 注入的 `x-user-id` header（cloud 模式 middleware
- *    已校验过 session 并写入），无需再调 KV/D1。
- * 2. local super-admin 模式直接返回本地超管用户（仅 `STORAGE_MODE=local`）。
- * 3. 否则 fallback 到 cookie `session_id` → `getCurrentUser()` → `findUserById()`。
- * 4. 拿不到用户时严格返回 null。
+ * 1. local super-admin 模式直接返回本地超管用户。
+ * 2. 否则只信任 cookie `session_id` 对应的服务端 session。
+ * 3. 客户端请求头不参与身份解析，拿不到用户时严格返回 null。
  *
  * 使用示例：
  * ```ts
@@ -39,30 +37,20 @@ export interface RequestUser {
  * 拿到当前请求对应的 user，拿不到返回 null（调用方应回 401）。
  *
  * 解析顺序：
- * 1. middleware 注入的 `x-user-id` header
- * 2. local super-admin 模式 → 本地超管用户
- * 3. cookie session_id → getSession → findUserById
- * 4. 严格返回 null
+ * 1. local super-admin 模式 → 本地超管用户
+ * 2. cookie session_id → getSession → findUserById
+ * 3. 严格返回 null
  */
 export async function getRequestUser(
   request: NextRequest,
 ): Promise<RequestUser | null> {
-  // 1. 优先用 middleware 注入的 x-user-id（cloud 模式才会有；local 模式 middleware 不注入）
-  const headerUserId = request.headers.get('x-user-id')
-  if (headerUserId) {
-    const user = await findUserById(headerUserId)
-    if (user) {
-      return { userId: user.id, user }
-    }
-  }
-
-  // 2. local 内网演示：无需账号密码，统一按本地超管用户执行。
+  // 1. local 内网演示：无需账号密码，统一按本地超管用户执行。
   const localSuperAdmin = await getLocalSuperAdminUser()
   if (localSuperAdmin) {
     return { userId: localSuperAdmin.id, user: localSuperAdmin }
   }
 
-  // 3. fallback：从 cookie session_id 反查
+  // 2. 从 cookie session_id 反查；请求头永远不作为身份来源。
   const sessionId = request.cookies.get(SESSION_COOKIE_NAME)?.value
   if (sessionId) {
     try {

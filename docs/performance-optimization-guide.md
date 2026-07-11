@@ -1,302 +1,50 @@
-/**
- * 图片生成性能优化建议文档
- * 
- * 本小姐分析了你们的代码，找出了几个关键的性能瓶颈！(￣▽￣)ゞ
- * 按照这些建议优化，速度至少能提升 2-3 倍！
- */
+# 5 人并发生图容量指南
 
-## 🎯 核心性能瓶颈分析
+## 当前容量模型
 
-### 1. 并发度太保守（最重要！）
+- 生产机为 4 vCPU / 8GB RAM，Next.js 使用 PM2 单实例 `fork` 运行。
+- 上游只有“老张”一个渠道，但配置了 6 个逻辑 Provider 入口。老张未对本项目设定并发上限，但这 6 个入口不能当作 6 个独立上游或 6 倍配额。
+- `store.json` 由单进程持久化，未迁移数据库前禁止开启 PM2 cluster 或多实例。
 
-**当前状态：**
-```typescript
-// lib/server/photo-fission-service.ts:78
-const DEFAULT_PHOTO_FISSION_CONCURRENCY = 3
+## 生产起步参数
+
+```env
+IMAGE_GLOBAL_CONCURRENCY=12
+IMAGE_PER_USER_CONCURRENCY=3
+IMAGE_PER_PROVIDER_CONCURRENCY=2
+IMAGE_QUEUE_MAX_PENDING=200
+PHOTO_FISSION_CONCURRENCY=4
+POSE_FISSION_CONCURRENCY=2
 ```
 
-**问题：**
-- 默认只有 3 个并发 worker
-- 即使有多个 provider，也只能同时处理 3 张图
-- 生成 9 张图需要至少 3 轮串行处理
+这组参数的含义是：全站最多同时执行 12 个生图单元，每个用户最多占 3 个，每个老张逻辑入口最多占 2 个。大片和姿势裂变的内层 worker 仍必须经过全局调度器，不会把 5 个用户放大成 50 个在途请求。
 
-**优化方案：**
-```typescript
-// 方案 A：固定提高到 10
-const DEFAULT_PHOTO_FISSION_CONCURRENCY = 10
+调度器每 2 秒采样内存：
 
-// 方案 B：根据 provider 数量动态调整（推荐！）
-const availableProviders = getAvailableProvidersForModel(params.model)
-const concurrency = Math.min(
-  shotPlan.length,  // 不超过总任务数
-  availableProviders.length * 5  // 每个 provider 5 个并发
-)
-```
+| 进程 RSS / 系统内存 | 动态上限 | 行为 |
+| --- | ---: | --- |
+| RSS < 2.2GB | 12 | 正常调度 |
+| RSS 2.2–2.8GB | 8 | 限流 |
+| RSS 2.8–3.2GB | 4 | 暂停新 4K 单元 |
+| RSS > 3.2GB 或可用内存 < 1.5GB | 0 | 内存保护，只等待在途单元结束 |
 
-**预期效果：** 生成 9 张图从 3 轮降到 1 轮，速度提升 **3 倍**！
+## 进程与网关保护
 
----
+- PM2 使用 `--max-old-space-size=2560`，RSS 达到 `3072M` 时重启，`kill_timeout=15000`，并显式发送 `SIGTERM`。
+- Nginx `worker_connections` 设为 4096，`client_max_body_size` 设为 8MB，与应用的 7.5MB 单图上限对齐。
+- `/api/tasks` 和姿势重试路由保留 600 秒超时；普通 API 使用 60 秒，页面请求使用 120 秒。
+- watchdog 只在 Web 进程无响应时立即自愈。OSS 或 Provider 异常只告警，不通过重启掩盖上游故障。
+- watchdog 用 OOM 日志签名去重；RSS 连续 3 分钟超过 3GB 时，会先查 `/api/health/capacity`，只在无在途生图时优雅重启。容量接口需管理员鉴权，如需 watchdog 自动访问，通过 `WATCHDOG_CAPACITY_COOKIE` 注入管理员 Cookie，不要写进仓库。
+- `backup-store.sh` 每小时备份后会立即解析 JSON，失败时保留坏副本并以非零状态退出；磁盘达到 75% 只告警，达到 85% 才清理最老备份。每天 00 点会再次验证最新备份后再上传 OSS。
+- Swap 仅用于吸收突发内存压力，建议 `vm.swappiness=10`。部署时先用 `sysctl vm.swappiness` 检查；确认变更窗口后再由运维执行 `sudo sysctl -w vm.swappiness=10`，并在 `/etc/sysctl.d/99-yibai-memory.conf` 写入 `vm.swappiness=10` 后运行 `sudo sysctl --system`。应用部署脚本不会自动修改系统参数。
 
-### 2. LLM Planner 串行阻塞
+## 观测与调参
 
-**当前状态：**
-```typescript
-// lib/server/photo-fission-service.ts:914
-await applyShotPlannerOverride(fullPlan, params, taskId)
-// 必须等 LLM 生成完所有 prompt 才能开始出图
-```
+管理员可访问 `GET /api/health/capacity` 查看全局在途数、排队数、活跃用户、动态并发上限、RSS 和各逻辑 Provider 槽位。服务端同时每分钟输出一条 `[image-capacity]` 脱敏结构化日志，只包含并发、队列、内存和 Provider 聚合数据，不包含 prompt、图片 URL、素材 ID 或密钥。生产首次上线按以下顺序验收：
 
-**问题：**
-- LLM 调用通常需要 2-5 秒
-- 这段时间完全是空等，没有任何图片在生成
-- 对于 9 张图，这 2-5 秒的延迟非常明显
+1. 先用 2 个用户混合提交单张、大片和姿势任务。
+2. 扩大到 5 个用户，确认全局在途不超过 12、每用户不超过 3、每逻辑入口不超过 2。
+3. 连续观察至少 2 小时，确认无 OOM、无意外 PM2 重启，峰值 RSS 低于 3.2GB，系统可用内存高于 1.5GB。
+4. 只有在上述指标稳定至少一天后，才可将全局并发从 12 提到 14，再独立观察一天。
 
-**优化方案 A：并行化（简单）**
-```typescript
-// 同时启动 LLM Planner 和人脸模糊处理
-const [plannerResult, blurredImages] = await Promise.all([
-  applyShotPlannerOverride(fullPlan, params, taskId),
-  params.faceIdModelId ? blurFaceRegion(inputImages[0]) : Promise.resolve(null)
-])
-```
-
-**优化方案 B：流式生成（复杂但效果最好）**
-```typescript
-// 边生成 prompt 边开始出图
-// 第一个 prompt 生成完就立刻开始出第一张图
-// 不用等所有 prompt 都生成完
-```
-
-**预期效果：** 节省 **2-5 秒** 的等待时间
-
----
-
-### 3. 超时时间过长
-
-**当前状态：**
-```typescript
-// lib/server/image-provider-pool.ts:167,185,203,221
-timeoutMs: 600000  // 10 分钟！
-```
-
-**问题：**
-- 如果某个 provider 卡住，要等 10 分钟才会 failover
-- 用户体验极差，看起来像是"卡死"了
-
-**优化方案：**
-```typescript
-// 缩短到 60-120 秒
-timeoutMs: readPositiveInt(process.env.GOOGLE_IMAGE_TIMEOUT_MS, 90000)
-```
-
-**配合更激进的重试策略：**
-- 第一次失败：立即切换到下一个 provider
-- 不要在同一个慢 provider 上浪费时间
-
-**预期效果：** 失败场景下从 10 分钟降到 **1.5 分钟**
-
----
-
-### 4. Provider 权重分配不合理
-
-**当前状态：**
-```typescript
-// lib/server/image-provider-pool.ts
-jimeng: weight: 5
-volces: weight: 5
-google: weight: 1
-qiniu: weight: 1
-```
-
-**问题：**
-- 权重是静态的，不考虑实际响应速度
-- 如果 jimeng 慢但权重高，会拖累整体速度
-
-**优化方案：动态权重调整**
-```typescript
-// 记录每个 provider 的平均响应时间
-const providerStats = new Map<string, {
-  avgLatency: number,
-  successRate: number,
-  lastUpdateTime: number
-}>()
-
-// 根据实际性能动态调整权重
-function calculateDynamicWeight(provider: ImageProvider): number {
-  const stats = providerStats.get(provider.id)
-  if (!stats) return provider.weight
-  
-  // 响应越快，权重越高
-  const latencyFactor = 10000 / (stats.avgLatency + 1000)
-  // 成功率越高，权重越高
-  const successFactor = stats.successRate
-  
-  return Math.floor(provider.weight * latencyFactor * successFactor)
-}
-```
-
-**预期效果：** 自动把任务分配给快的 provider，整体速度提升 **20-30%**
-
----
-
-### 5. 人脸模糊处理串行执行
-
-**当前状态：**
-```typescript
-// lib/server/photo-fission-service.ts:886-908
-if (params.faceIdModelId && inputImages.length > 0) {
-  const blurredMain = await blurFaceRegion(inputImages[0])
-  inputImages = [blurredMain, ...inputImages.slice(1)]
-}
-await applyShotPlannerOverride(fullPlan, params, taskId)
-```
-
-**问题：**
-- 人脸模糊和 LLM Planner 是串行的
-- 两个操作互不依赖，完全可以并行
-
-**优化方案：**
-```typescript
-// 并行执行
-const [blurResult] = await Promise.all([
-  params.faceIdModelId 
-    ? blurFaceRegion(inputImages[0]).catch(() => inputImages[0])
-    : Promise.resolve(inputImages[0]),
-  applyShotPlannerOverride(fullPlan, params, taskId)
-])
-inputImages = [blurResult, ...inputImages.slice(1)]
-```
-
-**预期效果：** 节省 **0.5-1 秒**
-
----
-
-## 📊 综合优化效果预估
-
-假设当前生成 9 张图需要 **60 秒**：
-
-| 优化项 | 节省时间 | 优化后耗时 |
-|--------|----------|------------|
-| 提高并发度 (3→10) | -40秒 | 20秒 |
-| LLM Planner 并行化 | -3秒 | 17秒 |
-| 人脸模糊并行化 | -1秒 | 16秒 |
-| 动态权重优化 | -3秒 | 13秒 |
-| **总计** | **-47秒** | **13秒** |
-
-**速度提升：4.6 倍！** (￣▽￣)／
-
----
-
-## 🚀 立即可用的快速优化
-
-### 方案 1：修改环境变量（最简单）
-
-在 `.env.local` 中添加：
-```bash
-# 提高并发度
-PHOTO_FISSION_CONCURRENCY=10
-
-# 缩短超时时间
-GOOGLE_IMAGE_TIMEOUT_MS=90000
-QINIU_IMAGE_TIMEOUT_MS=90000
-JIMENG_IMAGE_TIMEOUT_MS=90000
-VOLCES_IMAGE_TIMEOUT_MS=90000
-
-# 提高 IPM/RPM 限制（根据实际配额调整）
-VOLCES_IMAGE_IPM=500
-VOLCES_IMAGE_RPM=300
-JIMENG_IMAGE_IPM=30
-JIMENG_IMAGE_RPM=500
-```
-
-**重启服务后立即生效！**
-
-### 方案 2：代码级优化（需要改代码）
-
-#### 2.1 提高默认并发度
-```typescript
-// lib/server/photo-fission-service.ts:78
-- const DEFAULT_PHOTO_FISSION_CONCURRENCY = 3
-+ const DEFAULT_PHOTO_FISSION_CONCURRENCY = 10
-```
-
-#### 2.2 并行化 LLM Planner 和人脸模糊
-```typescript
-// lib/server/photo-fission-service.ts:886-914
-// 修改为：
-const [blurResult] = await Promise.all([
-  params.faceIdModelId 
-    ? blurFaceRegion(inputImages[0]).catch((err) => {
-        logImageEvent('face.blur-fallback', { traceId: taskId, taskId }, 
-          { stage: 'photo-fission', reason: err.message })
-        return inputImages[0]
-      })
-    : Promise.resolve(inputImages[0]),
-  applyShotPlannerOverride(fullPlan, params, taskId)
-])
-
-if (params.faceIdModelId) {
-  inputImages = [blurResult, ...inputImages.slice(1)]
-}
-```
-
----
-
-## 🔍 性能监控建议
-
-优化后需要监控实际效果，建议添加以下指标：
-
-```typescript
-// 记录每个 provider 的性能
-interface ProviderMetrics {
-  providerId: string
-  avgLatency: number      // 平均响应时间
-  p95Latency: number      // P95 响应时间
-  successRate: number     // 成功率
-  totalRequests: number   // 总请求数
-  failedRequests: number  // 失败请求数
-}
-
-// 记录整体任务性能
-interface TaskMetrics {
-  taskId: string
-  totalShots: number
-  successShots: number
-  totalDuration: number   // 总耗时
-  plannerDuration: number // LLM Planner 耗时
-  imageDuration: number   // 图片生成耗时
-  avgShotDuration: number // 平均每张图耗时
-}
-```
-
----
-
-## ⚠️ 注意事项
-
-1. **并发度不是越高越好**
-   - 太高会导致内存占用过大
-   - 建议根据服务器配置调整：
-     - 2GB 内存：并发 6
-     - 4GB 内存：并发 10
-     - 8GB+ 内存：并发 15
-
-2. **超时时间要合理**
-   - 太短：正常请求也会超时
-   - 太长：慢请求拖累整体速度
-   - 建议：90 秒（覆盖 95% 的正常请求）
-
-3. **IPM/RPM 限制要准确**
-   - 设置过高：触发 API 限流，反而更慢
-   - 设置过低：浪费配额
-   - 建议：根据实际 API 配额设置为 80%
-
-4. **多 Provider 配置要均衡**
-   - 不要只依赖一个 provider
-   - 至少配置 2-3 个 provider 做负载均衡
-   - 权重根据实际速度调整
-
----
-
-哼，本小姐的分析够详细了吧？按照这些建议优化，保证速度飞起来！(￣▽￣)ノ
-
-如果还有问题，尽管来问本小姐！才、才不是因为关心你呢，只是不想看到这么慢的代码而已！( ` ///´ )
+如果 CPU 长时间超过 75%、RSS 持续超过 2.8GB，或 5 人高峰时首张启动 P95 超过 30 秒，优先升级到 8C16G，不要继续在 4C8G 上硬抬并发。

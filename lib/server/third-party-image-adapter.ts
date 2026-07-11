@@ -22,6 +22,7 @@ import { runImageEditViaProvider } from './provider-image-router'
 type RunnableFeature = FeatureType
 
 interface ThirdPartyWorkflowInput {
+  userId: string
   taskId: string
   featureType: RunnableFeature
   workflowId: string
@@ -32,6 +33,8 @@ interface ThirdPartyWorkflowInput {
   onShotProgress?: (shotId: string, message: string, retryAttempt?: number) => void
   /** 单 shot 成功后立刻回调（photo-fission 流式持久化使用，可选；其他 feature 不消费此字段） */
   onShotResult?: (result: ResultAsset) => Promise<void>
+  /** 服务重启恢复时只执行尚未落盘的 photo-fission 镜头。 */
+  targetShotIds?: string[]
 }
 
 const demoMode = process.env.IMAGE_API_DEMO === '1'
@@ -115,6 +118,7 @@ export async function runThirdPartyWorkflow(
 
   if (input.featureType === 'photo-fission') {
     return runPhotoFissionPipeline({
+      userId: input.userId,
       taskId: input.taskId,
       inputImages: input.inputImages,
       faceMaskImage: input.faceMaskImage,
@@ -124,6 +128,7 @@ export async function runThirdPartyWorkflow(
       signal: input.signal,
       onShotProgress: input.onShotProgress,
       onShotResult: input.onShotResult,
+      targetShotIds: input.targetShotIds,
     })
   }
 
@@ -163,6 +168,7 @@ async function runGoogleProviderEdits(input: ThirdPartyWorkflowInput) {
     const candidate = providerChain[index]
     try {
       return await runImageEditViaProvider({
+        userId: input.userId,
         taskId: input.taskId,
         provider: candidate,
         fallbackApiKey: candidate.apiKey,

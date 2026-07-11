@@ -8,7 +8,7 @@
  *   cookie 存在性拦截；真正有效性由 nodejs route / useAuth 再校验
  * - oss 模式：同 local password 模式处理
  * - 失效或缺失：API → 401 JSON；页面 → 302 /login?next=<原始 path>
- * - 有效：通过 `x-user-id` header 把 userId 注入到下游
+ * - 永远移除客户端传入的 `x-user-id`，业务身份只由 route 层 session 解析
  *
  * ⚠️ proxy 不能 import `bcryptjs` / `node:crypto`（Edge runtime 限制），
  *     这里只做基本校验，真正认证逻辑在 Node.js runtime 的 route 中处理。
@@ -26,7 +26,6 @@ const PUBLIC_PATH_PREFIXES = [
   '/api/auth/logout',
   '/api/auth/me',
   '/api/health',
-  '/api/cleanup',
   '/_next',
   '/favicon.ico',
   '/icon',
@@ -81,6 +80,11 @@ export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
   const mode = readStorageMode()
 
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.delete('x-user-id')
+  const continueRequest = () =>
+    NextResponse.next({ request: { headers: requestHeaders } })
+
   if (
     (mode === 'local' || mode === 'oss') &&
     isLocalSuperAdminEnabled() &&
@@ -90,7 +94,7 @@ export async function proxy(request: NextRequest) {
   }
 
   if (isPublicPath(pathname)) {
-    return NextResponse.next()
+    return continueRequest()
   }
 
   const sessionId = request.cookies.get(SESSION_COOKIE_NAME)?.value
@@ -98,14 +102,14 @@ export async function proxy(request: NextRequest) {
   // local / oss 模式处理
   if (mode === 'local' || mode === 'oss') {
     if (isLocalSuperAdminEnabled()) {
-      return NextResponse.next()
+      return continueRequest()
     }
 
     if (!sessionId) {
       return rejectUnauthorized(request)
     }
     // local/oss 模式：cookie 存在性由 route 层校验
-    return NextResponse.next()
+    return continueRequest()
   }
 
   // 不应该到达这里（cloud 模式已移除）

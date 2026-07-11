@@ -73,14 +73,8 @@ function isPantsFissionTask(task: GenerationTask): boolean {
   return params.childrensCategory === "pants";
 }
 
-function isCancellablePhotoFissionTask(task: GenerationTask): boolean {
-  if (task.featureType !== "photo-fission") return false;
-  const params = task.params as Partial<PhotoFissionParams>;
-  return (
-    params.childrensCategory === "dress" ||
-    params.childrensCategory === "suit" ||
-    params.childrensCategory === "pants"
-  );
+function isCancellableTask(task: GenerationTask): boolean {
+  return task.status === "pending" || task.status === "running";
 }
 
 function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
@@ -169,6 +163,54 @@ function getLatestTaskResults(task: GenerationTask): ResultAsset[] {
   return task.results;
 }
 
+function getSchedulerMessage(task: GenerationTask): string | null {
+  if (task.status !== "pending" && task.status !== "running") return null;
+
+  switch (task.schedulerState) {
+    case "queued": {
+      const position = Math.max(1, Math.floor(task.queuePosition ?? 0));
+      if (task.queuePosition && position > 1) {
+        return `前方 ${position - 1} 个生成单元，正在等待可用生图通道`;
+      }
+      return task.queuePosition === 1
+        ? "已排到队首，即将开始生成"
+        : "正在等待可用生图通道";
+    }
+    case "active": {
+      if (typeof task.totalUnits === "number" && task.totalUnits > 0) {
+        const completed = Math.max(0, task.completedUnits ?? 0);
+        const active = Math.max(0, task.activeUnits ?? 0);
+        return `正在生成：已完成 ${completed}/${task.totalUnits}${active > 0 ? `，${active} 个处理中` : ""}`;
+      }
+      return task.message;
+    }
+    default:
+      return null;
+  }
+}
+
+function getEstimatedStartLabel(estimatedStartAt: string | undefined): string | null {
+  if (!estimatedStartAt) return null;
+  const date = new Date(estimatedStartAt);
+  if (Number.isNaN(date.getTime())) return null;
+  return `预计 ${date.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  })} 开始`;
+}
+
+function getRealTaskProgress(task: GenerationTask): number {
+  if (
+    task.schedulerState === "active" &&
+    typeof task.totalUnits === "number" &&
+    task.totalUnits > 0
+  ) {
+    const completed = Math.max(0, Math.min(task.completedUnits ?? 0, task.totalUnits));
+    return Math.round((completed / task.totalUnits) * 100);
+  }
+  return task.progress;
+}
+
 interface RightPanelProps {
   feature: FeatureType;
   activeTask: GenerationTask | null;
@@ -233,6 +275,9 @@ export function RightPanel({
   );
   const [isFaceVariantRunning, setIsFaceVariantRunning] = useState(false);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const favoritesRef = useRef<Set<string>>(new Set());
+  const favoriteMutationVersionRef = useRef(new Map<string, number>());
+  const favoriteSyncQueueRef = useRef(new Map<string, Promise<void>>());
   const [favoritesHydrated, setFavoritesHydrated] = useState(false);
   const [onlyCurrentFeature, setOnlyCurrentFeature] = useState(true);
   const [onlyFavorites, setOnlyFavorites] = useState(false);
@@ -240,6 +285,7 @@ export function RightPanel({
     useState<PhotoFissionCase[]>(PHOTO_FISSION_CASES);
   const [favoriteCases, setFavoriteCases] = useState<FavoriteCaseAsset[]>([]);
   const [favoriteCasesLoading, setFavoriteCasesLoading] = useState(false);
+  const favoriteCasesRequestRef = useRef(0);
   const [sameStyleTaskId, setSameStyleTaskId] = useState<string | null>(null);
   const [batchSelectMode, setBatchSelectMode] = useState(false);
   const [selectedAssets, setSelectedAssets] = useState<
@@ -252,11 +298,11 @@ export function RightPanel({
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          setFavorites(
-            new Set(
-              parsed.filter((id): id is string => typeof id === "string"),
-            ),
+          const hydratedFavorites = new Set(
+            parsed.filter((id): id is string => typeof id === "string"),
           );
+          favoritesRef.current = hydratedFavorites;
+          setFavorites(hydratedFavorites);
         }
       }
     } catch {
@@ -297,35 +343,55 @@ export function RightPanel({
     });
   }, [favoritesHydrated, favorites]);
 
-  const handleToggleFavorite = useCallback((assetId: string) => {
-    setFavorites((current) => {
-      const next = new Set(current);
-      const willFavorite = !next.has(assetId);
-      if (willFavorite) {
-        next.add(assetId);
-      } else {
-        next.delete(assetId);
-      }
-      // fire-and-forget server sync
-      fetch(`/api/assets/${encodeURIComponent(assetId)}/favorite`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ favorited: willFavorite }),
-      }).catch(() => {
-        // best-effort: localStorage 仍保留本地状态
+  const handleToggleFavorite = useCallback(async (assetId: string) => {
+    const next = new Set(favoritesRef.current);
+    const willFavorite = !next.has(assetId);
+    if (willFavorite) next.add(assetId);
+    else next.delete(assetId);
+    favoritesRef.current = next;
+    setFavorites(next);
+
+    const mutationVersion = (favoriteMutationVersionRef.current.get(assetId) ?? 0) + 1;
+    favoriteMutationVersionRef.current.set(assetId, mutationVersion);
+    const previousRequest = favoriteSyncQueueRef.current.get(assetId) ?? Promise.resolve();
+    let request: Promise<void>;
+    request = previousRequest
+      .catch(() => undefined)
+      .then(async () => {
+        const response = await fetch(
+          `/api/assets/${encodeURIComponent(assetId)}/favorite`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ favorited: willFavorite }),
+          },
+        );
+        if (!response.ok) throw new Error(`收藏同步失败：HTTP ${response.status}`);
+      })
+      .catch(() => {
+        if (favoriteMutationVersionRef.current.get(assetId) !== mutationVersion) return;
+        const rollback = new Set(favoritesRef.current);
+        if (willFavorite) rollback.delete(assetId);
+        else rollback.add(assetId);
+        favoritesRef.current = rollback;
+        setFavorites(rollback);
+      })
+      .finally(() => {
+        if (favoriteSyncQueueRef.current.get(assetId) === request) {
+          favoriteSyncQueueRef.current.delete(assetId);
+        }
       });
-      return next;
-    });
+    favoriteSyncQueueRef.current.set(assetId, request);
+    await request;
   }, []);
 
   // 在案例库 Tab 中取消收藏后刷新列表（移除已取消收藏的图）
   // 注意：loadFavoriteCases 定义在下方，此处先用 ref 中转避免使用顺序问题
   const loadFavoriteCasesRef = useRef<(() => void)>(() => {});
   const handleToggleFavoriteInCases = useCallback(
-    (assetId: string) => {
-      handleToggleFavorite(assetId);
-      // 延迟刷新，等服务端收藏状态更新后重新拉取
-      setTimeout(() => loadFavoriteCasesRef.current(), 300);
+    async (assetId: string) => {
+      await handleToggleFavorite(assetId);
+      loadFavoriteCasesRef.current();
     },
     [handleToggleFavorite],
   );
@@ -371,11 +437,13 @@ export function RightPanel({
   const visibleTaskGridItems = visibleTask
     ? getTaskResultGridItems(visibleTask)
     : [];
+  const showVisibleTaskStatus = visibleTask
+    ? visibleTask.status !== "success" || visibleTask.results.length === 0
+    : false;
   const showHistoryLiveTask =
     activeTab === "history" &&
     visibleTask &&
-    isCancellablePhotoFissionTask(visibleTask) &&
-    (visibleTask.status === "pending" || visibleTask.status === "running");
+    isCancellableTask(visibleTask);
   const historyTasks = showHistoryLiveTask && visibleTask
     ? currentFeatureTasks.filter((task) => task.taskId !== visibleTask.taskId)
     : currentFeatureTasks;
@@ -426,6 +494,7 @@ export function RightPanel({
 
   // 加载收藏案例（各功能的「案例库」Tab 展示收藏图）
   const loadFavoriteCases = useCallback(async () => {
+    const requestId = ++favoriteCasesRequestRef.current;
     setFavoriteCasesLoading(true);
     try {
       const response = await fetch(
@@ -434,16 +503,47 @@ export function RightPanel({
       );
       if (!response.ok) return;
       const data = (await response.json()) as { assets: FavoriteCaseAsset[] };
-      setFavoriteCases(data.assets);
+      if (favoriteCasesRequestRef.current === requestId) {
+        setFavoriteCases(data.assets);
+      }
     } catch {
       // 静默失败
     } finally {
-      setFavoriteCasesLoading(false);
+      if (favoriteCasesRequestRef.current === requestId) {
+        setFavoriteCasesLoading(false);
+      }
     }
   }, [feature]);
 
   // 同步 ref，供 handleToggleFavoriteInCases 延迟调用
   loadFavoriteCasesRef.current = loadFavoriteCases;
+
+  const handlePreviewFavoriteCase = useCallback(
+    (asset: FavoriteCaseAsset) => {
+      const task =
+        (asset.taskId
+          ? tasks.find((candidate) => candidate.taskId === asset.taskId)
+          : undefined) ??
+        tasks.find((candidate) =>
+          candidate.results.some((result) => result.assetId === asset.assetId),
+        );
+      if (!task) {
+        window.open(asset.fileUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+      setPreviewResult({
+        image: {
+          assetId: asset.assetId,
+          url: asset.fileUrl,
+          downloadUrl: asset.fileUrl,
+          width: asset.width,
+          height: asset.height,
+        },
+        task,
+      });
+    },
+    [tasks],
+  );
 
   useEffect(() => {
     if (activeTab === "favorites" || (isAiFashionPhoto && activeTab === "current")) {
@@ -866,16 +966,7 @@ export function RightPanel({
           loading={favoriteCasesLoading}
           favorites={favorites}
           onToggleFavorite={handleToggleFavoriteInCases}
-          onPreviewImage={(asset) => {
-            const image: ResultAsset = {
-              assetId: asset.assetId,
-              url: asset.fileUrl,
-              downloadUrl: asset.fileUrl,
-              width: asset.width,
-              height: asset.height,
-            };
-            setPreviewResult({ image, task: visibleTask ?? activeTask! });
-          }}
+          onPreviewImage={handlePreviewFavoriteCase}
           onRefresh={loadFavoriteCases}
         />
       ) : activeTab === "history" ? (
@@ -920,16 +1011,7 @@ export function RightPanel({
           loading={favoriteCasesLoading}
           favorites={favorites}
           onToggleFavorite={handleToggleFavoriteInCases}
-          onPreviewImage={(asset) => {
-            const image: ResultAsset = {
-              assetId: asset.assetId,
-              url: asset.fileUrl,
-              downloadUrl: asset.fileUrl,
-              width: asset.width,
-              height: asset.height,
-            };
-            setPreviewResult({ image, task: visibleTask ?? activeTask! });
-          }}
+          onPreviewImage={handlePreviewFavoriteCase}
           onRefresh={loadFavoriteCases}
         />
       ) : isAiFashionPhoto ? (
@@ -942,6 +1024,7 @@ export function RightPanel({
           onlyFavorites={onlyFavorites}
           sameStyleTaskId={sameStyleTaskId}
           onBatchDownload={handleBatchDownload}
+          onCancelTask={onCancelTask}
           onPreviewImage={(image, task) => setPreviewResult({ image, task })}
           onUseSameStyle={handleUseSameStyle}
           onDeleteResult={handleDeleteResult}
@@ -951,12 +1034,14 @@ export function RightPanel({
         <div className="flex-1 overflow-y-auto p-5">
           {visibleTask ? (
             <div className="space-y-5">
-              <TaskStatusCard
-                task={visibleTask}
-                onBatchDownload={handleBatchDownload}
-                onRetryShots={handleRetryShots}
-                onCancelTask={onCancelTask}
-              />
+              {showVisibleTaskStatus && (
+                <TaskStatusCard
+                  task={visibleTask}
+                  onBatchDownload={handleBatchDownload}
+                  onRetryShots={handleRetryShots}
+                  onCancelTask={onCancelTask}
+                />
+              )}
 
               {visibleTaskGridItems.length > 0 ? (
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
@@ -1203,6 +1288,7 @@ function AiFashionMasonryGallery({
   onlyFavorites,
   sameStyleTaskId,
   onBatchDownload,
+  onCancelTask,
   onPreviewImage,
   onUseSameStyle,
   onDeleteResult,
@@ -1214,6 +1300,7 @@ function AiFashionMasonryGallery({
   onlyFavorites: boolean;
   sameStyleTaskId: string | null;
   onBatchDownload: () => void;
+  onCancelTask: (taskId: string) => Promise<void>;
   onPreviewImage: (image: ResultAsset, task: GenerationTask) => void;
   onUseSameStyle: (task: GenerationTask) => void;
   onDeleteResult: (taskId: string, assetId: string) => void;
@@ -1227,7 +1314,11 @@ function AiFashionMasonryGallery({
     <div className="flex-1 overflow-y-auto p-5">
       <div className="space-y-5">
         {activeTask && (
-          <TaskStatusCard task={activeTask} onBatchDownload={onBatchDownload} />
+          <TaskStatusCard
+            task={activeTask}
+            onBatchDownload={onBatchDownload}
+            onCancelTask={onCancelTask}
+          />
         )}
 
         {visibleItems.length > 0 ? (
@@ -2347,6 +2438,14 @@ function TaskStatusCard({
   const isRunning = task.status === "pending" || task.status === "running";
   const isPhotoFission = task.featureType === "photo-fission";
   const isPoseFission = task.featureType === "pose-fission";
+  const schedulerMessage = getSchedulerMessage(task);
+  const estimatedStartLabel =
+    task.schedulerState === "queued"
+      ? getEstimatedStartLabel(task.estimatedStartAt)
+      : null;
+  const showProgress =
+    !isRunning || !task.schedulerState || task.schedulerState === "active";
+  const realProgress = getRealTaskProgress(task);
   const [retrying, setRetrying] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -2420,9 +2519,19 @@ function TaskStatusCard({
         <div>
           <div className="flex items-center gap-2">
             <StatusBadge status={task.status} />
+            {task.schedulerState && isRunning && (
+              <SchedulerStateBadge state={task.schedulerState} />
+            )}
             <span className="text-sm text-muted-foreground">{task.taskId}</span>
           </div>
-          <p className="mt-2 text-sm text-foreground">{task.message}</p>
+          <p className="mt-2 text-sm text-foreground">
+            {schedulerMessage ?? task.message}
+          </p>
+          {estimatedStartLabel && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {estimatedStartLabel}
+            </p>
+          )}
           {task.errorMessage && (
             <p className="mt-1 text-sm text-destructive">{task.errorMessage}</p>
           )}
@@ -2451,7 +2560,7 @@ function TaskStatusCard({
                 : `重新生成${retryLabel} (${failedShotIds.length})`}
             </button>
           )}
-          {isRunning && onCancelTask && isCancellablePhotoFissionTask(task) && (
+          {onCancelTask && isCancellableTask(task) && (
             <button
               onClick={handleCancel}
               disabled={cancelling}
@@ -2475,14 +2584,22 @@ function TaskStatusCard({
         </div>
       </div>
 
-      <div className="mt-4 h-2 rounded-full bg-secondary overflow-hidden">
-        <div
-          className="h-full bg-primary transition-all"
-          style={{ width: `${task.progress}%` }}
-        />
-      </div>
+      {showProgress && (
+        <div className="mt-4 h-2 rounded-full bg-secondary overflow-hidden">
+          <div
+            className="h-full bg-primary transition-all"
+            style={{ width: `${realProgress}%` }}
+          />
+        </div>
+      )}
       <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-        <span>进度 {task.progress}%</span>
+        <span>
+          {showProgress
+            ? `进度 ${realProgress}%`
+            : task.schedulerState === "queued"
+              ? "排队等待中"
+              : "已暂停启动新的生成单元"}
+        </span>
         {!isPhotoFission && !isPoseFission && (
           <span>额度 -{task.creditsUsed}</span>
         )}
@@ -2515,6 +2632,23 @@ function StatusBadge({ status }: { status: TaskStatus }) {
     >
       {status === "success" && <CheckCircle2 className="w-3 h-3" />}
       {label}
+    </span>
+  );
+}
+
+function SchedulerStateBadge({
+  state,
+}: {
+  state: NonNullable<GenerationTask["schedulerState"]>;
+}) {
+  const config = {
+    queued: { label: "排队中", className: "bg-muted text-muted-foreground" },
+    active: { label: "执行中", className: "bg-blue-500/15 text-blue-300" },
+  }[state];
+
+  return (
+    <span className={cn("inline-flex rounded-full px-2 py-1 text-xs", config.className)}>
+      {config.label}
     </span>
   );
 }

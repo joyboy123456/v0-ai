@@ -1,4 +1,6 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
+import { requireUser } from '@/lib/server/auth/require-user'
+import { readLocalSuperAdminUsername } from '@/lib/server/auth/local-auth-mode'
 import { hideCaseShot } from '@/lib/server/photo-fission-case-store'
 
 interface RouteContext {
@@ -22,7 +24,16 @@ interface DeleteShotBody {
  * 404：caseId 不存在或 shotUrl 不属于该 case
  * 200：成功（含幂等）
  */
-export async function DELETE(request: Request, context: RouteContext) {
+export async function DELETE(request: NextRequest, context: RouteContext) {
+  const userResult = await requireUser(request)
+  if (userResult instanceof NextResponse) return userResult
+  if (userResult.user.username !== readLocalSuperAdminUsername()) {
+    return NextResponse.json(
+      { ok: false, error: 'FORBIDDEN' },
+      { status: 403 },
+    )
+  }
+
   const { caseId } = await context.params
 
   let body: DeleteShotBody

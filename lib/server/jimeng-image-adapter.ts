@@ -33,6 +33,7 @@ const JIMENG_MAX_PIXELS = 4096 * 4096
 // ---- 输入接口 ----
 
 export interface JimengEditInput {
+  userId: string
   taskId: string
   apiKey: string            // 即梦用 accessKeyId:secretKey 格式
   baseUrl?: string
@@ -50,6 +51,7 @@ export interface JimengEditInput {
   rateLimitKey?: string
   maxIpm?: number
   maxRpm?: number
+  signal?: AbortSignal
 }
 
 // ---- 即梦 API 类型 ----
@@ -141,6 +143,7 @@ async function submitTask(
   secretKey: string,
   body: Record<string, unknown>,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   const query = { Action: 'CVSync2AsyncSubmitTask', Version: JIMENG_VERSION }
   const bodyStr = JSON.stringify(body)
@@ -149,6 +152,9 @@ async function submitTask(
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const onAbort = () => controller.abort(signal?.reason)
+  if (signal?.aborted) onAbort()
+  else signal?.addEventListener('abort', onAbort, { once: true })
   try {
     const resp = await fetch(`${JIMENG_ENDPOINT}?${qs}`, {
       method: 'POST',
@@ -167,6 +173,7 @@ async function submitTask(
     return data.data.task_id
   } finally {
     clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
   }
 }
 
@@ -175,21 +182,28 @@ async function pollResult(
   secretKey: string,
   taskId: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<{ images: string[] }> {
   const deadline = Date.now() + timeoutMs
   const bodyStr = JSON.stringify({ req_key: JIMENG_REQ_KEY, task_id: taskId })
   const query = { Action: 'CVSync2AsyncGetResult', Version: JIMENG_VERSION }
 
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw signal.reason
     const headers = await signV4('POST', '/', query, bodyStr, accessKeyId, secretKey, JIMENG_REGION, JIMENG_SERVICE)
     const qs = Object.entries(query).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
 
-    const resp = await fetch(`${JIMENG_ENDPOINT}?${qs}`, { method: 'POST', headers, body: bodyStr })
+    const resp = await fetch(`${JIMENG_ENDPOINT}?${qs}`, {
+      method: 'POST',
+      headers,
+      body: bodyStr,
+      signal,
+    })
     const data: JimengResultResponse = await resp.json()
 
     if (data.code !== 10000) {
       if (data.code === 50429 || data.code === 50430) {
-        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
+        await waitForPoll(POLL_INTERVAL_MS, signal)
         continue
       }
       throw new GoogleImageError({
@@ -220,10 +234,25 @@ async function pollResult(
     }
 
     // in_queue / generating → 继续轮询
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
+    await waitForPoll(POLL_INTERVAL_MS, signal)
   }
 
   throw new GoogleImageError({ category: 'network', message: `即梦任务超时（${timeoutMs}ms）`, retryable: true })
+}
+
+function waitForPoll(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason)
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 // ---- 图片输入 URL 解析 ----
@@ -306,7 +335,7 @@ export async function runJimengImageEdit(input: JimengEditInput): Promise<Result
     const iterTraceId = input.count > 1 ? `${traceId}_v${i + 1}` : traceId
 
     const result = await callGoogleImageWithRetry(
-      async () => {
+      async (_attempt, attemptSignal) => {
         const callStart = Date.now()
         const requestBody: Record<string, unknown> = {
           req_key: JIMENG_REQ_KEY,
@@ -328,8 +357,20 @@ export async function runJimengImageEdit(input: JimengEditInput): Promise<Result
           height: resolvedSize.height,
         })
 
-        const taskId = await submitTask(accessKeyId, secretKey, requestBody, input.timeoutMs)
-        const { images } = await pollResult(accessKeyId, secretKey, taskId, input.timeoutMs - (Date.now() - callStart))
+        const taskId = await submitTask(
+          accessKeyId,
+          secretKey,
+          requestBody,
+          input.timeoutMs,
+          attemptSignal,
+        )
+        const { images } = await pollResult(
+          accessKeyId,
+          secretKey,
+          taskId,
+          input.timeoutMs - (Date.now() - callStart),
+          attemptSignal,
+        )
 
         logImageEvent('gimg.success', { ...ctx, traceId: iterTraceId }, {
           adapter: 'jimeng', tookMs: Date.now() - callStart, items: images.length, providerId: input.providerId,
@@ -344,6 +385,13 @@ export async function runJimengImageEdit(input: JimengEditInput): Promise<Result
         rateLimitKey: input.rateLimitKey,
         maxIpm: input.maxIpm,
         maxRpm: input.maxRpm,
+        signal: input.signal,
+        scheduler: {
+          userId: input.userId,
+          taskId: input.taskId,
+          providerId: input.providerId ?? input.apiKey,
+          resolution: resolvedSize.resolution,
+        },
       },
       {
         attempts: 3,
