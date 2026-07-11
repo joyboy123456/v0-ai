@@ -2110,6 +2110,40 @@ export async function setAssetsFavoriteBatch(
 }
 
 /**
+ * 列出该用户全部已收藏资产的 ID。
+ *
+ * 用于前端初始化账号级收藏状态；所有权规则与按功能查询收藏案例保持一致。
+ */
+export async function listAllFavoritedAssetIds(
+  userId?: string,
+): Promise<string[]> {
+  await ensureStoreReady()
+  const normalizedUserId = userId?.trim()
+  const bypassOwnership = shouldBypassOwnership(normalizedUserId)
+
+  const result: AssetRecord[] = []
+  for (const asset of store.assets.values()) {
+    if (!asset.favorited) continue
+    if (
+      normalizedUserId &&
+      !bypassOwnership &&
+      (asset.userId ?? defaultUserId) !== normalizedUserId
+    ) {
+      continue
+    }
+    result.push(asset)
+  }
+
+  result.sort((a, b) => {
+    const aMs = parseTimestampMs(a.createdAt) ?? 0
+    const bMs = parseTimestampMs(b.createdAt) ?? 0
+    return bMs - aMs
+  })
+
+  return result.map((asset) => asset.assetId)
+}
+
+/**
  * 按功能类型列出该用户收藏的生成图资产。
  *
  * 筛选条件：

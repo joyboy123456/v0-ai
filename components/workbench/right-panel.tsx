@@ -282,6 +282,7 @@ export function RightPanel({
   const favoritesRef = useRef<Set<string>>(new Set());
   const favoriteMutationVersionRef = useRef(new Map<string, number>());
   const favoriteSyncQueueRef = useRef(new Map<string, Promise<void>>());
+  const favoritesMigrationPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const [favoritesHydrated, setFavoritesHydrated] = useState(false);
   const [aiFashionGalleryFilter, setAiFashionGalleryFilter] = useState<
     "current-feature" | "favorites"
@@ -304,23 +305,105 @@ export function RightPanel({
   }, [activeTab, feature]);
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(favoritesStorageKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          const hydratedFavorites = new Set(
-            parsed.filter((id): id is string => typeof id === "string"),
-          );
-          favoritesRef.current = hydratedFavorites;
-          setFavorites(hydratedFavorites);
+    let ignore = false;
+
+    async function hydrateFavorites() {
+      const localFavorites = new Set<string>();
+      try {
+        const raw = window.localStorage.getItem(favoritesStorageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            for (const id of parsed) {
+              if (typeof id === "string" && id.trim()) localFavorites.add(id);
+            }
+          }
         }
+      } catch {
+        // ignore unreadable storage
       }
-    } catch {
-      // ignore unreadable storage
-    } finally {
-      setFavoritesHydrated(true);
+
+      if (!ignore && localFavorites.size > 0) {
+        const immediateFavorites = new Set(localFavorites);
+        favoritesRef.current = immediateFavorites;
+        setFavorites(immediateFavorites);
+      }
+
+      let serverFavorites: Set<string> | null = null;
+      try {
+        const response = await fetch("/api/assets/favorites", {
+          cache: "no-store",
+        });
+        if (response.ok) {
+          const data = (await response.json()) as { assetIds?: unknown };
+          if (Array.isArray(data.assetIds)) {
+            serverFavorites = new Set(
+              data.assetIds.filter(
+                (id): id is string => typeof id === "string" && Boolean(id.trim()),
+              ),
+            );
+          }
+        }
+      } catch {
+        // 服务端收藏加载失败时保留本地缓存，并在下次加载重试
+      }
+
+      const legacyIds = Array.from(localFavorites).filter(
+        (assetId) =>
+          !serverFavorites?.has(assetId) &&
+          !favoriteMutationVersionRef.current.has(assetId),
+      );
+      const migratedLegacyIds = new Set(legacyIds);
+      if (legacyIds.length > 0) {
+        const migrationPromise = (async () => {
+          try {
+            const response = await fetch("/api/assets/favorites/sync", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ assetIds: legacyIds }),
+            });
+            if (response.ok) {
+              const data = (await response.json()) as { missing?: unknown };
+              if (Array.isArray(data.missing)) {
+                for (const assetId of data.missing) {
+                  if (typeof assetId === "string") {
+                    migratedLegacyIds.delete(assetId);
+                  }
+                }
+              }
+            }
+          } catch {
+            // best-effort：迁移失败时继续保留本地收藏，后续页面加载会重试
+          }
+        })();
+        favoritesMigrationPromiseRef.current = migrationPromise;
+        await migrationPromise;
+      }
+
+      const hydratedFavorites = new Set(serverFavorites ?? []);
+      for (const assetId of migratedLegacyIds) hydratedFavorites.add(assetId);
+      if (!serverFavorites) {
+        for (const assetId of favoritesRef.current) hydratedFavorites.add(assetId);
+      }
+
+      // 请求期间用户可能已经点击收藏；这些显式操作优先于初始化快照。
+      for (const assetId of favoriteMutationVersionRef.current.keys()) {
+        if (favoritesRef.current.has(assetId)) hydratedFavorites.add(assetId);
+        else hydratedFavorites.delete(assetId);
+      }
+
+      if (!ignore) {
+        favoritesRef.current = hydratedFavorites;
+        setFavorites(hydratedFavorites);
+        setFavoritesHydrated(true);
+      }
     }
+
+    void hydrateFavorites();
+
+    return () => {
+      ignore = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -335,28 +418,13 @@ export function RightPanel({
     }
   }, [favorites, favoritesHydrated]);
 
-  // 首次加载后把 localStorage 里的历史收藏一次性同步到服务端，
-  // 避免自动清理误删用户已收藏但服务端未记录的老图。本次会话只同步一次。
-  const historyFavoritesSyncedRef = useRef(false);
-  useEffect(() => {
-    if (!favoritesHydrated) return;
-    if (historyFavoritesSyncedRef.current) return;
-    const ids = Array.from(favorites);
-    if (ids.length === 0) return;
-    historyFavoritesSyncedRef.current = true;
-    fetch("/api/assets/favorites/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ assetIds: ids }),
-    }).catch(() => {
-      // best-effort：同步失败时允许下次加载重试
-      historyFavoritesSyncedRef.current = false;
-    });
-  }, [favoritesHydrated, favorites]);
-
-  const handleToggleFavorite = useCallback(async (assetId: string) => {
+  const handleToggleFavorite = useCallback(async (
+    assetId: string,
+    desiredFavorite?: boolean,
+  ) => {
     const next = new Set(favoritesRef.current);
-    const willFavorite = !next.has(assetId);
+    const wasFavorite = next.has(assetId);
+    const willFavorite = desiredFavorite ?? !wasFavorite;
     if (willFavorite) next.add(assetId);
     else next.delete(assetId);
     favoritesRef.current = next;
@@ -364,7 +432,9 @@ export function RightPanel({
 
     const mutationVersion = (favoriteMutationVersionRef.current.get(assetId) ?? 0) + 1;
     favoriteMutationVersionRef.current.set(assetId, mutationVersion);
-    const previousRequest = favoriteSyncQueueRef.current.get(assetId) ?? Promise.resolve();
+    const previousRequest =
+      favoriteSyncQueueRef.current.get(assetId) ??
+      favoritesMigrationPromiseRef.current;
     let request: Promise<void>;
     request = previousRequest
       .catch(() => undefined)
@@ -382,8 +452,8 @@ export function RightPanel({
       .catch(() => {
         if (favoriteMutationVersionRef.current.get(assetId) !== mutationVersion) return;
         const rollback = new Set(favoritesRef.current);
-        if (willFavorite) rollback.delete(assetId);
-        else rollback.add(assetId);
+        if (wasFavorite) rollback.add(assetId);
+        else rollback.delete(assetId);
         favoritesRef.current = rollback;
         setFavorites(rollback);
       })
@@ -401,7 +471,7 @@ export function RightPanel({
   const loadFavoriteCasesRef = useRef<(() => void)>(() => {});
   const handleToggleFavoriteInCases = useCallback(
     async (assetId: string) => {
-      await handleToggleFavorite(assetId);
+      await handleToggleFavorite(assetId, false);
       loadFavoriteCasesRef.current();
     },
     [handleToggleFavorite],
@@ -3511,13 +3581,42 @@ function FavoriteCasesGallery({
   assets: FavoriteCaseAsset[];
   loading: boolean;
   favorites: Set<string>;
-  onToggleFavorite: (assetId: string) => void;
+  onToggleFavorite: (assetId: string) => void | Promise<void>;
   onPreviewImage: (asset: FavoriteCaseAsset) => void;
   onRefresh: () => void;
   batchSelectMode?: boolean;
   selectedAssetIds?: Map<string, { url: string; downloadUrl: string }>;
   onToggleImageSelection?: (assetId: string, url: string, downloadUrl: string) => void;
 }) {
+  const [brokenAssetIds, setBrokenAssetIds] = useState<Set<string>>(new Set());
+  const brokenAssetIdsRef = useRef<Set<string>>(new Set());
+  const visibleAssets = useMemo(
+    () => assets.filter((asset) => !brokenAssetIds.has(asset.assetId)),
+    [assets, brokenAssetIds],
+  );
+
+  const handleBrokenAsset = useCallback(
+    (asset: FavoriteCaseAsset) => {
+      if (brokenAssetIdsRef.current.has(asset.assetId)) return;
+
+      const nextBrokenAssetIds = new Set(brokenAssetIdsRef.current);
+      nextBrokenAssetIds.add(asset.assetId);
+      brokenAssetIdsRef.current = nextBrokenAssetIds;
+      setBrokenAssetIds(nextBrokenAssetIds);
+
+      if (selectedAssetIds?.has(asset.assetId) && onToggleImageSelection) {
+        onToggleImageSelection(asset.assetId, asset.fileUrl, asset.fileUrl);
+      }
+
+      try {
+        void Promise.resolve(onToggleFavorite(asset.assetId)).catch(() => undefined);
+      } catch {
+        // best-effort：失效图片先从界面隐藏，取消收藏失败时不阻塞列表
+      }
+    },
+    [onToggleFavorite, onToggleImageSelection, selectedAssetIds],
+  );
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -3527,7 +3626,7 @@ function FavoriteCasesGallery({
     );
   }
 
-  if (assets.length === 0) {
+  if (visibleAssets.length === 0) {
     return (
       <div className="flex-1 overflow-y-auto p-5">
         <div className="min-h-[420px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mx-4 my-8">
@@ -3554,7 +3653,7 @@ function FavoriteCasesGallery({
     <div className="flex-1 overflow-y-auto p-5">
       <div className="flex items-center justify-between mb-4">
         <p className="text-sm font-medium text-foreground">
-          共 <span className="text-primary">{assets.length}</span> 张收藏
+          共 <span className="text-primary">{visibleAssets.length}</span> 张收藏
         </p>
         <button
           onClick={onRefresh}
@@ -3565,7 +3664,7 @@ function FavoriteCasesGallery({
         </button>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-        {assets.map((asset) => {
+        {visibleAssets.map((asset) => {
           const isFavorite = favorites.has(asset.assetId);
           const isSelected = selectedAssetIds?.has(asset.assetId) ?? false;
           const handleActivate = () => {
@@ -3601,6 +3700,10 @@ function FavoriteCasesGallery({
                 alt={asset.fileName}
                 className="h-full w-full object-cover"
                 loading="lazy"
+                onError={(event) => {
+                  event.stopPropagation();
+                  handleBrokenAsset(asset);
+                }}
               />
               {batchSelectMode ? (
                 <div

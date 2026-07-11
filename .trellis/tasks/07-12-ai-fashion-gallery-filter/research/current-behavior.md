@@ -10,3 +10,4 @@
 - `GenerationDetailDialog` 已接收通用 `onDeleteResult`，但删除按钮被 `isPhotoFission` 条件限制，导致 AI 服装大片和姿势裂变详情缺少删除入口。
 - `DELETE /api/tasks/[taskId]/results/[assetId]` 与 `deleteResultFromTask` 按 task/asset 通用处理，三个功能可复用，无需新增后端接口。
 - 收藏案例使用独立的 `favoriteCases` state；删除成功后需要同步过滤该列表和本地 favorites，避免残留失效卡片。
+- 生产服务器存在未提交但已上线的收藏热修：`GET /api/assets/favorites`、`listAllFavoritedAssetIds`、页面加载时服务端收藏覆盖/迁移，以及收藏图片加载失败时隐藏并取消收藏。部署前必须合并，不能用 GitHub 版本覆盖回退。
