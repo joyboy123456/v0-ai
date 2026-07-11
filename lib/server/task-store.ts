@@ -2363,7 +2363,7 @@ export async function cleanupAssetsByDateRange(
 }
 
 /**
- * 删除单张已生成的 result（用户在「案例库」/瀑布流 hover 操作里点了垃圾桶）。
+ * 删除单张已生成的 result（用户从图片卡片或详情弹窗触发删除）。
  *
  * - 从对应 task 的 results / resultAssetIds 移除该 assetId
  * - 从 store.assets 移除对应 AssetRecord

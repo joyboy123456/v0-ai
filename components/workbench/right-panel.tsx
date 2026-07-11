@@ -77,6 +77,10 @@ function isCancellableTask(task: GenerationTask): boolean {
   return task.status === "pending" || task.status === "running";
 }
 
+function canDeleteTaskResult(task: GenerationTask): boolean {
+  return !task.taskId.startsWith("demo-");
+}
+
 function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
   // 裤子保留逐镜头进度卡；连衣裙/套装只在顶部运行面板提供任务级取消入口，不显示进度卡。
   const showProgress = isPantsFissionTask(task);
@@ -279,8 +283,9 @@ export function RightPanel({
   const favoriteMutationVersionRef = useRef(new Map<string, number>());
   const favoriteSyncQueueRef = useRef(new Map<string, Promise<void>>());
   const [favoritesHydrated, setFavoritesHydrated] = useState(false);
-  const [onlyCurrentFeature, setOnlyCurrentFeature] = useState(true);
-  const [onlyFavorites, setOnlyFavorites] = useState(false);
+  const [aiFashionGalleryFilter, setAiFashionGalleryFilter] = useState<
+    "current-feature" | "favorites"
+  >("current-feature");
   const [photoFissionCases, setPhotoFissionCases] =
     useState<PhotoFissionCase[]>(PHOTO_FISSION_CASES);
   const [favoriteCases, setFavoriteCases] = useState<FavoriteCaseAsset[]>([]);
@@ -291,6 +296,12 @@ export function RightPanel({
   const [selectedAssets, setSelectedAssets] = useState<
     Map<string, { url: string; downloadUrl: string }>
   >(new Map());
+
+  useEffect(() => {
+    setSelectedAssets((current) =>
+      current.size === 0 ? current : new Map(),
+    );
+  }, [activeTab, feature]);
 
   useEffect(() => {
     try {
@@ -504,7 +515,29 @@ export function RightPanel({
       if (!response.ok) return;
       const data = (await response.json()) as { assets: FavoriteCaseAsset[] };
       if (favoriteCasesRequestRef.current === requestId) {
-        setFavoriteCases(data.assets);
+        const visibleAssets = data.assets.filter((asset) => {
+          if (!favoriteMutationVersionRef.current.has(asset.assetId)) {
+            return true;
+          }
+          return favoritesRef.current.has(asset.assetId);
+        });
+        setFavoriteCases(visibleAssets);
+        const hydratedFavorites = new Set(favoritesRef.current);
+        let favoritesChanged = false;
+        for (const asset of visibleAssets) {
+          if (
+            favoriteMutationVersionRef.current.has(asset.assetId) ||
+            hydratedFavorites.has(asset.assetId)
+          ) {
+            continue;
+          }
+          hydratedFavorites.add(asset.assetId);
+          favoritesChanged = true;
+        }
+        if (favoritesChanged) {
+          favoritesRef.current = hydratedFavorites;
+          setFavorites(hydratedFavorites);
+        }
       }
     } catch {
       // 静默失败
@@ -546,10 +579,15 @@ export function RightPanel({
   );
 
   useEffect(() => {
-    if (activeTab === "favorites" || (isAiFashionPhoto && activeTab === "current")) {
+    if (
+      activeTab === "favorites" ||
+      (isAiFashionPhoto &&
+        activeTab === "current" &&
+        aiFashionGalleryFilter === "favorites")
+    ) {
       loadFavoriteCases();
     }
-  }, [activeTab, loadFavoriteCases, isAiFashionPhoto]);
+  }, [activeTab, aiFashionGalleryFilter, loadFavoriteCases, isAiFashionPhoto]);
 
   const handleBatchDownload = async () => {
     if (!visibleTask) return;
@@ -601,13 +639,30 @@ export function RightPanel({
     }, 1600);
   };
 
-  // 在 AI 服装大片瀑布流里删某张「效果不好」的生成图。
-  // 走 confirm 二次确认；删除后由父组件统一更新 tasks 列表。
+  // 删除任一生图功能的单张生成结果，供图片卡片和详情弹窗共用。
+  // 走 confirm 二次确认；删除后同步清理任务、收藏和批量选择状态。
   const handleDeleteResult = async (taskId: string, assetId: string) => {
     const ok = window.confirm("确定删除这张图吗？删除后无法恢复。");
     if (!ok) return false;
     try {
       await onDeleteTaskResult(taskId, assetId);
+      setFavoriteCases((current) =>
+        current.filter((asset) => asset.assetId !== assetId),
+      );
+      favoriteMutationVersionRef.current.set(
+        assetId,
+        (favoriteMutationVersionRef.current.get(assetId) ?? 0) + 1,
+      );
+      const nextFavorites = new Set(favoritesRef.current);
+      nextFavorites.delete(assetId);
+      favoritesRef.current = nextFavorites;
+      setFavorites(nextFavorites);
+      setSelectedAssets((current) => {
+        if (!current.has(assetId)) return current;
+        const next = new Map(current);
+        next.delete(assetId);
+        return next;
+      });
       // 如果当前预览框正好预览这张图，关闭预览
       setPreviewResult((current) =>
         current?.image.assetId === assetId ? null : current,
@@ -780,6 +835,14 @@ export function RightPanel({
     });
   };
 
+  const selectAiFashionGalleryFilter = (
+    filter: "current-feature" | "favorites",
+  ) => {
+    if (filter === aiFashionGalleryFilter) return;
+    setAiFashionGalleryFilter(filter);
+    setSelectedAssets(new Map());
+  };
+
   const toggleImageSelection = (
     assetId: string,
     url: string,
@@ -922,24 +985,36 @@ export function RightPanel({
             <div className="flex items-center gap-4 pl-4 text-sm text-foreground">
               <label className="flex cursor-pointer items-center gap-2">
                 <input
-                  type="checkbox"
-                  checked={onlyCurrentFeature}
-                  onChange={(event) =>
-                    setOnlyCurrentFeature(event.target.checked)
-                  }
+                  type="radio"
+                  name="ai-fashion-gallery-filter"
+                  checked={aiFashionGalleryFilter === "current-feature"}
+                  onChange={() => selectAiFashionGalleryFilter("current-feature")}
                   className="h-4 w-4 accent-primary"
                 />
                 仅看当前功能
               </label>
               <label className="flex cursor-pointer items-center gap-2">
                 <input
-                  type="checkbox"
-                  checked={onlyFavorites}
-                  onChange={(event) => setOnlyFavorites(event.target.checked)}
+                  type="radio"
+                  name="ai-fashion-gallery-filter"
+                  checked={aiFashionGalleryFilter === "favorites"}
+                  onChange={() => selectAiFashionGalleryFilter("favorites")}
                   className="h-4 w-4 accent-primary"
                 />
                 仅看收藏
               </label>
+              <button
+                onClick={toggleBatchSelectMode}
+                className={cn(
+                  "h-8 px-3 rounded-md border text-[12px] font-medium flex items-center gap-1.5 transition-colors",
+                  batchSelectMode
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border bg-transparent text-muted-foreground hover:text-foreground hover:bg-surface-soft",
+                )}
+              >
+                <Download className="w-3.5 h-3.5" />
+                {batchSelectMode ? "取消选择" : "批量下载"}
+              </button>
             </div>
           )}
 
@@ -1006,30 +1081,37 @@ export function RightPanel({
           }
         />
       ) : isAiFashionPhoto && activeTab === "current" ? (
-        <FavoriteCasesGallery
-          assets={favoriteCases}
-          loading={favoriteCasesLoading}
-          favorites={favorites}
-          onToggleFavorite={handleToggleFavoriteInCases}
-          onPreviewImage={handlePreviewFavoriteCase}
-          onRefresh={loadFavoriteCases}
-        />
-      ) : isAiFashionPhoto ? (
-        <AiFashionMasonryGallery
-          items={aiFashionGalleryItems}
-          activeTask={
-            activeTask?.featureType === "ai-fashion-photo" ? activeTask : null
-          }
-          favorites={favorites}
-          onlyFavorites={onlyFavorites}
-          sameStyleTaskId={sameStyleTaskId}
-          onBatchDownload={handleBatchDownload}
-          onCancelTask={onCancelTask}
-          onPreviewImage={(image, task) => setPreviewResult({ image, task })}
-          onUseSameStyle={handleUseSameStyle}
-          onDeleteResult={handleDeleteResult}
-          onToggleFavorite={handleToggleFavorite}
-        />
+        aiFashionGalleryFilter === "favorites" ? (
+          <FavoriteCasesGallery
+            assets={favoriteCases}
+            loading={favoriteCasesLoading}
+            favorites={favorites}
+            onToggleFavorite={handleToggleFavoriteInCases}
+            onPreviewImage={handlePreviewFavoriteCase}
+            onRefresh={loadFavoriteCases}
+            batchSelectMode={batchSelectMode}
+            selectedAssetIds={selectedAssets}
+            onToggleImageSelection={toggleImageSelection}
+          />
+        ) : (
+          <AiFashionMasonryGallery
+            items={aiFashionGalleryItems}
+            activeTask={
+              activeTask?.featureType === "ai-fashion-photo" ? activeTask : null
+            }
+            favorites={favorites}
+            batchSelectMode={batchSelectMode}
+            selectedAssetIds={selectedAssets}
+            sameStyleTaskId={sameStyleTaskId}
+            onBatchDownload={handleBatchDownload}
+            onCancelTask={onCancelTask}
+            onPreviewImage={(image, task) => setPreviewResult({ image, task })}
+            onUseSameStyle={handleUseSameStyle}
+            onDeleteResult={handleDeleteResult}
+            onToggleFavorite={handleToggleFavorite}
+            onToggleImageSelection={toggleImageSelection}
+          />
+        )
       ) : (
         <div className="flex-1 overflow-y-auto p-5">
           {visibleTask ? (
@@ -1285,7 +1367,8 @@ function AiFashionMasonryGallery({
   items,
   activeTask,
   favorites,
-  onlyFavorites,
+  batchSelectMode,
+  selectedAssetIds,
   sameStyleTaskId,
   onBatchDownload,
   onCancelTask,
@@ -1293,11 +1376,13 @@ function AiFashionMasonryGallery({
   onUseSameStyle,
   onDeleteResult,
   onToggleFavorite,
+  onToggleImageSelection,
 }: {
   items: ResultPreview[];
   activeTask: GenerationTask | null;
   favorites: Set<string>;
-  onlyFavorites: boolean;
+  batchSelectMode: boolean;
+  selectedAssetIds: Map<string, { url: string; downloadUrl: string }>;
   sameStyleTaskId: string | null;
   onBatchDownload: () => void;
   onCancelTask: (taskId: string) => Promise<void>;
@@ -1305,11 +1390,8 @@ function AiFashionMasonryGallery({
   onUseSameStyle: (task: GenerationTask) => void;
   onDeleteResult: (taskId: string, assetId: string) => void;
   onToggleFavorite: (assetId: string) => void;
+  onToggleImageSelection: (assetId: string, url: string, downloadUrl: string) => void;
 }) {
-  const visibleItems = onlyFavorites
-    ? items.filter(({ image }) => favorites.has(image.assetId))
-    : items;
-
   return (
     <div className="flex-1 overflow-y-auto p-5">
       <div className="space-y-5">
@@ -1321,10 +1403,11 @@ function AiFashionMasonryGallery({
           />
         )}
 
-        {visibleItems.length > 0 ? (
+        {items.length > 0 ? (
           <div className="columns-2 lg:columns-3 xl:columns-4 gap-2">
-            {visibleItems.map(({ image, task }) => {
+            {items.map(({ image, task }) => {
               const isFavorite = favorites.has(image.assetId);
+              const isSelected = selectedAssetIds.has(image.assetId);
               const isSameStyleDone = sameStyleTaskId === task.taskId;
               const canUseSameStyle = Boolean(task.inputAssets?.length);
 
@@ -1333,15 +1416,39 @@ function AiFashionMasonryGallery({
                   key={`${task.taskId}-${image.assetId}`}
                   role="button"
                   tabIndex={0}
-                  onClick={() => onPreviewImage(image, task)}
+                  aria-pressed={batchSelectMode ? isSelected : undefined}
+                  onClick={() => {
+                    if (batchSelectMode) {
+                      onToggleImageSelection(
+                        image.assetId,
+                        image.url,
+                        image.downloadUrl,
+                      );
+                    } else {
+                      onPreviewImage(image, task);
+                    }
+                  }}
                   onKeyDown={(event) => {
                     if (event.target !== event.currentTarget) return;
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      onPreviewImage(image, task);
+                      if (batchSelectMode) {
+                        onToggleImageSelection(
+                          image.assetId,
+                          image.url,
+                          image.downloadUrl,
+                        );
+                      } else {
+                        onPreviewImage(image, task);
+                      }
                     }
                   }}
-                  className="group relative overflow-hidden glass-card glass-card-hover break-inside-avoid mb-2 inline-block w-full text-left"
+                  className={cn(
+                    "group relative overflow-hidden glass-card break-inside-avoid mb-2 inline-block w-full text-left cursor-pointer",
+                    batchSelectMode && isSelected
+                      ? "border-primary ring-2 ring-primary/40"
+                      : "glass-card-hover",
+                  )}
                 >
                   <img
                     src={getOssThumbnailUrl(image.url)}
@@ -1356,69 +1463,86 @@ function AiFashionMasonryGallery({
                     AI服装大片
                   </span>
 
-                  <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onToggleFavorite(image.assetId);
-                      }}
-                      className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60"
-                      aria-label={isFavorite ? "取消收藏" : "收藏"}
+                  {batchSelectMode ? (
+                    <div
+                      className={cn(
+                        "absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors",
+                        isSelected
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-white/80 bg-black/40",
+                      )}
                     >
-                      <Star
-                        className={cn(
-                          "h-4 w-4",
-                          isFavorite
-                            ? "fill-yellow-400 text-yellow-400"
-                            : "text-white/80",
+                      {isSelected && <Check className="h-4 w-4" />}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleFavorite(image.assetId);
+                          }}
+                          className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60"
+                          aria-label={isFavorite ? "取消收藏" : "收藏"}
+                        >
+                          <Star
+                            className={cn(
+                              "h-4 w-4",
+                              isFavorite
+                                ? "fill-yellow-400 text-yellow-400"
+                                : "text-white/80",
+                            )}
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            window.open(image.downloadUrl, "_blank");
+                          }}
+                          className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60"
+                          aria-label="下载"
+                        >
+                          <Download className="h-4 w-4 text-white/80" />
+                        </button>
+                        {canDeleteTaskResult(task) && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onDeleteResult(task.taskId, image.assetId);
+                            }}
+                            className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60 hover:bg-red-500/80"
+                            aria-label="删除"
+                            title="删除这张图（无法恢复）"
+                          >
+                            <Trash2 className="h-4 w-4 text-white/80" />
+                          </button>
                         )}
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        window.open(image.downloadUrl, "_blank");
-                      }}
-                      className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60"
-                      aria-label="下载"
-                    >
-                      <Download className="h-4 w-4 text-white/80" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onDeleteResult(task.taskId, image.assetId);
-                      }}
-                      className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60 hover:bg-red-500/80"
-                      aria-label="删除"
-                      title="删除这张图（无法恢复）"
-                    >
-                      <Trash2 className="h-4 w-4 text-white/80" />
-                    </button>
-                  </div>
+                      </div>
 
-                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-3 opacity-0 transition-opacity group-hover:opacity-100">
-                    <button
-                      type="button"
-                      disabled={!canUseSameStyle}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (canUseSameStyle) onUseSameStyle(task);
-                      }}
-                      className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-white/40 bg-black/40 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:border-transparent disabled:text-white/50"
-                      title={
-                        canUseSameStyle
-                          ? "带入本次参考图和提示词"
-                          : "旧任务没有参考图详情"
-                      }
-                    >
-                      <Sparkles className="h-4 w-4" />
-                      {isSameStyleDone ? "已带入" : "做同款"}
-                    </button>
-                  </div>
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-3 opacity-0 transition-opacity group-hover:opacity-100">
+                        <button
+                          type="button"
+                          disabled={!canUseSameStyle}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (canUseSameStyle) onUseSameStyle(task);
+                          }}
+                          className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-white/40 bg-black/40 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-white/20 disabled:cursor-not-allowed disabled:border-transparent disabled:text-white/50"
+                          title={
+                            canUseSameStyle
+                              ? "带入本次参考图和提示词"
+                              : "旧任务没有参考图详情"
+                          }
+                        >
+                          <Sparkles className="h-4 w-4" />
+                          {isSameStyleDone ? "已带入" : "做同款"}
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               );
             })}
@@ -1429,12 +1553,10 @@ function AiFashionMasonryGallery({
               <ImageIcon className="w-5 h-5 text-muted-foreground" />
             </div>
             <p className="text-[13px] font-medium text-foreground">
-              {onlyFavorites ? "暂无收藏案例" : "暂无生成案例"}
+              暂无生成案例
             </p>
             <p className="mt-2 max-w-[420px] text-[12px] text-muted-foreground leading-relaxed">
-              {onlyFavorites
-                ? "取消「仅看收藏」后可以查看全部 AI 服装大片结果。"
-                : "生成成功后的图片会在这里以瀑布流展示，点击图片查看详情，悬停可做同款。"}
+              生成成功后的图片会在这里以瀑布流展示，点击图片查看详情，悬停可做同款。
             </p>
           </div>
         )}
@@ -1630,7 +1752,7 @@ function GenerationDetailDialog({
               重生
             </button>
           )}
-          {isPhotoFission && (
+          {canDeleteTaskResult(task) && (
             <button
               type="button"
               disabled={isFaceVariantRunning}
@@ -3382,6 +3504,9 @@ function FavoriteCasesGallery({
   onToggleFavorite,
   onPreviewImage,
   onRefresh,
+  batchSelectMode = false,
+  selectedAssetIds,
+  onToggleImageSelection,
 }: {
   assets: FavoriteCaseAsset[];
   loading: boolean;
@@ -3389,6 +3514,9 @@ function FavoriteCasesGallery({
   onToggleFavorite: (assetId: string) => void;
   onPreviewImage: (asset: FavoriteCaseAsset) => void;
   onRefresh: () => void;
+  batchSelectMode?: boolean;
+  selectedAssetIds?: Map<string, { url: string; downloadUrl: string }>;
+  onToggleImageSelection?: (assetId: string, url: string, downloadUrl: string) => void;
 }) {
   if (loading) {
     return (
@@ -3439,38 +3567,74 @@ function FavoriteCasesGallery({
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         {assets.map((asset) => {
           const isFavorite = favorites.has(asset.assetId);
+          const isSelected = selectedAssetIds?.has(asset.assetId) ?? false;
+          const handleActivate = () => {
+            if (batchSelectMode && onToggleImageSelection) {
+              onToggleImageSelection(asset.assetId, asset.fileUrl, asset.fileUrl);
+            } else {
+              onPreviewImage(asset);
+            }
+          };
           return (
             <div
               key={asset.assetId}
-              className="group relative aspect-[3/4] overflow-hidden rounded-md border border-border bg-card transition-colors hover:border-primary/60"
+              role="button"
+              tabIndex={0}
+              aria-pressed={batchSelectMode ? isSelected : undefined}
+              onClick={handleActivate}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  handleActivate();
+                }
+              }}
+              className={cn(
+                "group relative aspect-[3/4] overflow-hidden rounded-md border bg-card transition-colors cursor-pointer",
+                batchSelectMode && isSelected
+                  ? "border-primary ring-2 ring-primary/40"
+                  : "border-border hover:border-primary/60",
+              )}
             >
               <img
                 src={getOssThumbnailUrl(asset.fileUrl)}
                 alt={asset.fileName}
-                className="h-full w-full object-cover cursor-pointer"
+                className="h-full w-full object-cover"
                 loading="lazy"
-                onClick={() => onPreviewImage(asset)}
               />
-              <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleFavorite(asset.assetId);
-                  }}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60"
-                  aria-label={isFavorite ? "取消收藏" : "收藏"}
+              {batchSelectMode ? (
+                <div
+                  className={cn(
+                    "absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-full border-2 transition-colors",
+                    isSelected
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-white/80 bg-black/40",
+                  )}
                 >
-                  <Star
-                    className={cn(
-                      "h-4 w-4",
-                      isFavorite
-                        ? "fill-yellow-400 text-yellow-400"
-                        : "text-white/80",
-                    )}
-                  />
-                </button>
-              </div>
+                  {isSelected && <Check className="h-4 w-4" />}
+                </div>
+              ) : (
+                <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onToggleFavorite(asset.assetId);
+                    }}
+                    className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60"
+                    aria-label={isFavorite ? "取消收藏" : "收藏"}
+                  >
+                    <Star
+                      className={cn(
+                        "h-4 w-4",
+                        isFavorite
+                          ? "fill-yellow-400 text-yellow-400"
+                          : "text-white/80",
+                      )}
+                    />
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}

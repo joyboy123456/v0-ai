@@ -129,7 +129,7 @@ export function Workbench() {
     }
   }, [redirectToLogin])
 
-  // 从右侧瀑布流 / 案例库 hover 操作里删单张「效果不好的」生成图。
+  // 从右侧图片卡片或详情弹窗删除单张「效果不好的」生成图。
   // 后端会同步把 task.results 中对应条目移除（删空整个 task 也会被一起删），
   // 前端这里只需做乐观更新 + 兜底 reload。
   const handleDeleteTaskResult = useCallback(
