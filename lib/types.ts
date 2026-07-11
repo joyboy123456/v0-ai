@@ -71,6 +71,7 @@ export type PhotoFissionImageRatio =
 export type PhotoFissionResolution = PoseResolution
 export type PhotoFissionResultCount = 2 | 4 | 9 | 10
 export type PantsMainHandVisibility = 'hidden' | 'visible'
+export type PoseMainArmVisibility = 'hidden' | 'visible'
 export type ElementReplaceType = 'clothing' | 'environment' | 'person'
 export type FashionReferenceSource = 'model' | 'upload'
 export type FashionPromptMode = 'enhanced' | 'raw'
@@ -316,6 +317,8 @@ export interface PoseFissionParams {
   poses: { id: string; url: string; name: string; bodyPart: PoseBodyPart }[]
   hasFrontDetail?: boolean
   hasBackDetail?: boolean
+  /** 下半身姿势的主图裁切状态；历史任务缺失时按 hidden 处理。 */
+  lowerBodyMainArmVisibility?: PoseMainArmVisibility
   imageRatio: PoseImageRatio
   resolution: PoseResolution
   /** = poses.length，由 normalize 阶段填充 */

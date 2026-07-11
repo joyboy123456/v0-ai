@@ -66,6 +66,7 @@ import {
   type PantsMainHandVisibility,
   type PoseFissionParams,
   type PoseImageRatio,
+  type PoseMainArmVisibility,
   type PoseResolution,
   type AiFashionPhotoParams,
   type SavedPose,
@@ -192,6 +193,8 @@ export function LeftPanel({
     useState<UploadedImage | null>(null);
   const [poseBackDetailImage, setPoseBackDetailImage] =
     useState<UploadedImage | null>(null);
+  const [poseLowerBodyMainArmVisibility, setPoseLowerBodyMainArmVisibility] =
+    useState<PoseMainArmVisibility>("hidden");
   const [poseFissionModel, setPoseFissionModel] = useState<FashionModelId>(
     DEFAULT_FASHION_MODEL,
   );
@@ -446,6 +449,7 @@ export function LeftPanel({
       })),
       hasFrontDetail: Boolean(poseFrontDetailImage),
       hasBackDetail: Boolean(poseBackDetailImage),
+      lowerBodyMainArmVisibility: poseLowerBodyMainArmVisibility,
       imageRatio: poseImageRatio,
       resolution: poseResolution,
       resultCount: selectedPoses.length,
@@ -722,10 +726,14 @@ export function LeftPanel({
             selectedPoses={selectedPoses}
             savedPoses={savedPoses}
             model={poseFissionModel}
+            lowerBodyMainArmVisibility={poseLowerBodyMainArmVisibility}
             imageRatio={poseImageRatio}
             resolution={poseResolution}
             helperText={helperText}
             onModelChange={setPoseFissionModel}
+            onLowerBodyMainArmVisibilityChange={
+              setPoseLowerBodyMainArmVisibility
+            }
             onMainUploaded={setPoseMainImage}
             onFrontDetailUploaded={setPoseFrontDetailImage}
             onBackDetailUploaded={setPoseBackDetailImage}
@@ -963,10 +971,12 @@ function PoseFissionForm({
   selectedPoses,
   savedPoses,
   model,
+  lowerBodyMainArmVisibility,
   imageRatio,
   resolution,
   helperText,
   onModelChange,
+  onLowerBodyMainArmVisibilityChange,
   onMainUploaded,
   onFrontDetailUploaded,
   onBackDetailUploaded,
@@ -986,10 +996,14 @@ function PoseFissionForm({
   selectedPoses: SavedPose[];
   savedPoses: SavedPose[];
   model: FashionModelId;
+  lowerBodyMainArmVisibility: PoseMainArmVisibility;
   imageRatio: PoseImageRatio;
   resolution: PoseResolution;
   helperText: string;
   onModelChange: (value: FashionModelId) => void;
+  onLowerBodyMainArmVisibilityChange: (
+    value: PoseMainArmVisibility,
+  ) => void;
   onMainUploaded: (image: UploadedImage) => void;
   onFrontDetailUploaded: (image: UploadedImage) => void;
   onBackDetailUploaded: (image: UploadedImage) => void;
@@ -1003,6 +1017,10 @@ function PoseFissionForm({
   onRenamePose: (poseId: string, name: string) => void;
   onDeletePose: (poseId: string) => void;
 }) {
+  const hasLowerBodyPose = selectedPoses.some(
+    (pose) => pose.bodyPart === "lower",
+  );
+
   return (
     <div className="space-y-4">
       <FashionModelSelect
@@ -1048,6 +1066,25 @@ function PoseFissionForm({
         onRenamePose={onRenamePose}
         onDeletePose={onDeletePose}
       />
+
+      {hasLowerBodyPose && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-secondary/40 px-3 py-2">
+          <div className="min-w-0">
+            <p className="text-sm text-foreground">主图是否露手臂</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+              关闭表示主图完全不露手臂，成图严格保持原上方裁切；开启后由姿势图决定手是否出现和手部动作
+            </p>
+          </div>
+          <Switch
+            checked={lowerBodyMainArmVisibility === "visible"}
+            onCheckedChange={(checked) =>
+              onLowerBodyMainArmVisibilityChange(
+                checked ? "visible" : "hidden",
+              )
+            }
+          />
+        </div>
+      )}
 
       <PoseRatioSelector value={imageRatio} onChange={onImageRatioChange} />
       <ResolutionSelector value={resolution} onChange={onResolutionChange} />
