@@ -39,7 +39,7 @@ server {
 
     # 客户上传参考图最大 20MB（nginx 默认 1MB 会导致 413，前端报
     # "Unexpected token '<'" —— 实际是 nginx 返回 HTML 错误页而非 JSON）
-    # Next.js 应用层 MAX_RAW_BYTES=7.5MB 是更严格的二次校验
+    # Next.js 公共上传接口不再额外设置全局单图大小限制
     client_max_body_size 20M;
 
     location / {

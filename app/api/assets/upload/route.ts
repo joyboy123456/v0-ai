@@ -1,16 +1,12 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { requireUser } from '@/lib/server/auth/require-user'
-import {
-  assertSafeRemoteUrl,
-  MAX_INPUT_IMAGE_BYTES,
-} from '@/lib/server/safe-remote-image'
+import { assertSafeRemoteUrl } from '@/lib/server/safe-remote-image'
 import { createAsset } from '@/lib/server/task-store'
 import sharp from 'sharp'
 
 export const runtime = 'nodejs'
 
 const ALLOWED_MIME_PREFIX = 'image/'
-const MAX_MULTIPART_OVERHEAD_BYTES = 1_000_000
 
 type ApiErrorSource =
   | 'upload_parser'
@@ -35,14 +31,6 @@ export async function POST(request: NextRequest) {
   const contentType = request.headers.get('content-type')?.toLowerCase() ?? ''
   if (contentType.includes('application/json')) {
     return handleRemoteImageUrlUpload(request, userId)
-  }
-
-  const contentLength = readRequestContentLength(request)
-  if (
-    contentLength !== null &&
-    contentLength > MAX_INPUT_IMAGE_BYTES + MAX_MULTIPART_OVERHEAD_BYTES
-  ) {
-    return uploadTooLargeResponse()
   }
 
   let formData: FormData
@@ -79,10 +67,6 @@ export async function POST(request: NextRequest) {
       'empty_file',
       '请重新导出或重新选择有效图片',
     )
-  }
-
-  if (file.size > MAX_INPUT_IMAGE_BYTES) {
-    return uploadTooLargeResponse()
   }
 
   const mimeType = (file.type || '').toLowerCase()
@@ -252,21 +236,4 @@ function readPositiveDimensionValue(value: unknown) {
 
   const rounded = Math.round(parsed)
   return rounded >= 1 ? rounded : undefined
-}
-
-function readRequestContentLength(request: NextRequest): number | null {
-  const raw = request.headers.get('content-length')
-  if (!raw || !/^\d+$/.test(raw)) return null
-  const parsed = Number(raw)
-  return Number.isSafeInteger(parsed) ? parsed : null
-}
-
-function uploadTooLargeResponse() {
-  return errorResponse(
-    413,
-    '图片不能超过 7.5 MB',
-    'image_validation',
-    'image_too_large',
-    '请压缩图片后重新上传',
-  )
 }

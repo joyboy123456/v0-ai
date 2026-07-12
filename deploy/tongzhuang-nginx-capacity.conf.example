@@ -7,8 +7,8 @@ server {
     listen 80;
     server_name _;
 
-    # 应用层单图上限为 7.5MB，仅预留少量 multipart 开销。
-    client_max_body_size 8m;
+    # 保持原有网关上传标准，允许最大 20MB 请求体。
+    client_max_body_size 20m;
 
     # 生图任务、重试和下载路由保留长超时。
     location ^~ /api/tasks {

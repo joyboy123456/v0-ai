@@ -31,7 +31,7 @@ POSE_FISSION_CONCURRENCY=2
 ## 进程与网关保护
 
 - PM2 使用 `--max-old-space-size=2560`，RSS 达到 `3072M` 时重启，`kill_timeout=15000`，并显式发送 `SIGTERM`。
-- Nginx `worker_connections` 设为 4096，`client_max_body_size` 设为 8MB，与应用的 7.5MB 单图上限对齐。
+- Nginx `worker_connections` 设为 4096，`client_max_body_size` 保持为 20MB；公共上传接口不再额外设置全局单图大小限制。
 - `/api/tasks` 和姿势重试路由保留 600 秒超时；普通 API 使用 60 秒，页面请求使用 120 秒。
 - watchdog 只在 Web 进程无响应时立即自愈。OSS 或 Provider 异常只告警，不通过重启掩盖上游故障。
 - watchdog 用 OOM 日志签名去重；RSS 连续 3 分钟超过 3GB 时，会先查 `/api/health/capacity`，只在无在途生图时优雅重启。容量接口需管理员鉴权，如需 watchdog 自动访问，通过 `WATCHDOG_CAPACITY_COOKIE` 注入管理员 Cookie，不要写进仓库。
