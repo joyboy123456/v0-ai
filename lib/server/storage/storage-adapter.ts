@@ -32,13 +32,17 @@ import path from 'node:path'
 
 import { isLocal, isOss, type StorageMode } from '@/lib/server/storage-mode'
 
-import {
-  assertOssConfigured,
-  buildOssPublicUrl,
-  ossDelete,
-  ossGet,
-  ossPut,
-} from './oss-client'
+type OssClientModule = typeof import('./oss-client')
+
+let ossClientModulePromise: Promise<OssClientModule> | null = null
+
+/** local 模式不加载 ali-oss，避免模块初始化时调用 os.networkInterfaces 失败拖垮任务 API。 */
+function loadOssClient(): Promise<OssClientModule> {
+  if (!ossClientModulePromise) {
+    ossClientModulePromise = import('./oss-client')
+  }
+  return ossClientModulePromise
+}
 
 export type StorageBucket = 'uploads' | 'generated' | 'results' | 'assets'
 
@@ -309,6 +313,7 @@ function buildOssKey(
 
 const ossAdapter: StorageAdapter = {
   async putImage(input) {
+    const { assertOssConfigured, ossPut } = await loadOssClient()
     assertOssConfigured()
     const userId = requireOssUserId(input.userId)
     const key = buildOssKey(userId, sanitizeBucket(input.bucket), input.filename)
@@ -328,7 +333,7 @@ const ossAdapter: StorageAdapter = {
   async putImageFromDataUrl(input) {
     const parsed = parseDataUrl(input.dataUrl)
     if (!parsed) {
-      throw new Error(`无法解析 dataURL（filename=\${input.filename}）`)
+      throw new Error(`无法解析 dataURL（filename=${input.filename}）`)
     }
     const result = await this.putImage({
       userId: input.userId,
@@ -341,6 +346,7 @@ const ossAdapter: StorageAdapter = {
   },
 
   async getImage(key) {
+    const { ossGet } = await loadOssClient()
     try {
       const { body, contentType } = await ossGet(key)
       return { body, contentType }
@@ -358,6 +364,7 @@ const ossAdapter: StorageAdapter = {
   },
 
   async deleteImage(key) {
+    const { ossDelete } = await loadOssClient()
     await ossDelete(key)
   },
 }
@@ -396,6 +403,9 @@ export function buildPublicUrlForKey(key: string): string {
   if (isLocal()) {
     return key.startsWith('/') ? key : `/${key}`
   }
+  // oss 模式才同步加载；local 路径不会走到这里。
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { buildOssPublicUrl } = require('./oss-client') as typeof import('./oss-client')
   return buildOssPublicUrl(key)
 }
 

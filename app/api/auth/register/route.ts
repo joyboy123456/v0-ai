@@ -111,6 +111,10 @@ const bodySchema = z.object({
     .min(6, '密码至少需要 6 个字符')
     .max(128, '密码最多 128 个字符'),
   displayName: z.string().max(64, '昵称最多 64 个字符').optional(),
+  inviteCode: z
+    .string()
+    .min(4, '请填写邀请码')
+    .max(64, '邀请码格式不正确'),
 })
 
 export async function POST(request: Request) {
@@ -125,11 +129,18 @@ export async function POST(request: Request) {
   }
 
   if (!parsed.success) {
+    const issue = parsed.error.issues[0]
+    const inviteIssue = parsed.error.issues.find((item) =>
+      item.path.includes('inviteCode'),
+    )
     return NextResponse.json(
       {
         ok: false,
-        error: 'INVALID_BODY',
-        message: parsed.error.issues[0]?.message ?? '用户名或密码格式不正确',
+        error: inviteIssue ? 'INVALID_INVITE_CODE' : 'INVALID_BODY',
+        message:
+          inviteIssue?.message ??
+          issue?.message ??
+          '用户名、密码或邀请码格式不正确',
       },
       { status: 400 },
     )
@@ -148,6 +159,7 @@ export async function POST(request: Request) {
       parsed.data.username,
       parsed.data.password,
       parsed.data.displayName,
+      parsed.data.inviteCode,
     )
     const response = NextResponse.json({ ok: true, user })
     response.cookies.set({
@@ -165,6 +177,17 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { ok: false, error: 'USERNAME_TAKEN' },
         { status: 409 },
+      )
+    }
+    if (
+      error instanceof AuthError &&
+      (error.code === 'INVALID_INVITE_CODE' ||
+        error.code === 'INVITE_CODE_USED' ||
+        error.code === 'INVITE_CODE_EXPIRED')
+    ) {
+      return NextResponse.json(
+        { ok: false, error: error.code, message: error.message },
+        { status: 400 },
       )
     }
     if (error instanceof AuthError && error.code === 'INVALID_CREDENTIALS') {

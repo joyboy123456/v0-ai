@@ -18,7 +18,6 @@ import {
 import { resolveImageSize, type ResolvedImageSize } from './image-size-policy'
 import { logImageEvent, type LogContext } from './log'
 import { isLocal } from './storage-mode'
-import { ossPut } from './storage/oss-client'
 
 // ---- 常量 ----
 
@@ -286,6 +285,7 @@ async function resolveImageUrl(imageUrl: string, key: string): Promise<string> {
   const mime = match[1]
   const buffer = Buffer.from(match[2], 'base64')
   const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg'
+  const { ossPut } = await import('./storage/oss-client')
   const result = await ossPut({ key: `${key}.${ext}`, body: buffer, contentType: mime })
   return result.publicUrl
 }

@@ -227,7 +227,7 @@ function LoginForm() {
                     }
                     className="text-center text-xs text-primary hover:underline"
                   >
-                    没有账号？去注册
+                    有邀请码？去注册
                   </a>
                 </CardFooter>
               </form>

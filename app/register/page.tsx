@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState, type FormEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { LockKeyhole, ShieldCheck } from 'lucide-react'
+import { KeyRound, LockKeyhole, ShieldCheck } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -20,6 +20,7 @@ import { useAuth } from '@/hooks/use-auth'
 interface RegisterResponse {
   ok: boolean
   error?: string
+  message?: string
   user?: { id: string; username: string; displayName: string | null }
 }
 
@@ -35,6 +36,7 @@ function RegisterForm() {
   const nextPath = sanitizeNextPath(searchParams.get('next'))
   const { user, isLoading: checkingAuth } = useAuth()
 
+  const [inviteCode, setInviteCode] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -55,8 +57,13 @@ function RegisterForm() {
     if (submitting) return
     setError(null)
 
+    const trimmedInviteCode = inviteCode.trim()
     const trimmedUsername = username.trim()
     const trimmedDisplayName = displayName.trim()
+    if (!trimmedInviteCode) {
+      setError('请填写管理员提供的邀请码')
+      return
+    }
     if (!trimmedUsername || password.length < 6) {
       setError('用户名或密码格式不正确')
       return
@@ -73,6 +80,7 @@ function RegisterForm() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
+          inviteCode: trimmedInviteCode,
           username: trimmedUsername,
           password,
           ...(trimmedDisplayName ? { displayName: trimmedDisplayName } : {}),
@@ -82,8 +90,14 @@ function RegisterForm() {
       if (!res.ok || !json.ok) {
         if (json.error === 'USERNAME_TAKEN') {
           setError('该用户名已被注册')
+        } else if (json.error === 'INVALID_INVITE_CODE') {
+          setError(json.message || '邀请码无效')
+        } else if (json.error === 'INVITE_CODE_USED') {
+          setError('邀请码已被使用')
+        } else if (json.error === 'INVITE_CODE_EXPIRED') {
+          setError('邀请码已过期，请联系管理员重新获取')
         } else if (json.error === 'INVALID_BODY') {
-          setError('用户名或密码格式不正确')
+          setError(json.message || '用户名或密码格式不正确')
         } else if (json.error === 'TOO_MANY_ATTEMPTS') {
           setError('注册过于频繁，请稍后重试')
         } else {
@@ -131,18 +145,18 @@ function RegisterForm() {
             </div>
             <div className="max-w-lg">
               <p className="mb-4 inline-flex rounded-md border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
-                5 席内测
+                邀请制注册
               </p>
               <h1 className="text-4xl font-semibold leading-tight tracking-tight">
-                注册账号，开始使用工作台
+                使用邀请码创建账号
               </h1>
               <p className="mt-4 max-w-sm text-sm leading-6 text-muted-foreground">
-                每个账号只会看到自己的任务与素材。
+                请向管理员获取邀请码。每个账号只会看到自己的任务与素材。
               </p>
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            注册即表示你将使用独立的账号空间。
+            没有邀请码将无法注册，也无法调用生成能力。
           </p>
         </section>
 
@@ -164,10 +178,30 @@ function RegisterForm() {
                   <LockKeyhole className="size-4" />
                 </div>
                 <CardTitle className="text-xl">注册账号</CardTitle>
-                <CardDescription>创建账号后即可进入工作台</CardDescription>
+                <CardDescription>需要管理员发放的邀请码</CardDescription>
               </CardHeader>
               <form onSubmit={handleSubmit}>
                 <CardContent className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="invite-code">邀请码</Label>
+                    <div className="relative">
+                      <KeyRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        id="invite-code"
+                        name="inviteCode"
+                        type="text"
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={inviteCode}
+                        onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+                        disabled={submitting}
+                        placeholder="例如 ABCD-EFGH"
+                        className="pl-9 font-mono tracking-wider"
+                        maxLength={64}
+                        required
+                      />
+                    </div>
+                  </div>
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="username">用户名</Label>
                     <Input

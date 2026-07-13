@@ -5,6 +5,8 @@
  *   - `INVALID_CREDENTIALS` 用户名或密码错误
  *   - `USERNAME_TAKEN` 用户名已被注册
  *   - `SESSION_EXPIRED` session 不存在或已过期
+ *   - `INVALID_INVITE_CODE` / `INVITE_CODE_USED` / `INVITE_CODE_EXPIRED` 邀请码问题
+ *   - `FORBIDDEN` 非管理员操作
  *
  * 用户响应里**禁止**包含 passwordHash。`toPublicUser` 是唯一允许暴露给前端
  * 的脱敏 shape。
@@ -14,6 +16,18 @@ import bcrypt from 'bcryptjs'
 
 import type { User } from '@/lib/types'
 
+import { isAdminUsername } from './admin'
+import {
+  createInviteCodes,
+  finalizeInviteCode,
+  formatInviteCode,
+  InviteCodeError,
+  listInviteCodes,
+  normalizeInviteCode,
+  restoreInviteCode,
+  reserveInviteCode,
+  type InviteCode,
+} from './invite-code-repo'
 import {
   createSession,
   destroySession,
@@ -32,6 +46,10 @@ export type AuthErrorCode =
   | 'INVALID_CREDENTIALS'
   | 'USERNAME_TAKEN'
   | 'SESSION_EXPIRED'
+  | 'INVALID_INVITE_CODE'
+  | 'INVITE_CODE_USED'
+  | 'INVITE_CODE_EXPIRED'
+  | 'FORBIDDEN'
 
 export class AuthError extends Error {
   code: AuthErrorCode
@@ -47,6 +65,7 @@ export interface PublicUser {
   id: string
   username: string
   displayName: string | null
+  isAdmin: boolean
 }
 
 export function toPublicUser(user: User): PublicUser {
@@ -54,6 +73,7 @@ export function toPublicUser(user: User): PublicUser {
     id: user.id,
     username: user.username,
     displayName: user.displayName,
+    isAdmin: isAdminUsername(user.username),
   }
 }
 
@@ -61,6 +81,36 @@ export interface LoginResult {
   sessionId: string
   expiresAt: number
   user: PublicUser
+}
+
+export interface PublicInviteCode {
+  code: string
+  createdAt: number
+  expiresAt: number | null
+  usedAt: number | null
+  usedByUserId: string | null
+  status: 'available' | 'used' | 'expired' | 'pending'
+}
+
+function toPublicInviteCode(invite: InviteCode, now = Date.now()): PublicInviteCode {
+  let status: PublicInviteCode['status'] = 'available'
+  if (invite.usedByUserId === 'pending') status = 'pending'
+  else if (invite.usedAt !== null || invite.usedByUserId !== null) status = 'used'
+  else if (invite.expiresAt !== null && invite.expiresAt <= now) status = 'expired'
+
+  return {
+    code: formatInviteCode(invite.code),
+    createdAt: invite.createdAt,
+    expiresAt: invite.expiresAt,
+    usedAt: status === 'used' ? invite.usedAt : null,
+    usedByUserId:
+      status === 'used' && invite.usedByUserId ? invite.usedByUserId : null,
+    status,
+  }
+}
+
+function mapInviteError(error: InviteCodeError): AuthError {
+  return new AuthError(error.code, error.message)
 }
 
 export async function loginWithPassword(
@@ -93,15 +143,26 @@ export async function loginWithPassword(
 export async function registerWithPassword(
   username: string,
   password: string,
-  displayName?: string,
+  displayName: string | undefined,
+  inviteCode: string,
 ): Promise<LoginResult> {
   const normalizedUsername = username.trim().toLowerCase()
   if (!normalizedUsername || !password) {
     throw new AuthError('INVALID_CREDENTIALS', '用户名或密码不能为空')
   }
+  if (!normalizeInviteCode(inviteCode)) {
+    throw new AuthError('INVALID_INVITE_CODE', '邀请码不能为空')
+  }
 
   if (await usernameExists(normalizedUsername)) {
     throw new AuthError('USERNAME_TAKEN')
+  }
+
+  try {
+    await reserveInviteCode(inviteCode)
+  } catch (error) {
+    if (error instanceof InviteCodeError) throw mapInviteError(error)
+    throw error
   }
 
   let user: User
@@ -112,10 +173,19 @@ export async function registerWithPassword(
       displayName,
     })
   } catch (error) {
+    await restoreInviteCode(inviteCode).catch((restoreError) => {
+      console.warn('[auth] restoreInviteCode failed:', restoreError)
+    })
     if (error instanceof UserRepoError && error.code === 'USERNAME_TAKEN') {
       throw new AuthError('USERNAME_TAKEN')
     }
     throw error
+  }
+
+  try {
+    await finalizeInviteCode(inviteCode, user.id)
+  } catch (error) {
+    console.warn('[auth] finalizeInviteCode failed:', error)
   }
 
   const session = await createSession(user.id)
@@ -124,6 +194,31 @@ export async function registerWithPassword(
     expiresAt: session.expiresAt,
     user: toPublicUser(user),
   }
+}
+
+export async function createInviteCodesForAdmin(
+  adminUser: User,
+  options?: { count?: number; expiresInDays?: number | null },
+): Promise<PublicInviteCode[]> {
+  if (!isAdminUsername(adminUser.username)) {
+    throw new AuthError('FORBIDDEN', '仅管理员可生成邀请码')
+  }
+  const created = await createInviteCodes({
+    createdByUserId: adminUser.id,
+    count: options?.count,
+    expiresInDays: options?.expiresInDays,
+  })
+  return created.map((code) => toPublicInviteCode(code))
+}
+
+export async function listInviteCodesForAdmin(
+  adminUser: User,
+): Promise<PublicInviteCode[]> {
+  if (!isAdminUsername(adminUser.username)) {
+    throw new AuthError('FORBIDDEN', '仅管理员可查看邀请码')
+  }
+  const codes = await listInviteCodes()
+  return codes.map((code) => toPublicInviteCode(code))
 }
 
 export async function logout(sessionId: string | null | undefined): Promise<void> {
@@ -157,4 +252,4 @@ export async function getCurrentUser(
   return toPublicUser(user)
 }
 
-export { SESSION_TTL_SECONDS }
+export { SESSION_TTL_SECONDS, formatInviteCode, isAdminUsername }

@@ -1,9 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { Camera, DollarSign, LogOut, PersonStanding, Repeat2, Trash2 } from "lucide-react";
+import {
+  Camera,
+  DollarSign,
+  KeyRound,
+  LogOut,
+  PersonStanding,
+  Repeat2,
+  Trash2,
+} from "lucide-react";
 import { BillingDialog } from "./billing-dialog";
 import { CleanupDialog } from "./cleanup-dialog";
+import { InviteCodesDialog } from "./invite-codes-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import type { AuthUser } from "@/hooks/use-auth";
@@ -36,9 +45,11 @@ export function FeatureSidebar({
   const [loggingOut, setLoggingOut] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [billingOpen, setBillingOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const displayName = user?.displayName || user?.username || "未登录";
   const username = user?.username ?? "请先登录";
   const avatarLabel = (displayName || username).slice(0, 1).toUpperCase();
+  const isAdmin = Boolean(user?.isAdmin);
 
   async function handleLogout() {
     if (loggingOut) return;
@@ -125,6 +136,15 @@ export function FeatureSidebar({
       </nav>
 
       <div className="border-t border-border p-3 space-y-2">
+        {isAdmin ? (
+          <button
+            onClick={() => setInviteOpen(true)}
+            className="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-[12px] font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+          >
+            <KeyRound className="size-3.5" />
+            邀请码管理
+          </button>
+        ) : null}
         <button
           onClick={() => setBillingOpen(true)}
           className="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-[12px] font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
@@ -177,6 +197,10 @@ export function FeatureSidebar({
         open={billingOpen}
         onOpenChange={setBillingOpen}
       />
+
+      {isAdmin ? (
+        <InviteCodesDialog open={inviteOpen} onOpenChange={setInviteOpen} />
+      ) : null}
     </aside>
   );
 }
