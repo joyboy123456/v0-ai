@@ -3,6 +3,7 @@
  *
  * 错误统一通过 `AuthError`：
  *   - `INVALID_CREDENTIALS` 用户名或密码错误
+ *   - `USERNAME_TAKEN` 用户名已被注册
  *   - `SESSION_EXPIRED` session 不存在或已过期
  *
  * 用户响应里**禁止**包含 passwordHash。`toPublicUser` 是唯一允许暴露给前端
@@ -19,10 +20,17 @@ import {
   getSession,
   SESSION_TTL_SECONDS,
 } from './session'
-import { findUserById, findUserByUsername } from './user-repo'
+import {
+  createUser,
+  findUserById,
+  findUserByUsername,
+  UserRepoError,
+  usernameExists,
+} from './user-repo'
 
 export type AuthErrorCode =
   | 'INVALID_CREDENTIALS'
+  | 'USERNAME_TAKEN'
   | 'SESSION_EXPIRED'
 
 export class AuthError extends Error {
@@ -75,6 +83,42 @@ export async function loginWithPassword(
 
   const session = await createSession(user.id)
 
+  return {
+    sessionId: session.sessionId,
+    expiresAt: session.expiresAt,
+    user: toPublicUser(user),
+  }
+}
+
+export async function registerWithPassword(
+  username: string,
+  password: string,
+  displayName?: string,
+): Promise<LoginResult> {
+  const normalizedUsername = username.trim().toLowerCase()
+  if (!normalizedUsername || !password) {
+    throw new AuthError('INVALID_CREDENTIALS', '用户名或密码不能为空')
+  }
+
+  if (await usernameExists(normalizedUsername)) {
+    throw new AuthError('USERNAME_TAKEN')
+  }
+
+  let user: User
+  try {
+    user = await createUser({
+      username: normalizedUsername,
+      password,
+      displayName,
+    })
+  } catch (error) {
+    if (error instanceof UserRepoError && error.code === 'USERNAME_TAKEN') {
+      throw new AuthError('USERNAME_TAKEN')
+    }
+    throw error
+  }
+
+  const session = await createSession(user.id)
   return {
     sessionId: session.sessionId,
     expiresAt: session.expiresAt,

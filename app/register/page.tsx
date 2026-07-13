@@ -1,16 +1,5 @@
 'use client'
 
-/**
- * /login 页面：极简用户名 + 密码登录。
- *
- * 遵守 frontend/component-guidelines.md / quality-guidelines.md：
- * - 使用 shadcn 组件 Card / Input / Button / Label，不自造容器
- * - useState + useEffect，没有 localStorage（无需考虑 SSR hydration）
- * - 支持 ?next=<path> 登录后跳回原路径，参考 middleware 的 redirect 设计
- *
- * Out of scope：注册 / 忘记密码 / 邮箱验证 / 验证码 / 记住我（PRD §Out of Scope）。
- */
-
 import { Suspense, useEffect, useState, type FormEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { LockKeyhole, ShieldCheck } from 'lucide-react'
@@ -28,7 +17,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '@/hooks/use-auth'
 
-interface LoginResponse {
+interface RegisterResponse {
   ok: boolean
   error?: string
   user?: { id: string; username: string; displayName: string | null }
@@ -36,12 +25,11 @@ interface LoginResponse {
 
 function sanitizeNextPath(raw: string | null): string {
   if (!raw) return '/'
-  // 防止开放重定向：只允许同站相对路径
   if (!raw.startsWith('/') || raw.startsWith('//')) return '/'
   return raw
 }
 
-function LoginForm() {
+function RegisterForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const nextPath = sanitizeNextPath(searchParams.get('next'))
@@ -49,6 +37,8 @@ function LoginForm() {
 
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [redirecting, setRedirecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -66,27 +56,38 @@ function LoginForm() {
     setError(null)
 
     const trimmedUsername = username.trim()
-    if (!trimmedUsername || !password) {
-      setError('请输入用户名和密码')
+    const trimmedDisplayName = displayName.trim()
+    if (!trimmedUsername || password.length < 6) {
+      setError('用户名或密码格式不正确')
+      return
+    }
+    if (password !== confirmPassword) {
+      setError('两次输入的密码不一致')
       return
     }
 
     setSubmitting(true)
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ username: trimmedUsername, password }),
+        body: JSON.stringify({
+          username: trimmedUsername,
+          password,
+          ...(trimmedDisplayName ? { displayName: trimmedDisplayName } : {}),
+        }),
       })
-      const json = (await res.json().catch(() => ({}))) as LoginResponse
+      const json = (await res.json().catch(() => ({}))) as RegisterResponse
       if (!res.ok || !json.ok) {
-        if (json.error === 'INVALID_CREDENTIALS') {
-          setError('用户名或密码错误')
-        } else if (json.error === 'CONFIG_ERROR') {
-          setError('后端配置异常，请联系管理员')
+        if (json.error === 'USERNAME_TAKEN') {
+          setError('该用户名已被注册')
+        } else if (json.error === 'INVALID_BODY') {
+          setError('用户名或密码格式不正确')
+        } else if (json.error === 'TOO_MANY_ATTEMPTS') {
+          setError('注册过于频繁，请稍后重试')
         } else {
-          setError('登录失败，请稍后重试')
+          setError('注册失败，请稍后重试')
         }
         return
       }
@@ -102,12 +103,17 @@ function LoginForm() {
 
   if (checkingAuth || redirecting) {
     return (
-      <LoginFallback
+      <RegisterFallback
         title={redirecting ? '正在进入工作台' : '正在检查登录状态'}
         description="请稍候…"
       />
     )
   }
+
+  const loginPath =
+    nextPath === '/'
+      ? '/login'
+      : `/login?next=${encodeURIComponent(nextPath)}`
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -128,29 +134,15 @@ function LoginForm() {
                 5 席内测
               </p>
               <h1 className="text-4xl font-semibold leading-tight tracking-tight">
-                进入工作台前请先登录
+                注册账号，开始使用工作台
               </h1>
               <p className="mt-4 max-w-sm text-sm leading-6 text-muted-foreground">
-                使用管理员分配的账号进入工作台。每个账号只会看到自己的任务与素材。
+                每个账号只会看到自己的任务与素材。
               </p>
-              <div className="mt-8 grid max-w-md grid-cols-3 gap-3">
-                <div className="rounded-md border border-border/80 bg-card/60 p-3">
-                  <p className="text-xs font-medium text-foreground">账号隔离</p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">任务按用户分开</p>
-                </div>
-                <div className="rounded-md border border-border/80 bg-card/60 p-3">
-                  <p className="text-xs font-medium text-foreground">云端素材</p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">上传与结果分区</p>
-                </div>
-                <div className="rounded-md border border-border/80 bg-card/60 p-3">
-                  <p className="text-xs font-medium text-foreground">公网内测</p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">仅限分配账号</p>
-                </div>
-              </div>
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            公网访问开启前请确认 Cloud 模式与账号隔离验证已通过。
+            注册即表示你将使用独立的账号空间。
           </p>
         </section>
 
@@ -171,8 +163,8 @@ function LoginForm() {
                 <div className="mb-3 flex size-9 items-center justify-center rounded-md bg-secondary text-muted-foreground">
                   <LockKeyhole className="size-4" />
                 </div>
-                <CardTitle className="text-xl">账号登录</CardTitle>
-                <CardDescription>请输入管理员分配的用户名和密码</CardDescription>
+                <CardTitle className="text-xl">注册账号</CardTitle>
+                <CardDescription>创建账号后即可进入工作台</CardDescription>
               </CardHeader>
               <form onSubmit={handleSubmit}>
                 <CardContent className="flex flex-col gap-4">
@@ -186,6 +178,8 @@ function LoginForm() {
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       disabled={submitting}
+                      minLength={3}
+                      maxLength={32}
                       required
                     />
                   </div>
@@ -195,18 +189,46 @@ function LoginForm() {
                       id="password"
                       name="password"
                       type="password"
-                      autoComplete="current-password"
+                      autoComplete="new-password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       disabled={submitting}
+                      minLength={6}
+                      maxLength={128}
                       required
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="confirm-password">确认密码</Label>
+                    <Input
+                      id="confirm-password"
+                      name="confirm-password"
+                      type="password"
+                      autoComplete="new-password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      disabled={submitting}
+                      required
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="display-name">昵称（可选）</Label>
+                    <Input
+                      id="display-name"
+                      name="displayName"
+                      type="text"
+                      autoComplete="nickname"
+                      value={displayName}
+                      onChange={(e) => setDisplayName(e.target.value)}
+                      disabled={submitting}
+                      maxLength={64}
                     />
                   </div>
                   {error ? (
                     <p
                       role="alert"
                       className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-                      data-testid="login-error"
+                      data-testid="register-error"
                     >
                       {error}
                     </p>
@@ -214,20 +236,13 @@ function LoginForm() {
                 </CardContent>
                 <CardFooter className="mt-6 flex flex-col gap-3">
                   <Button type="submit" className="w-full" disabled={submitting}>
-                    {submitting ? '登录中…' : '登录'}
+                    {submitting ? '注册中…' : '注册'}
                   </Button>
-                  <p className="text-center text-xs text-muted-foreground">
-                    忘记账号请联系管理员
-                  </p>
                   <a
-                    href={
-                      nextPath === '/'
-                        ? '/register'
-                        : `/register?next=${encodeURIComponent(nextPath)}`
-                    }
+                    href={loginPath}
                     className="text-center text-xs text-primary hover:underline"
                   >
-                    没有账号？去注册
+                    已有账号？去登录
                   </a>
                 </CardFooter>
               </form>
@@ -239,31 +254,20 @@ function LoginForm() {
   )
 }
 
-export default function LoginPage() {
-  // useSearchParams 必须在 Suspense 边界内（Next.js 16 App Router）
+export default function RegisterPage() {
   return (
-    <Suspense fallback={<LoginFallback />}>
-      <LoginForm />
+    <Suspense fallback={<RegisterFallback />}>
+      <RegisterForm />
     </Suspense>
   )
 }
 
-function LoginFallback({
-  title = '登录',
+function RegisterFallback({
+  title = '注册',
   description = '请稍候…',
 }: {
   title?: string
   description?: string
-}) {
-  return <LoginFallbackContent title={title} description={description} />
-}
-
-function LoginFallbackContent({
-  title,
-  description,
-}: {
-  title: string
-  description: string
 }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-12">

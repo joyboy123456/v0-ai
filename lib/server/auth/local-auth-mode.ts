@@ -9,9 +9,9 @@ export function readLocalAuthMode(): LocalAuthMode {
   const raw = process.env.LOCAL_AUTH_MODE?.trim().toLowerCase()
   if (raw === 'password' || raw === 'super-admin') return raw
 
-  // 生产环境配置缺失或拼写错误时必须 fail closed，禁止意外免登录。
+  // 密码模式（隔离的多用户登录）默认开启；super-admin 必须显式配置。
   if (process.env.NODE_ENV === 'production') return 'password'
-  return 'super-admin'
+  return 'password'
 }
 
 export function isLocalSuperAdminEnabled(): boolean {

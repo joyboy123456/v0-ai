@@ -1,12 +1,18 @@
 /**
  * 用户仓储层：按 STORAGE_MODE 切换 local / oss。
  *
- * - local/oss 模式：返回配置的本地管理员账号。
+ * - local/oss 模式：返回配置的本地管理员账号和持久化注册用户。
  */
 
 import bcrypt from 'bcryptjs'
+import { randomUUID } from 'node:crypto'
+import path from 'node:path'
 
 import { readLocalSuperAdminUsername } from '@/lib/server/auth/local-auth-mode'
+import {
+  loadJsonFileWithRecovery,
+  writeJsonFileAtomic,
+} from '@/lib/server/json-file-store'
 import { isLocal, isOss } from '@/lib/server/storage-mode'
 import type { User } from '@/lib/types'
 
@@ -44,30 +50,131 @@ const LOCAL_USERS: Map<string, User> = (() => {
   return map
 })()
 
+export class UserRepoError extends Error {
+  code: 'USERNAME_TAKEN'
+
+  constructor(code: 'USERNAME_TAKEN') {
+    super(code)
+    this.name = 'UserRepoError'
+    this.code = code
+  }
+}
+
+const globalForUsers = globalThis as typeof globalThis & {
+  __yibaiLocalUsers?: Map<string, User>
+  __yibaiLocalUsersLoaded?: Promise<void>
+}
+
+const REGISTERED_USERS =
+  globalForUsers.__yibaiLocalUsers ?? new Map<string, User>()
+globalForUsers.__yibaiLocalUsers = REGISTERED_USERS
+
+const usersFilePath = path.join(process.cwd(), 'data', 'users.json')
+
+function parseUsers(value: unknown): User[] {
+  if (!Array.isArray(value)) throw new Error('users.json must contain an array')
+  return value.map((user) => {
+    if (
+      !user ||
+      typeof user !== 'object' ||
+      typeof (user as User).id !== 'string' ||
+      typeof (user as User).username !== 'string' ||
+      typeof (user as User).passwordHash !== 'string' ||
+      (typeof (user as User).displayName !== 'string' &&
+        (user as User).displayName !== null) ||
+      typeof (user as User).createdAt !== 'number'
+    ) {
+      throw new Error('users.json contains an invalid user')
+    }
+    return user as User
+  })
+}
+
+async function loadRegisteredUsers(): Promise<void> {
+  const users = await loadJsonFileWithRecovery({
+    filePath: usersFilePath,
+    label: 'auth/users',
+    parse: parseUsers,
+  })
+  if (!users) return
+  for (const user of users) {
+    REGISTERED_USERS.set(user.username.trim().toLowerCase(), user)
+  }
+}
+
+function ensureRegisteredUsersLoaded(): Promise<void> {
+  if (!globalForUsers.__yibaiLocalUsersLoaded) {
+    globalForUsers.__yibaiLocalUsersLoaded = loadRegisteredUsers()
+  }
+  return globalForUsers.__yibaiLocalUsersLoaded
+}
+
+function isPasswordAuthAvailable(): boolean {
+  return isLocal() || isOss()
+}
+
 export async function findUserByUsername(
   username: string,
 ): Promise<User | null> {
   const normalized = username.trim().toLowerCase()
   if (!normalized) return null
 
-  if (isLocal() || isOss()) {
-    return LOCAL_USERS.get(normalized) ?? null
-  }
+  if (!isPasswordAuthAvailable()) return null
+  await ensureRegisteredUsersLoaded()
 
-  // cloud 模式已移除
-  return null
+  return LOCAL_USERS.get(normalized) ?? REGISTERED_USERS.get(normalized) ?? null
 }
 
 export async function findUserById(userId: string): Promise<User | null> {
   if (!userId) return null
 
-  if (isLocal() || isOss()) {
-    for (const user of LOCAL_USERS.values()) {
-      if (user.id === userId) return user
-    }
-    return null
+  if (!isPasswordAuthAvailable()) return null
+  await ensureRegisteredUsersLoaded()
+
+  for (const user of LOCAL_USERS.values()) {
+    if (user.id === userId) return user
+  }
+  for (const user of REGISTERED_USERS.values()) {
+    if (user.id === userId) return user
+  }
+  return null
+}
+
+export async function usernameExists(username: string): Promise<boolean> {
+  return (await findUserByUsername(username)) !== null
+}
+
+export async function createUser({
+  username,
+  password,
+  displayName,
+}: {
+  username: string
+  password: string
+  displayName?: string
+}): Promise<User> {
+  if (!isPasswordAuthAvailable()) {
+    throw new Error('Password authentication is unavailable')
   }
 
-  // cloud 模式已移除
-  return null
+  const normalized = username.trim().toLowerCase()
+  await ensureRegisteredUsersLoaded()
+  if (LOCAL_USERS.has(normalized) || REGISTERED_USERS.has(normalized)) {
+    throw new UserRepoError('USERNAME_TAKEN')
+  }
+
+  const user: User = {
+    id: `usr_${randomUUID()}`,
+    username: normalized,
+    passwordHash: bcrypt.hashSync(password, 10),
+    displayName: displayName?.trim() || null,
+    createdAt: Date.now(),
+  }
+  REGISTERED_USERS.set(normalized, user)
+  await writeJsonFileAtomic(
+    usersFilePath,
+    Array.from(REGISTERED_USERS.values()),
+    'auth/users',
+  )
+  return user
 }
