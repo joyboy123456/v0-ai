@@ -22,7 +22,9 @@ const SESSION_COOKIE_NAME = 'session_id'
 
 const PUBLIC_PATH_PREFIXES = [
   '/login',
+  '/register',
   '/api/auth/login',
+  '/api/auth/register',
   '/api/auth/logout',
   '/api/auth/me',
   '/api/health',
