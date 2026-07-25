@@ -28,7 +28,9 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -37,6 +39,7 @@ import {
   DEFAULT_FASHION_MODEL,
   FEATURE_LABELS,
   FASHION_IMAGE_RATIOS,
+  FASHION_MODEL_PROVIDER_LABELS,
   FASHION_PROMPT_MODES,
   FASHION_RESOLUTIONS,
   PHOTO_FISSION_CHILDRENS_CATEGORIES,
@@ -51,6 +54,7 @@ import {
   type CompanyModel,
   type FashionImageRatio,
   type FashionModelId,
+  type FashionModelProvider,
   type FashionPromptMode,
   type FashionReferenceImage,
   type FashionRemixRequest,
@@ -930,6 +934,17 @@ function FashionModelSelect({
     SELECTABLE_FASHION_MODELS.find((option) => option.id === value) ??
     SELECTABLE_FASHION_MODELS[0];
 
+  // 按 provider 分组，保持 FASHION_MODELS 中的声明顺序
+  const grouped = useMemo(() => {
+    const groups = new Map<FashionModelProvider, typeof SELECTABLE_FASHION_MODELS>()
+    for (const option of SELECTABLE_FASHION_MODELS) {
+      const list = groups.get(option.provider) ?? []
+      list.push(option)
+      groups.set(option.provider, list)
+    }
+    return Array.from(groups.entries())
+  }, [])
+
   return (
     <div className={cn("space-y-2", className)}>
       <div className="flex items-center justify-between gap-2">
@@ -948,10 +963,15 @@ function FashionModelSelect({
           <SelectValue placeholder="选择模型" />
         </SelectTrigger>
         <SelectContent>
-          {SELECTABLE_FASHION_MODELS.map((option) => (
-            <SelectItem key={option.id} value={option.id}>
-              {option.label} · {option.alias}
-            </SelectItem>
+          {grouped.map(([provider, options]) => (
+            <SelectGroup key={provider}>
+              <SelectLabel>{FASHION_MODEL_PROVIDER_LABELS[provider]}</SelectLabel>
+              {options.map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.label} · {option.alias}
+                </SelectItem>
+              ))}
+            </SelectGroup>
           ))}
         </SelectContent>
       </Select>

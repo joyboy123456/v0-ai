@@ -20,6 +20,7 @@ import { runOpenAIImageEdit } from './openai-image-adapter'
 import { runJimengImageEdit } from './jimeng-image-adapter'
 import { runVolcesImageEdit } from './volces-image-adapter'
 import { runLaozhangImageEdit } from './laozhang-image-adapter'
+import { runGrsaiImageEdit } from './grsai-image-adapter'
 import { appendBillingEvent } from './billing/billing-store'
 
 export interface ProviderImageEditInput {
@@ -80,6 +81,34 @@ export async function runImageEditViaProvider(
             prompt: input.prompt,
             inputImages: input.inputImages,
             inputImageLabels: input.inputImageLabels,
+            count: input.count,
+            aspectRatio: input.aspectRatio,
+            imageSize: input.imageSize,
+            traceId: input.traceId,
+            shotId: input.shotId,
+            providerId: provider.id,
+            rateLimitKey,
+            maxIpm: provider.maxIpm,
+            maxRpm: provider.maxRpm,
+            signal: input.signal,
+            onRetryAttempt: input.onRetryAttempt,
+          }),
+        )
+
+      case 'grsai':
+        return await recordBillingAndReturn(
+          provider.id,
+          input.model || provider.model || '',
+          input.taskId,
+          runGrsaiImageEdit({
+            userId: input.userId,
+            taskId: input.taskId,
+            apiKey,
+            baseUrl: provider.baseUrl,
+            model: input.model || provider.model || '',
+            timeoutMs,
+            prompt: input.prompt,
+            inputImages: input.inputImages,
             count: input.count,
             aspectRatio: input.aspectRatio,
             imageSize: input.imageSize,

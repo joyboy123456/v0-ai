@@ -34,12 +34,32 @@ interface GeminiInlineData {
   data?: string
 }
 
+interface GeminiFileData {
+  mimeType?: string
+  fileUri?: string
+}
+
 interface GeminiPart {
   text?: string
   inlineData?: GeminiInlineData
   inline_data?: GeminiInlineData
+  fileData?: GeminiFileData
+  file_data?: GeminiFileData
   thought?: boolean
 }
+
+/**
+ * 参考图归一化后的形态：
+ * - `data:` URL → inline（本地已有 base64，直接内联）
+ * - http(s) URL → file（不下载不转 base64，直接把 URL 交给上游用 file_data 引用，
+ *   上游/Google 自己去拉取。避免本地下载 + base64 造成的内存占用和请求体膨胀，
+ *   尤其对多张大图参考图场景可以显著降低服务器开销、提升并发能力。
+ *   注意：这只是省去"本地编码"这一步，上游对参考图内容总大小仍有硬性上限，
+ *   超大合集（如多张 4K+ 原图合计接近或超过 ~50MB）依然会被上游拒绝（413）。
+ */
+type NormalizedGoogleImage =
+  | { kind: 'inline'; mimeType: string; data: string }
+  | { kind: 'file'; mimeType: string; uri: string }
 
 interface GeminiCandidate {
   content?: { parts?: GeminiPart[] }
@@ -130,15 +150,15 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
 
   const prepareRequest = async (): Promise<PreparedRequest> => {
     if (preparedRequest) return preparedRequest
-    const normalizedInputImages = await normalizeGoogleInputImages(input.inputImages)
-    const requestBody = buildRequestBody({ ...input, inputImages: normalizedInputImages })
+    const normalizedImages = await normalizeGoogleInputImages(input.inputImages)
+    const requestBody = buildRequestBody({ ...input, normalizedImages })
     const serializedBody = JSON.stringify(requestBody)
     preparedRequest = {
       requestBody,
       serializedBody,
       requestBodyBytes: Buffer.byteLength(serializedBody, 'utf8'),
-      imageCount: normalizedInputImages.length,
-      referenceCount: normalizedInputImages.length,
+      imageCount: normalizedImages.length,
+      referenceCount: normalizedImages.length,
     }
     return preparedRequest
   }
@@ -441,14 +461,17 @@ async function performSingleCall(
   return inline
 }
 
-function buildRequestBody(input: GoogleEditInput) {
+function buildRequestBody(
+  input: Omit<GoogleEditInput, 'inputImages'> & { normalizedImages: NormalizedGoogleImage[] },
+) {
   const parts: GeminiPart[] = [
-    ...input.inputImages.flatMap((dataUrl, index) => {
+    ...input.normalizedImages.flatMap((image, index) => {
       const label = input.inputImageLabels?.[index]?.trim()
-      return [
-        ...(label ? [{ text: label }] : []),
-        { inline_data: parseDataUrl(dataUrl) },
-      ]
+      const imagePart: GeminiPart =
+        image.kind === 'inline'
+          ? { inline_data: { mimeType: image.mimeType, data: image.data } }
+          : { file_data: { mimeType: image.mimeType, fileUri: image.uri } }
+      return [...(label ? [{ text: label }] : []), imagePart]
     }),
     { text: input.prompt },
   ]
@@ -483,18 +506,27 @@ function parseDataUrl(dataUrl: string): GeminiInlineData {
   return { mimeType: match[1], data: match[2] }
 }
 
-async function normalizeGoogleInputImages(inputImages: string[]): Promise<string[]> {
+async function normalizeGoogleInputImages(
+  inputImages: string[],
+): Promise<NormalizedGoogleImage[]> {
   return Promise.all(inputImages.map((image, index) => normalizeGoogleInputImage(image, index)))
 }
 
-async function normalizeGoogleInputImage(image: string, index: number): Promise<string> {
+async function normalizeGoogleInputImage(
+  image: string,
+  index: number,
+): Promise<NormalizedGoogleImage> {
   if (image.startsWith('data:')) {
-    parseDataUrl(image)
-    return image
+    const parsed = parseDataUrl(image)
+    return { kind: 'inline', mimeType: parsed.mimeType ?? 'image/png', data: parsed.data ?? '' }
   }
 
   if (image.startsWith('http://') || image.startsWith('https://')) {
-    return fetchImageUrlAsDataUrl(image, index)
+    // 不下载图片、不转 base64：把原始 URL 通过 file_data 交给上游，让上游自己去拉取。
+    // 这样可以避免把大图整体读进内存再 base64 编码（内存/CPU 开销大，还会让请求体膨胀
+    // 数倍），只需要一次轻量 HEAD 请求确定 mimeType。
+    const mimeType = await resolveReferenceImageMime(image, index)
+    return { kind: 'file', mimeType, uri: image }
   }
 
   throw new GoogleImageError({
@@ -504,12 +536,16 @@ async function normalizeGoogleInputImage(image: string, index: number): Promise<
   })
 }
 
-async function fetchImageUrlAsDataUrl(url: string, index: number): Promise<string> {
-  const response = await fetchReferenceImage(url)
+/** 从 URL 后缀猜 mimeType，猜不出时才发一次 HEAD 请求读 content-type（不下载图片内容）。 */
+async function resolveReferenceImageMime(url: string, index: number): Promise<string> {
+  const extMime = guessMimeFromExtension(url)
+  if (extMime) return extMime
+
+  const response = await fetchReferenceImageHead(url)
   if (!response.ok) {
     throw new GoogleImageError({
       category: response.status >= 500 ? 'network' : 'bad_request',
-      message: `第 ${index + 1} 张参考图下载失败（HTTP ${response.status}）`,
+      message: `第 ${index + 1} 张参考图访问失败（HTTP ${response.status}）`,
       httpStatus: response.status,
       retryable: response.status >= 500,
     })
@@ -523,17 +559,27 @@ async function fetchImageUrlAsDataUrl(url: string, index: number): Promise<strin
       retryable: false,
     })
   }
-
-  const buffer = Buffer.from(await response.arrayBuffer())
-  return `data:${mimeType};base64,${buffer.toString('base64')}`
+  return mimeType
 }
 
-async function fetchReferenceImage(url: string): Promise<Response> {
+function guessMimeFromExtension(url: string): string | null {
+  const path = url.split(/[?#]/)[0].toLowerCase()
+  if (path.endsWith('.png')) return 'image/png'
+  if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg'
+  if (path.endsWith('.webp')) return 'image/webp'
+  if (path.endsWith('.gif')) return 'image/gif'
+  if (path.endsWith('.bmp')) return 'image/bmp'
+  if (path.endsWith('.heic') || path.endsWith('.heif')) return 'image/heic'
+  return null
+}
+
+async function fetchReferenceImageHead(url: string): Promise<Response> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), referenceImageFetchTimeoutMs)
 
   try {
     return await proxyFetch(url, {
+      method: 'HEAD',
       signal: controller.signal,
       headers: {
         'User-Agent': 'YibaiFission/1.0',
@@ -546,14 +592,14 @@ async function fetchReferenceImage(url: string): Promise<Response> {
     ) {
       throw new GoogleImageError({
         category: 'network',
-        message: '参考图下载超时',
+        message: '参考图访问超时',
         retryable: true,
       })
     }
 
     throw new GoogleImageError({
       category: 'network',
-      message: `参考图下载失败：${error instanceof Error ? error.message : String(error)}`,
+      message: `参考图访问失败：${error instanceof Error ? error.message : String(error)}`,
       retryable: true,
     })
   } finally {

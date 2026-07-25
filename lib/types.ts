@@ -82,6 +82,9 @@ export type FashionModelId =
   | 'jimeng-seedream-4.6'
   | 'doubao-seedream-4.5'
   | 'doubao-seedream-5.0-lite'
+  | 'nano-banana-2-lite'
+  | 'nano-banana-2'
+  | 'nano-banana-pro'
 
 export interface Feature {
   id: FeatureType
@@ -592,6 +595,8 @@ export const FASHION_PROMPT_MODES = [
   },
 ] satisfies { id: FashionPromptMode; label: string; description: string }[]
 
+export type FashionModelProvider = 'laozhang' | 'grsai'
+
 export interface FashionModelOption {
   id: FashionModelId
   label: string
@@ -600,6 +605,14 @@ export interface FashionModelOption {
   maxInputImages: number
   maxResolutionLabel: '1K' | '2K' | '3K' | '4K'
   selectable?: boolean
+  /** 渠道分组：决定模型在前端选择器中归属哪个分类（laozhang / grsai） */
+  provider: FashionModelProvider
+}
+
+/** 渠道分组的中文展示名，用于前端 SelectGroup 的 SelectLabel */
+export const FASHION_MODEL_PROVIDER_LABELS: Record<FashionModelProvider, string> = {
+  laozhang: '老张 API 渠道',
+  grsai: 'Grsai 渠道',
 }
 
 /**
@@ -616,6 +629,7 @@ export const FASHION_MODELS: FashionModelOption[] = [
     description: '推荐默认。走 Google Gemini / 七牛 Gemini 图像渠道，最多 14 张参考图，支持 4K 出图',
     maxInputImages: 14,
     maxResolutionLabel: '4K',
+    provider: 'laozhang',
   },
   {
     id: 'gpt-image-2',
@@ -624,6 +638,7 @@ export const FASHION_MODELS: FashionModelOption[] = [
     description: '适合走七牛 OpenAI 图像模型渠道；使用前需配置支持 openai/gpt-image-* 的 qiniu provider',
     maxInputImages: 10,
     maxResolutionLabel: '4K',
+    provider: 'laozhang',
   },
   {
     id: 'gemini-3-pro-image-preview',
@@ -632,6 +647,7 @@ export const FASHION_MODELS: FashionModelOption[] = [
     description: 'Google 旗舰画质，thinking 模式，最多 14 张参考图，速度较慢',
     maxInputImages: 14,
     maxResolutionLabel: '4K',
+    provider: 'laozhang',
   },
   {
     id: 'jimeng-seedream-4.6',
@@ -641,6 +657,7 @@ export const FASHION_MODELS: FashionModelOption[] = [
     maxInputImages: 5,
     maxResolutionLabel: '4K',
     selectable: false,
+    provider: 'laozhang',
   },
   {
     id: 'doubao-seedream-4.5',
@@ -649,6 +666,7 @@ export const FASHION_MODELS: FashionModelOption[] = [
     description: '字节跳动火山引擎豆包图片生成，高质量中文场景理解，支持 4K 出图',
     maxInputImages: 5,
     maxResolutionLabel: '4K',
+    provider: 'laozhang',
   },
   {
     id: 'doubao-seedream-5.0-lite',
@@ -658,6 +676,34 @@ export const FASHION_MODELS: FashionModelOption[] = [
     maxInputImages: 14,
     maxResolutionLabel: '4K',
     selectable: false,
+    provider: 'laozhang',
+  },
+  {
+    id: 'nano-banana-2-lite',
+    label: 'Grsai Nano Banana 2 Lite',
+    alias: 'Grsai NB2 Lite',
+    description: '走 Grsai 渠道 Nano Banana 2 Lite，最便宜（约 $0.005/张），仅 1K，适合批量出图',
+    maxInputImages: 14,
+    maxResolutionLabel: '1K',
+    provider: 'grsai',
+  },
+  {
+    id: 'nano-banana-2',
+    label: 'Grsai Nano Banana 2',
+    alias: 'Grsai NB2',
+    description: '走 Grsai 渠道 Nano Banana 2，支持 1K/2K/4K 全分辨率（约 $0.012/张）',
+    maxInputImages: 14,
+    maxResolutionLabel: '4K',
+    provider: 'grsai',
+  },
+  {
+    id: 'nano-banana-pro',
+    label: 'Grsai Nano Banana Pro',
+    alias: 'Grsai NB Pro',
+    description: '走 Grsai 渠道 Nano Banana Pro 旗舰画质，支持 1K/2K/4K（约 $0.018/张）',
+    maxInputImages: 14,
+    maxResolutionLabel: '4K',
+    provider: 'grsai',
   },
 ]
 

@@ -21,7 +21,13 @@ import {
 
 export { computeProviderSelectionScore, percentile } from './image-provider-metrics'
 
-export type ImageProviderType = 'google' | 'openai' | 'jimeng' | 'volces' | 'laozhang'
+export type ImageProviderType =
+  | 'google'
+  | 'openai'
+  | 'jimeng'
+  | 'volces'
+  | 'laozhang'
+  | 'grsai'
 
 export interface ImageProvider {
   /** 唯一标识，用于日志、节流桶隔离和配置引用 */
@@ -580,6 +586,16 @@ export function isLaozhangImageModel(model: string | undefined): boolean {
   )
 }
 
+/**
+ * Grsai 原生 /v1/api/generate 接口只接受 nano-banana-* 系列模型名。
+ * 见 lib/server/grsai-image-adapter.ts 和 grsai 官方文档。
+ */
+export function isGrsaiImageModel(model: string | undefined): boolean {
+  if (!model) return true
+  const lower = model.trim().toLowerCase()
+  return lower.startsWith('nano-banana-')
+}
+
 function normalizeVolcesModelId(model: string | undefined): string {
   const lower = model?.trim().toLowerCase() ?? ''
   if (lower === 'doubao-seedream-4.5') return 'doubao-seedream-4-5-251128'
@@ -600,6 +616,7 @@ export function isImageProviderModelCompatible(
     return !requestedFamily || !providerFamily || requestedFamily === providerFamily
   }
   if (provider.type === 'laozhang') return isLaozhangImageModel(candidate)
+  if (provider.type === 'grsai') return isGrsaiImageModel(candidate)
   if (provider.type === 'jimeng') return isJimengImageModel(candidate)
   if (provider.type === 'volces') {
     if (!isVolcesImageModel(candidate)) return false

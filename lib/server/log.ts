@@ -13,6 +13,7 @@ export type ImageEventName =
   | 'gimg.fail'
   | 'gimg.retry'
   | 'gimg.throttle'
+  | 'gimg.persist'
   | 'pool.dispatch'
   | 'pool.failover'
   | 'pool.circuit'
@@ -36,6 +37,7 @@ const eventLevel: Record<ImageEventName, 'info' | 'warn' | 'error'> = {
   'gimg.fail': 'error',
   'gimg.retry': 'warn',
   'gimg.throttle': 'info',
+  'gimg.persist': 'info',
   'pool.dispatch': 'info',
   'pool.failover': 'warn',
   'pool.circuit': 'error',

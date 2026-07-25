@@ -65,6 +65,9 @@ const MODEL_LABELS: Record<string, string> = {
   "gemini-3.1-flash-image-preview": "Nano Banana",
   "gpt-image-2": "GPT Image 2",
   "gemini-3-pro-image-preview": "Nano Banana Pro",
+  "nano-banana-2-lite": "Grsai Nano Banana 2 Lite",
+  "nano-banana-2": "Grsai Nano Banana 2",
+  "nano-banana-pro": "Grsai Nano Banana Pro",
 };
 
 function getModelLabel(model: string): string {

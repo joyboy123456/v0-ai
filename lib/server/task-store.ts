@@ -30,7 +30,9 @@ import {
   type TaskRow,
 } from '@/lib/server/storage'
 import {
+  DEFAULT_FASHION_MODEL,
   FEATURE_WORKFLOWS,
+  type AiFashionPhotoParams,
   type AssetRecord,
   type FeatureType,
   type GenerationTask,
@@ -45,6 +47,7 @@ import { mkdir, readFile, writeFile, rename, readdir, copyFile, stat } from 'nod
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import sharp from 'sharp'
+import { logImageEvent, type LogContext } from '@/lib/server/log'
 
 const globalStore = globalThis as typeof globalThis & {
   fashionMvpStore?: {
@@ -216,24 +219,35 @@ async function storeAssetFromDataUrl(
 async function storeResultFromResultAsset(
   result: ResultAsset,
   userId: string,
+  logCtx?: { taskId: string; traceId: string; shotId?: string },
 ): Promise<{ url: string; bytes?: number; mimeType: string; width?: number; height?: number; thumbnailUrl?: string }> {
+  const startedAt = Date.now()
+  const stages: Record<string, number> = {}
+
   if (result.url.startsWith('data:')) {
     const mimeType = extractDataUrlMime(result.url) ?? 'image/png'
+    const t0 = Date.now()
     const persisted = await storage().putImageFromDataUrl({
       userId: userId === defaultUserId ? null : userId,
       bucket: 'results',
       filename: `${result.assetId}.${getExtension(mimeType)}`,
       dataUrl: result.url,
     })
+    stages.putOriginal = Date.now() - t0
+    const t1 = Date.now()
     const dimensions = await readImageDimensionsFromBuffer(
       Buffer.from(result.url.split(',')[1] ?? '', 'base64'),
     )
+    stages.readMeta = Date.now() - t1
     // 生成缩略图
+    const t2 = Date.now()
     const thumbnailUrl = await generateAndUploadThumbnail(
       Buffer.from(result.url.split(',')[1] ?? '', 'base64'),
       result.assetId,
       userId,
     )
+    stages.thumbnail = Date.now() - t2
+    logPersistDone(logCtx, startedAt, stages, 'data')
     return { url: persisted.publicUrl, bytes: persisted.bytes, mimeType, ...dimensions, thumbnailUrl }
   }
 
@@ -241,15 +255,20 @@ async function storeResultFromResultAsset(
     throw new Error(`生成图归档失败：URL 协议不支持（${result.url}）`)
   }
 
+  const t0 = Date.now()
   const downloaded = await downloadSafeRemoteImage(result.url, {
     maxBytes: MAX_GENERATED_IMAGE_BYTES,
   })
   const buffer = downloaded.buffer
+  stages.download = Date.now() - t0
+  const t1 = Date.now()
   const imageMetadata = await readImageMetadataFromBuffer(buffer)
+  stages.readMeta = Date.now() - t1
   const mimeType =
     imageMetadata.mimeType ??
     normalizeImageMime(downloaded.contentType) ??
     'image/png'
+  const t2 = Date.now()
   const persisted = await storage().putImage({
     userId: userId === defaultUserId ? null : userId,
     bucket: 'results',
@@ -257,8 +276,12 @@ async function storeResultFromResultAsset(
     body: buffer,
     contentType: mimeType,
   })
+  stages.putOriginal = Date.now() - t2
   // 生成缩略图
+  const t3 = Date.now()
   const thumbnailUrl = await generateAndUploadThumbnail(buffer, result.assetId, userId)
+  stages.thumbnail = Date.now() - t3
+  logPersistDone(logCtx, startedAt, stages, 'http')
   return {
     url: persisted.publicUrl,
     bytes: persisted.bytes,
@@ -267,6 +290,31 @@ async function storeResultFromResultAsset(
     height: imageMetadata.height,
     thumbnailUrl,
   }
+}
+
+/**
+ * 后处理完成日志：量化 gimg.success 之后的「下载→sharp→OSS 上传→缩略图」
+ * 各阶段耗时。这条链路此前是无日志盲区，并发批次端到端变慢时无法定位
+ * 是供应商侧还是本地后处理侧的瓶颈。
+ */
+function logPersistDone(
+  logCtx: { taskId: string; traceId: string; shotId?: string } | undefined,
+  startedAt: number,
+  stages: Record<string, number>,
+  source: 'data' | 'http',
+): void {
+  if (!logCtx) return
+  const ctx: LogContext = {
+    traceId: logCtx.traceId,
+    taskId: logCtx.taskId,
+    ...(logCtx.shotId ? { shotId: logCtx.shotId } : {}),
+  }
+  logImageEvent('gimg.persist', ctx, {
+    stage: 'done',
+    source,
+    tookMs: Date.now() - startedAt,
+    ...stages,
+  })
 }
 
 /**
@@ -751,7 +799,8 @@ async function resolvePhotoFissionFaceMaskDataUrl(
   if (!asset) {
     throw new Error(`人脸 mask 素材不存在：${faceMaskAssetId}`)
   }
-  const dataUrl = asset.dataUrl ?? (await resolveAssetToDataUrl(asset))
+  // photo-fission 固定走 Gemini/laozhang 链路，可放心用 URL 直传。
+  const dataUrl = asset.dataUrl ?? (await resolveAssetToDataUrl(asset, { preferUrlPassthrough: true }))
   if (!dataUrl) {
     throw new Error(`人脸 mask 素材无法读取：${faceMaskAssetId}`)
   }
@@ -846,13 +895,14 @@ async function runTask(taskId: string, options: RunTaskOptions = {}) {
       targetUnitIdSet,
     )
 
+    const preferUrlPassthrough = taskTargetsGeminiFamily(task)
     const inputImages = (
       await Promise.all(
         task.inputAssetIds.map(async (assetId) => {
           const asset = store.assets.get(assetId)
           if (!asset) return null
           if (asset.dataUrl) return asset.dataUrl
-          return resolveAssetToDataUrl(asset)
+          return resolveAssetToDataUrl(asset, { preferUrlPassthrough })
         }),
       )
     ).filter((image): image is string => Boolean(image))
@@ -1006,7 +1056,22 @@ async function persistOneResult(
   // PR3：通过 storage-adapter 写「生成结果图」。local 模式落本地图片目录，
   // cloud 模式落 R2 `users/{userId}/results/`。
   // PR4：把 ownerUserId 透传给 adapter，cloud 模式下 R2 路径按用户隔离。
-  const persisted = await storeResultFromResultAsset(result, ownerUserId)
+  // 后处理并发信号量：多个 task/shot 同时完成时，限制「下载4K→sharp→OSS」
+  // 重 IO+CPU 段的瞬时并发，避免 RSS 峰值触发看门狗；同时量化 waitMs
+  // 让信号量排队时间可见。
+  const traceId = `${taskId}_${result.shotId ?? result.assetId}`
+  const persistLogCtx = { taskId, traceId, shotId: result.shotId }
+  const acquireAt = Date.now()
+  const persisted = await persistSemaphore.runExclusive(async () => {
+    const waitMs = Date.now() - acquireAt
+    if (waitMs > 50) {
+      logImageEvent('gimg.persist', persistLogCtx, {
+        stage: 'acquired',
+        waitMs,
+      })
+    }
+    return storeResultFromResultAsset(result, ownerUserId, persistLogCtx)
+  })
   result.url = persisted.url
   result.downloadUrl = persisted.url
   result.width = persisted.width ?? result.width
@@ -1127,12 +1192,24 @@ async function saveResults(
   taskId?: string,
   ownerUserId: string = defaultUserId,
 ) {
-  const resultAssetIds: string[] = []
+  // 后处理并发：原 for 循环串行 await，N 张图要 N×单张耗时。
+  // 改成 Promise.all + persistSemaphore，并发度由信号量控制（默认 4），
+  // 保持 resultAssetIds 顺序与原串行一致（map 索引对齐）。
+  const persistLogCtx = taskId
+    ? { taskId, traceId: taskId }
+    : undefined
+  const persisted = await Promise.all(
+    results.map((result) =>
+      persistSemaphore.runExclusive(() =>
+        storeResultFromResultAsset(result, ownerUserId, persistLogCtx),
+      ),
+    ),
+  )
 
-  for (const result of results) {
-    // PR3：通过 storage-adapter 写图。失败抛出由 runTask 外层 catch 接住标 failed。
-    // PR4：透传 ownerUserId，cloud 模式 R2 路径按用户隔离。
-    const persistedResult = await storeResultFromResultAsset(result, ownerUserId)
+  const resultAssetIds: string[] = []
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i]
+    const persistedResult = persisted[i]
     const resultUrl = persistedResult.url
     result.url = resultUrl
     result.downloadUrl = resultUrl
@@ -1372,6 +1449,57 @@ async function ensureStoreReady() {
  */
 let persistChain: Promise<void> = Promise.resolve()
 
+/**
+ * 后处理并发信号量。
+ *
+ * gimg.success 之后的「下载 4K 图 → sharp 读 metadata → 上传 OSS 原图 →
+ * sharp 生成缩略图 → 上传 OSS 缩略图」是重 IO + CPU 段，单任务峰值约
+ * 80-120MB（4K 像素 buffer + sharp 工作内存）。多个 task / shot 并发完成
+ * 时会扎堆，无限制并发会推高 RSS 触发看门狗。
+ *
+ * 默认 4：4 并发峰值 ~400-600MB，pm2 RSS 升到 ~1.3GB，离看门狗 3GB 阈值
+ * 仍留 1.5GB+ 缓冲；CPU 4 核也能容纳 sharp native 线程。
+ * 可通过环境变量 RESULT_PERSIST_CONCURRENCY 调整。
+ */
+const RESULT_PERSIST_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.RESULT_PERSIST_CONCURRENCY ?? 4) || 4,
+)
+
+class Semaphore {
+  private available: number
+  private readonly waiters: (() => void)[] = []
+  constructor(private readonly capacity: number) {
+    this.available = capacity
+  }
+  async acquire(): Promise<void> {
+    if (this.available > 0) {
+      this.available--
+      return
+    }
+    await new Promise<void>((resolve) => this.waiters.push(resolve))
+    this.available--
+  }
+  release(): void {
+    this.available++
+    const next = this.waiters.shift()
+    if (next) {
+      this.available--
+      next()
+    }
+  }
+  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire()
+    try {
+      return await fn()
+    } finally {
+      this.release()
+    }
+  }
+}
+
+const persistSemaphore = new Semaphore(RESULT_PERSIST_CONCURRENCY)
+
 function persistStore(): Promise<void> {
   const next = persistChain
     .catch(() => undefined)
@@ -1399,6 +1527,22 @@ async function writeStoreFile(): Promise<void> {
 }
 
 /**
+ * 判断一个任务最终会不会打到 Gemini 系模型（Google 官方 / 老张 laozhang-gemini-*）。
+ * photo-fission / pose-fission 固定走 Gemini 链路；ai-fashion-photo 可选模型，
+ * 需要看 params.model（未指定时按 DEFAULT_FASHION_MODEL 也是 gemini- 开头处理）。
+ */
+function taskTargetsGeminiFamily(task: GenerationTask): boolean {
+  if (task.featureType === 'photo-fission' || task.featureType === 'pose-fission') {
+    return true
+  }
+  if (task.featureType === 'ai-fashion-photo') {
+    const model = (task.params as AiFashionPhotoParams).model ?? DEFAULT_FASHION_MODEL
+    return model.startsWith('gemini-')
+  }
+  return false
+}
+
+/**
  * Convert an asset record into a self-contained data URL the third-party API can consume.
  *
  * The third-party proxy receives the request from the Node server and has no way to fetch
@@ -1408,8 +1552,18 @@ async function writeStoreFile(): Promise<void> {
  *
  * PR3 修正：cloud 模式 `fileUrl` 是 OSS 公共 URL，
  * 需要通过 storage adapter 认证下载后转换为 dataURL（Google Gemini API 需要 base64 inline data）。
+ *
+ * 2026-07-23：Gemini 系模型（Google 官方 / 老张 laozhang-gemini-*）支持在请求里用
+ * `file_data` 直接引用公开图片 URL，上游自己去拉取，不需要我们先下载整张图再转 base64。
+ * 这样能显著降低服务器内存/带宽开销，并避免多张大图参考图把请求体撑到几十上百 MB
+ * 导致上游 413。当调用方明确目标模型是 Gemini 系时传 `preferUrlPassthrough: true`
+ * 直接返回原始 OSS URL；其余场景（OpenAI/Volces 等需要真实字节数据的供应商，或本地
+ * 相对路径这类上游根本无法访问的地址）维持原有下载 + base64 行为。
  */
-async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null> {
+async function resolveAssetToDataUrl(
+  asset: AssetRecord,
+  options: { preferUrlPassthrough?: boolean } = {},
+): Promise<string | null> {
   const { fileUrl, fileType } = asset
 
   if (!fileUrl) return null
@@ -1417,6 +1571,9 @@ async function resolveAssetToDataUrl(asset: AssetRecord): Promise<string | null>
 
   // HTTP/HTTPS URL：OSS 模式需要通过 storage adapter 认证下载
   if (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')) {
+    if (options.preferUrlPassthrough) {
+      return fileUrl
+    }
     try {
       // 尝试从 OSS publicUrl 提取 key 并通过认证方式下载
       const ossKey = extractOssKeyFromUrl(fileUrl)
@@ -1583,7 +1740,8 @@ export async function retryPhotoFissionShots(
           const asset = store.assets.get(assetId)
           if (!asset) return null
           if (asset.dataUrl) return asset.dataUrl
-          return resolveAssetToDataUrl(asset)
+          // photo-fission 固定走 Gemini/laozhang 链路，可放心用 URL 直传。
+          return resolveAssetToDataUrl(asset, { preferUrlPassthrough: true })
         }),
       )
     ).filter((image): image is string => Boolean(image))
@@ -1782,7 +1940,8 @@ async function resolveRequiredAssetToDataUrl(
   asset: AssetRecord,
   label: string,
 ): Promise<string> {
-  const dataUrl = asset.dataUrl ?? (await resolveAssetToDataUrl(asset))
+  // 重修脸固定走 photo-fission 的 Gemini/laozhang 链路，可放心用 URL 直传。
+  const dataUrl = asset.dataUrl ?? (await resolveAssetToDataUrl(asset, { preferUrlPassthrough: true }))
   if (dataUrl) return dataUrl
 
   throw new Error(
@@ -1820,7 +1979,9 @@ async function resolveTaskInputImages(task: GenerationTask): Promise<string[]> {
         const asset = store.assets.get(assetId)
         if (!asset) return null
         if (asset.dataUrl) return asset.dataUrl
-        return resolveAssetToDataUrl(asset)
+        // 仅供 photo-fission 变体任务调用（见 assertOwnedPhotoFissionTask 门禁），
+        // 固定走 Gemini/laozhang 链路，可放心用 URL 直传。
+        return resolveAssetToDataUrl(asset, { preferUrlPassthrough: true })
       }),
     )
   ).filter((image): image is string => Boolean(image))
@@ -1951,7 +2112,8 @@ export async function retryPoseFissionShots(
           const asset = store.assets.get(assetId)
           if (!asset) return null
           if (asset.dataUrl) return asset.dataUrl
-          return resolveAssetToDataUrl(asset)
+          // pose-fission 固定走 Gemini/laozhang 链路，可放心用 URL 直传。
+          return resolveAssetToDataUrl(asset, { preferUrlPassthrough: true })
         }),
       )
     ).filter((image): image is string => Boolean(image))

@@ -26,6 +26,14 @@ const MODEL_UNIT_PRICE_USD: Record<string, number> = {
   'doubao-seedream-5.0-lite': 0.045,
   'doubao-seedream-4-5-251128': 0.045,
   'doubao-seedream-5-0-260128': 0.045,
+
+  // Grsai Nano Banana 系列（按 grsai 官方积分价中位换算 USD，1USD≈7RMB）
+  // nano-banana-2-lite: ￥0.022~0.044/张 → 中位 ￥0.033 → ~$0.005
+  'nano-banana-2-lite': 0.005,
+  // nano-banana-2: ￥0.06~0.12/张 → 中位 ￥0.09 → ~$0.013
+  'nano-banana-2': 0.013,
+  // nano-banana-pro: ￥0.09~0.18/张 → 中位 ￥0.135 → ~$0.019
+  'nano-banana-pro': 0.019,
 }
 
 /**
@@ -38,6 +46,9 @@ const ACTIVE_MODEL_IDS: readonly string[] = [
   'gemini-3.1-flash-image-preview',
   'gpt-image-2',
   'gemini-3-pro-image-preview',
+  'nano-banana-2-lite',
+  'nano-banana-2',
+  'nano-banana-pro',
 ]
 
 /** 未知模型的默认单价（保守取主力模型价格）。 */
