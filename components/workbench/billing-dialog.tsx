@@ -43,19 +43,41 @@ interface BillingSummary {
   error?: string;
 }
 
-interface AccountBalance {
-  ok: boolean;
+/** 老张渠道余额数据（USD 口径）。 */
+interface LaozhangChannelData {
+  channel: "laozhang";
   username: string;
   displayName: string;
   group: string;
-  quota: number;
-  usedQuota: number;
-  requestCount: number;
   remainingUsd: number;
   usedUsd: number;
   totalUsd: number;
-  modelFixedPrices: Record<string, number>;
+  requestCount: number;
   fetchedAt: string;
+}
+
+/** Grsai 渠道余额数据（CNY 积分口径）。 */
+interface GrsaiChannelData {
+  channel: "grsai";
+  displayName: string;
+  credits: number;
+  remainingCny: number;
+  currency: "CNY";
+  fetchedAt: string;
+}
+
+/** 单渠道余额结果（route 返回的 channels 元素）。 */
+interface ChannelBalanceResult {
+  channel: "laozhang" | "grsai";
+  ok: boolean;
+  error?: string;
+  data?: LaozhangChannelData | GrsaiChannelData;
+}
+
+/** 多渠道余额聚合响应（/api/billing/balance 新结构）。 */
+interface MultiChannelBalance {
+  ok: boolean;
+  channels: ChannelBalanceResult[];
   error?: string;
 }
 
@@ -83,9 +105,9 @@ function formatUsd(value: number): string {
 export function BillingDialog({ open, onOpenChange }: BillingDialogProps) {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<BillingSummary | null>(null);
-  const [balance, setBalance] = useState<AccountBalance | null>(null);
+  const [balanceChannels, setBalanceChannels] = useState<ChannelBalanceResult[] | null>(null);
+  const [balanceLoading, setBalanceLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [balanceError, setBalanceError] = useState<string | null>(null);
 
   const fetchBilling = useCallback(async () => {
     setLoading(true);
@@ -107,18 +129,31 @@ export function BillingDialog({ open, onOpenChange }: BillingDialogProps) {
   }, []);
 
   const fetchBalance = useCallback(async () => {
-    setBalanceError(null);
+    setBalanceLoading(true);
     try {
       const response = await fetch("/api/billing/balance", { cache: "no-store" });
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `HTTP ${response.status}`);
+      const body = (await response.json().catch(() => ({}))) as MultiChannelBalance;
+      // route 用 Promise.allSettled，至少一个渠道成功也返回；channels 始终存在
+      if (body.channels && Array.isArray(body.channels)) {
+        setBalanceChannels(body.channels);
+      } else {
+        // 兜底：旧结构或异常，构造一个失败渠道
+        setBalanceChannels([
+          {
+            channel: "laozhang",
+            ok: false,
+            error: body.error ?? `HTTP ${response.status}`,
+          },
+        ]);
       }
-      const result = (await response.json()) as AccountBalance;
-      setBalance(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setBalanceError(message);
+      setBalanceChannels([
+        { channel: "laozhang", ok: false, error: message },
+        { channel: "grsai", ok: false, error: message },
+      ]);
+    } finally {
+      setBalanceLoading(false);
     }
   }, []);
 
@@ -160,8 +195,8 @@ export function BillingDialog({ open, onOpenChange }: BillingDialogProps) {
           </Button>
         </div>
 
-        {/* 账户实时余额 */}
-        <BalanceSection balance={balance} error={balanceError} />
+        {/* 账户实时余额（多渠道） */}
+        <BalanceSection channels={balanceChannels} loading={balanceLoading} />
 
         {/* 今日计费 */}
         {loading && !data && (
@@ -185,26 +220,21 @@ export function BillingDialog({ open, onOpenChange }: BillingDialogProps) {
   );
 }
 
-function BalanceSection({
-  balance,
-  error,
-}: {
-  balance: AccountBalance | null;
-  error: string | null;
-}) {
-  if (error) {
-    return (
-      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3">
-        <div className="flex items-center gap-1.5 text-sm font-medium text-destructive mb-1">
-          <Wallet className="size-4" />
-          账户余额
-        </div>
-        <p className="text-xs text-destructive">查询失败：{error}</p>
-      </div>
-    );
-  }
+function formatCny(value: number): string {
+  if (value === 0) return "¥0.00";
+  if (value < 0.01) return `¥${value.toFixed(4)}`;
+  return `¥${value.toFixed(2)}`;
+}
 
-  if (!balance) {
+function BalanceSection({
+  channels,
+  loading,
+}: {
+  channels: ChannelBalanceResult[] | null;
+  loading: boolean;
+}) {
+  // 加载中且无数据：显示骨架
+  if (loading && !channels) {
     return (
       <div className="rounded-lg border border-border bg-secondary/30 p-4">
         <div className="flex items-center gap-1.5 text-sm font-medium text-foreground mb-2">
@@ -219,16 +249,69 @@ function BalanceSection({
     );
   }
 
+  if (!channels || channels.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3">
+      {channels.map((ch) => (
+        <ChannelBalanceCard key={ch.channel} channel={ch} />
+      ))}
+    </div>
+  );
+}
+
+function ChannelBalanceCard({ channel }: { channel: ChannelBalanceResult }) {
+  // 失败：显示错误条
+  if (!channel.ok) {
+    return (
+      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+        <div className="flex items-center gap-1.5 text-sm font-medium text-destructive mb-1">
+          <Wallet className="size-4" />
+          {channelLabel(channel.channel)}
+        </div>
+        <p className="text-xs text-destructive">查询失败：{channel.error ?? "未知错误"}</p>
+      </div>
+    );
+  }
+
+  const data = channel.data;
+  if (!data) {
+    return (
+      <div className="rounded-lg border border-border bg-secondary/30 p-4">
+        <div className="text-sm font-medium text-foreground mb-1">
+          {channelLabel(channel.channel)}
+        </div>
+        <p className="text-xs text-muted-foreground">余额数据为空</p>
+      </div>
+    );
+  }
+
+  // 按渠道类型分发渲染
+  if (data.channel === "laozhang") {
+    return <LaozhangBalanceCard data={data} />;
+  }
+  return <GrsaiBalanceCard data={data} />;
+}
+
+function channelLabel(channel: string): string {
+  if (channel === "laozhang") return "老张 API 实时余额";
+  if (channel === "grsai") return "Grsai 实时余额";
+  return channel;
+}
+
+function LaozhangBalanceCard({ data }: { data: LaozhangChannelData }) {
   return (
     <div className="rounded-lg border border-border bg-secondary/30 p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
           <Wallet className="size-4 text-primary" />
-          账户余额（老张 API 实时）
+          {channelLabel("laozhang")}
         </div>
-        {balance.group && (
+        {data.group && (
           <Badge variant="secondary" className="text-[10px]">
-            {balance.group}
+            {data.group}
           </Badge>
         )}
       </div>
@@ -236,25 +319,59 @@ function BalanceSection({
       <div className="grid grid-cols-3 gap-3">
         <OverviewCard
           label="剩余余额"
-          value={formatUsd(balance.remainingUsd)}
+          value={formatUsd(data.remainingUsd)}
           unit="USD"
         />
         <OverviewCard
           label="已用额度"
-          value={formatUsd(balance.usedUsd)}
+          value={formatUsd(data.usedUsd)}
           unit="USD"
         />
         <OverviewCard
           label="累计请求"
-          value={`${balance.requestCount}`}
+          value={`${data.requestCount}`}
           unit="次"
         />
       </div>
 
       <p className="text-[11px] text-muted-foreground mt-2">
-        账户：{balance.displayName || balance.username}
-        {balance.totalUsd > 0 && ` · 历史总额度 ${formatUsd(balance.totalUsd)}`}
-        · 更新于 {new Date(balance.fetchedAt).toLocaleTimeString("zh-CN")}
+        账户：{data.displayName || data.username}
+        {data.totalUsd > 0 && ` · 历史总额度 ${formatUsd(data.totalUsd)}`}
+        · 更新于 {new Date(data.fetchedAt).toLocaleTimeString("zh-CN")}
+      </p>
+    </div>
+  );
+}
+
+function GrsaiBalanceCard({ data }: { data: GrsaiChannelData }) {
+  return (
+    <div className="rounded-lg border border-border bg-secondary/30 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+          <Wallet className="size-4 text-primary" />
+          {channelLabel("grsai")}
+        </div>
+        <Badge variant="secondary" className="text-[10px]">
+          积分制
+        </Badge>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <OverviewCard
+          label="剩余积分"
+          value={`${data.credits}`}
+          unit="积分"
+        />
+        <OverviewCard
+          label="剩余余额"
+          value={formatCny(data.remainingCny)}
+          unit="CNY"
+        />
+      </div>
+
+      <p className="text-[11px] text-muted-foreground mt-2">
+        1 元 = 10000 积分 · 接口仅返回剩余积分，暂无已用/累计统计
+        · 更新于 {new Date(data.fetchedAt).toLocaleTimeString("zh-CN")}
       </p>
     </div>
   );
