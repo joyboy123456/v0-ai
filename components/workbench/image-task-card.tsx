@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Star, Download } from "lucide-react";
 import type { GenerationTask, ResultAsset } from "@/lib/types";
 import { getOssThumbnailUrl } from "@/lib/utils";
+import { ShimmerImage } from "@/components/ui/shimmer-image";
 
 // 扩展的内部状态，用于动画控制
 type InternalImageStatus = "loading" | "loaded";
@@ -89,44 +90,16 @@ function ImageSlotCard({
       }}
       className="group relative aspect-[3/4] cursor-pointer overflow-hidden rounded border border-border bg-card transition-colors hover:border-primary/60"
     >
-      {!isLoaded && (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-secondary/60"
-        />
-      )}
-
-      <motion.img
+      <ShimmerImage
         src={getOssThumbnailUrl(image.url)}
         alt={image.finalPrompt ?? ""}
         loading="lazy"
         decoding="async"
         draggable={false}
+        fadeDelay={slot.index * 0.06}
         onLoad={() => onImageLoad(image.assetId, slot.index)}
-        initial={{
-          opacity: 0,
-          scale: 1.03,
-          filter: "blur(10px)",
-        }}
-        animate={
-          isLoaded
-            ? {
-                opacity: 1,
-                scale: 1,
-                filter: "blur(0px)",
-              }
-            : {
-                opacity: 0,
-                scale: 1.03,
-                filter: "blur(10px)",
-              }
-        }
-        transition={{
-          duration: 0.55,
-          ease: [0.22, 1, 0.36, 1],
-          delay: slot.index * 0.06,
-        }}
-        className="absolute inset-0 h-full w-full object-cover"
+        containerClassName="absolute inset-0"
+        className="h-full w-full object-cover"
       />
 
       {/* 操作按钮 - 必须等图片 loaded 后再出现 */}
@@ -316,7 +289,10 @@ function StatusBadge({ status }: { status: GenerationTask["status"] }) {
   const config = statusConfig[status];
 
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${config.className}`}>
+    <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium ${config.className}`}>
+      {status === "running" && (
+        <span className="status-dot h-1.5 w-1.5 bg-blue-500 text-blue-500" />
+      )}
       {config.label}
     </span>
   );

@@ -37,6 +37,10 @@
   --radius-card: 16px;
   --radius-button: 10px;
 
+  /* Motion Design Tokens */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+
   /* Shadcn UI Variables Mapped to Ice Blue Theme */
   --background: var(--color-bg-main);
   --foreground: var(--color-text-primary);
@@ -134,6 +138,10 @@
   --color-border-blue: var(--color-border-blue);
   --color-surface-soft: var(--color-surface-soft);
 
+  /* Expose motion tokens to Tailwind (ease-out-expo / ease-spring utilities) */
+  --ease-out-expo: var(--ease-out-expo);
+  --ease-spring: var(--ease-spring);
+
   --shadow-soft: var(--shadow-soft);
   --shadow-card: var(--shadow-card);
 }
@@ -185,5 +193,215 @@
 
   .glass-card-hover {
     @apply hover:bg-white hover:-translate-y-[2px] hover:shadow-soft transition-all duration-300;
+  }
+}
+
+/* ============================================================
+   Motion System — 加载动效基础设施（克制专业，transform/opacity only）
+   ============================================================ */
+@keyframes shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes gradient-flow {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes dot-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  80%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+@keyframes ring-expand {
+  0% {
+    transform: scale(0.72);
+    opacity: 0.55;
+  }
+  100% {
+    transform: scale(1.55);
+    opacity: 0;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes indeterminate-slide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+@keyframes loading-dot {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+@keyframes loader-arc {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@layer components {
+  /* ShimmerImage 容器：默认 relative 兜底；调用方传 absolute 等 utility 可覆盖 */
+  .shimmer-image-root {
+    position: relative;
+  }
+
+  /* 骨架扫光：soft 底 + 白色高光扫过（图片加载占位）。
+     可用 --skeleton-bg / --skeleton-sweep 按场景覆盖（如深色舞台）。 */
+  .skeleton-shimmer {
+    position: relative;
+    overflow: hidden;
+    background: var(--skeleton-bg, var(--color-surface-soft));
+  }
+  .skeleton-shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--skeleton-sweep, rgba(255, 255, 255, 0.75)) 50%,
+      transparent 100%
+    );
+    animation: shimmer 1.6s var(--ease-out-expo) infinite;
+  }
+
+  /* 透明扫光：叠加在已有底色上（按钮 / 卡片），默认白色高光 */
+  .shimmer-sweep {
+    position: relative;
+    overflow: hidden;
+  }
+  .shimmer-sweep::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--sweep-color, rgba(255, 255, 255, 0.35)) 50%,
+      transparent 100%
+    );
+    animation: shimmer 1.8s var(--ease-out-expo) infinite;
+  }
+
+  /* 品牌蓝流光进度条 */
+  .progress-flow {
+    background-image: linear-gradient(
+      90deg,
+      var(--color-brand-dark) 0%,
+      var(--color-brand-primary) 30%,
+      var(--color-brand-light) 50%,
+      var(--color-brand-primary) 70%,
+      var(--color-brand-dark) 100%
+    );
+    background-size: 200% 100%;
+    animation: gradient-flow 2.2s linear infinite;
+  }
+
+  /* 状态呼吸点：实心点 + 扩散晕 */
+  .status-dot {
+    position: relative;
+    display: inline-flex;
+    border-radius: 9999px;
+  }
+  .status-dot::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    background: currentColor;
+    animation: dot-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+  }
+
+  /* 等待波纹环（空态图标外扩散） */
+  .pulse-ring {
+    animation: ring-expand 1.9s var(--ease-out-expo) infinite;
+  }
+
+  /* 不确定进度细线 */
+  .indeterminate-line {
+    position: relative;
+    overflow: hidden;
+    background: var(--color-brand-soft);
+  }
+  .indeterminate-line::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 38%;
+    border-radius: 9999px;
+    background: linear-gradient(
+      90deg,
+      var(--color-brand-light),
+      var(--color-brand-primary)
+    );
+    animation: indeterminate-slide 1.5s var(--ease-out-expo) infinite;
+  }
+
+  /* 加载三点 */
+  .loading-dot {
+    animation: loading-dot 1.2s ease-in-out infinite;
+  }
+
+  /* 品牌加载环旋转 */
+  .loader-arc {
+    animation: loader-arc 1.4s linear infinite;
+    transform-origin: center;
+  }
+
+  .animate-breathe {
+    animation: breathe 2.4s ease-in-out infinite;
+  }
+}
+
+/* 减少动态偏好：全部降级为静态呈现 */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer::after,
+  .shimmer-sweep::after,
+  .progress-flow,
+  .status-dot::after,
+  .pulse-ring,
+  .indeterminate-line::after,
+  .loading-dot,
+  .loader-arc,
+  .animate-breathe {
+    animation: none !important;
   }
 }

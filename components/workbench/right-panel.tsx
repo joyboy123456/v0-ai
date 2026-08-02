@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { ShimmerImage } from "@/components/ui/shimmer-image";
 import {
   cn,
   getOssThumbnailUrl,
@@ -1354,7 +1355,14 @@ function ResultImageCard({
       }}
       className="group relative aspect-[3/4] overflow-hidden rounded-md border border-border bg-card transition-colors hover:border-primary/60"
     >
-      <img src={getOssThumbnailUrl(image.url)} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
+      <ShimmerImage
+        src={getOssThumbnailUrl(image.url)}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        containerClassName="h-full w-full"
+        className="h-full w-full object-cover"
+      />
       <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
         <button
           type="button"
@@ -1480,6 +1488,17 @@ function AiFashionMasonryGallery({
               const isSelected = selectedAssetIds.has(image.assetId);
               const isSameStyleDone = sameStyleTaskId === task.taskId;
               const canUseSameStyle = Boolean(task.inputAssets?.length);
+              // 加载前按图片真实宽高比预留卡片高度，避免瀑布流在图片陆续
+              // 加载时反复重排。历史重建数据 width/height 为 0，兜底 3/4
+              // （与任务默认出图比例一致）。
+              const hasValidDimensions =
+                Number.isFinite(image.width) &&
+                Number.isFinite(image.height) &&
+                image.width > 0 &&
+                image.height > 0;
+              const aspectRatio = hasValidDimensions
+                ? `${image.width} / ${image.height}`
+                : "3 / 4";
 
               return (
                 <div
@@ -1513,6 +1532,7 @@ function AiFashionMasonryGallery({
                       }
                     }
                   }}
+                  style={{ aspectRatio }}
                   className={cn(
                     "group relative overflow-hidden glass-card break-inside-avoid mb-2 inline-block w-full text-left cursor-pointer",
                     batchSelectMode && isSelected
@@ -1520,12 +1540,13 @@ function AiFashionMasonryGallery({
                       : "glass-card-hover",
                   )}
                 >
-                  <img
-                    src={getOssThumbnailUrl(image.url)}
+                  <ShimmerImage
+                    src={image.thumbnailUrl || getOssThumbnailUrl(image.url)}
                     alt=""
                     loading="lazy"
                     decoding="async"
-                    className="w-full h-auto block bg-secondary"
+                    containerClassName="absolute inset-0"
+                    className="block h-full w-full object-cover"
                   />
 
                   <span className="pointer-events-none absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-lg bg-white/85 backdrop-blur-md border border-sky-100/80 px-2 py-0.5 text-[10px] font-semibold text-sky-700 shadow-xs z-10">
@@ -1722,9 +1743,14 @@ function GenerationDetailDialog({
     <div className="grid h-[100dvh] min-h-0 grid-cols-[minmax(0,1fr)_360px_72px] bg-background text-foreground">
       <div className="relative min-h-0 overflow-hidden bg-[#111315]">
         <div className="flex h-full items-center justify-center px-8 py-10">
-          <img
+          <ShimmerImage
             src={image.url}
             alt=""
+            containerClassName="flex w-full min-h-[40vh] items-center justify-center rounded-sm"
+            containerStyle={{
+              "--skeleton-bg": "rgba(255, 255, 255, 0.05)",
+              "--skeleton-sweep": "rgba(255, 255, 255, 0.08)",
+            } as React.CSSProperties}
             className="max-h-[calc(100dvh-104px)] max-w-full rounded-sm object-contain"
           />
         </div>
@@ -2563,10 +2589,11 @@ function CaseImage({ src, alt }: { src: string; alt: string }) {
   }
 
   return (
-    <img
+    <ShimmerImage
       src={src}
       alt={alt}
       onError={() => setHasError(true)}
+      containerClassName="h-full w-full"
       className="h-full w-full object-cover"
     />
   );
@@ -2576,17 +2603,28 @@ function ResultProgressCard({ progress }: { progress: ShotProgress }) {
   const isFailed = progress.status === "failed";
   const isCancelled = progress.status === "cancelled";
   const isRetrying = progress.status === "retrying";
+  const isActive = !isFailed && !isCancelled;
   const retryAttempt = progress.retryAttempt ?? 0;
 
   return (
-    <div className="aspect-[3/4] rounded-lg border border-dashed border-border bg-card/70 p-3 text-left">
-      <div className="flex h-full flex-col justify-between">
+    <div className="relative aspect-[3/4] overflow-hidden rounded-lg border border-dashed border-border bg-card/70 p-3 text-left">
+      {isActive && (
+        <span
+          aria-hidden="true"
+          className="shimmer-sweep absolute inset-0"
+          style={{ "--sweep-color": "rgba(56, 189, 248, 0.1)" } as React.CSSProperties}
+        />
+      )}
+      <div className="relative flex h-full flex-col justify-between">
         <div>
           <div className="flex items-center justify-between gap-2">
             <span className="truncate text-xs font-medium text-foreground">
               {progress.label}
             </span>
-            <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
+              {isActive && (
+                <span className="status-dot h-1 w-1 bg-primary text-primary" />
+              )}
               {retryAttempt > 0 ? `重跑 ${retryAttempt}` : "排队"}
             </span>
           </div>
@@ -2599,12 +2637,13 @@ function ResultProgressCard({ progress }: { progress: ShotProgress }) {
             {isFailed ? "重跑失败" : progress.message}
           </p>
         </div>
-        {!isFailed && !isCancelled && (
-          <div className="flex items-center gap-2 text-[11px] text-sky-300/80">
-            <RefreshCw
-              className={cn("h-3.5 w-3.5 animate-spin", isRetrying && "text-sky-200")}
-            />
-            <span>{isRetrying ? "正在重试" : "处理中"}</span>
+        {isActive && (
+          <div>
+            <div className="flex items-center gap-2 text-[11px] text-primary">
+              <span className="status-dot h-1.5 w-1.5 bg-primary text-primary" />
+              <span>{isRetrying ? "正在重试" : "处理中"}</span>
+            </div>
+            <div className="indeterminate-line mt-2 h-[3px] rounded-full" />
           </div>
         )}
       </div>
@@ -2779,13 +2818,18 @@ function TaskStatusCard({
       {showProgress && (
         <div className="mt-4 h-2 rounded-full bg-secondary overflow-hidden">
           <div
-            className="h-full bg-primary transition-all"
+            className="progress-flow relative h-full rounded-full transition-[width] duration-700 ease-out-expo"
             style={{ width: `${realProgress}%` }}
-          />
+          >
+            <span
+              aria-hidden="true"
+              className="absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 translate-x-1/3 rounded-full bg-brand-light opacity-80 blur-[5px]"
+            />
+          </div>
         </div>
       )}
       <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-        <span>
+        <span className="tabular-nums">
           {showProgress
             ? `进度 ${realProgress}%`
             : task.schedulerState === "queued"
@@ -2813,16 +2857,19 @@ function StatusBadge({ status }: { status: TaskStatus }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs",
+        "inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs",
         status === "success" && "bg-primary/15 text-primary",
-        status === "running" && "bg-blue-500/15 text-blue-300",
+        status === "running" && "bg-blue-500/15 text-blue-600",
         status === "pending" && "bg-muted text-muted-foreground",
         status === "failed" && "bg-destructive/15 text-destructive",
-        status === "partial" && "bg-yellow-500/15 text-yellow-300",
+        status === "partial" && "bg-yellow-500/15 text-yellow-600",
         status === "cancelled" && "bg-muted text-muted-foreground",
       )}
     >
       {status === "success" && <CheckCircle2 className="w-3 h-3" />}
+      {status === "running" && (
+        <span className="status-dot h-1.5 w-1.5 bg-blue-500 text-blue-500" />
+      )}
       {label}
     </span>
   );
@@ -2835,11 +2882,14 @@ function SchedulerStateBadge({
 }) {
   const config = {
     queued: { label: "排队中", className: "bg-muted text-muted-foreground" },
-    active: { label: "执行中", className: "bg-blue-500/15 text-blue-300" },
+    active: { label: "执行中", className: "bg-blue-500/15 text-blue-600" },
   }[state];
 
   return (
-    <span className={cn("inline-flex rounded-full px-2 py-1 text-xs", config.className)}>
+    <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs", config.className)}>
+      {state === "active" && (
+        <span className="status-dot h-1.5 w-1.5 bg-blue-500 text-blue-500" />
+      )}
       {config.label}
     </span>
   );
@@ -2949,22 +2999,22 @@ function TaskHistory({
             {Array.from({ length: 3 }).map((_, i) => (
               <div
                 key={i}
-                className="w-full rounded-lg border border-border bg-card p-4 animate-pulse"
+                className="w-full rounded-lg border border-border bg-card p-4"
               >
                 <div className="flex items-center justify-between gap-3">
-                  <div className="h-5 w-16 rounded bg-secondary" />
-                  <div className="h-3 w-28 rounded bg-secondary" />
+                  <div className="skeleton-shimmer h-5 w-16 rounded" />
+                  <div className="skeleton-shimmer h-3 w-28 rounded" />
                 </div>
                 <div className="mt-2 flex items-center gap-2">
-                  <div className="h-4 w-20 rounded bg-secondary" />
-                  <div className="h-4 w-12 rounded-full bg-secondary" />
+                  <div className="skeleton-shimmer h-4 w-20 rounded" />
+                  <div className="skeleton-shimmer h-4 w-12 rounded-full" />
                 </div>
-                <div className="mt-1 h-3 w-24 rounded bg-secondary" />
+                <div className="skeleton-shimmer mt-1 h-3 w-24 rounded" />
                 <div className="mt-3 grid grid-cols-4 gap-1.5">
                   {Array.from({ length: 4 }).map((_, j) => (
                     <div
                       key={j}
-                      className="aspect-[3/4] rounded bg-secondary"
+                      className="skeleton-shimmer aspect-[3/4] rounded"
                     />
                   ))}
                 </div>
@@ -3318,17 +3368,46 @@ function TaskHistoryCard({
 }
 
 function EmptyResults({ status }: { status: TaskStatus }) {
+  const isFailed = status === "failed";
   return (
     <div className="min-h-[360px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mt-4">
-      <div className="w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
-        {status === "failed" ? (
+      <div className="relative w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
+        {!isFailed && (
+          <>
+            <span
+              aria-hidden="true"
+              className="pulse-ring absolute inset-0 rounded-md border border-brand-light/60"
+            />
+            <span
+              aria-hidden="true"
+              className="pulse-ring absolute inset-0 rounded-md border border-brand-light/40"
+              style={{ animationDelay: "0.95s" }}
+            />
+          </>
+        )}
+        {isFailed ? (
           <X className="w-5 h-5 text-destructive" />
         ) : (
           <ImageIcon className="w-5 h-5 text-muted-foreground" />
         )}
       </div>
-      <p className="text-[13px] font-medium text-foreground">
-        {status === "failed" ? "任务失败，没有可用结果" : "结果生成中..."}
+      <p className="text-[13px] font-medium text-foreground flex items-center gap-1">
+        {isFailed ? (
+          "任务失败，没有可用结果"
+        ) : (
+          <>
+            结果生成中
+            <span aria-hidden="true" className="inline-flex items-center gap-[3px]">
+              {[0, 1, 2].map((index) => (
+                <span
+                  key={index}
+                  className="loading-dot h-[3px] w-[3px] rounded-full bg-foreground"
+                  style={{ animationDelay: `${index * 0.15}s` }}
+                />
+              ))}
+            </span>
+          </>
+        )}
       </p>
       <p className="mt-2 max-w-[360px] text-[12px] text-muted-foreground leading-relaxed">
         任务完成后会在这里展示生成图片，可预览、收藏、下载使用。

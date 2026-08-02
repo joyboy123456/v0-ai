@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { FeatureSidebar } from './feature-sidebar'
 import { LeftPanel } from './left-panel'
 import { RightPanel } from './right-panel'
+import { BrandLoader } from '@/components/ui/brand-loader'
 import { useAuth } from '@/hooks/use-auth'
 import {
   type CompanyModel,
@@ -517,11 +518,9 @@ export function Workbench() {
 
     return (
       <main className="flex h-screen items-center justify-center bg-background px-4 text-foreground">
-        <div className="w-full max-w-sm rounded-md border border-border bg-card p-5">
-          <p className="text-sm font-medium">{title}</p>
-          <p className="mt-2 text-sm text-muted-foreground">{description}</p>
+        <BrandLoader title={title} description={description}>
           {showActions && (
-            <div className="mt-4 flex gap-2">
+            <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -544,7 +543,7 @@ export function Workbench() {
               </button>
             </div>
           )}
-        </div>
+        </BrandLoader>
       </main>
     )
   }

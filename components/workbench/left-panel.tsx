@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Check,
   Loader2,
@@ -897,10 +898,50 @@ export function LeftPanel({
           <button
             onClick={handleCreateTask}
             disabled={submitDisabled}
-            className="w-full h-[40px] bg-primary text-primary-foreground rounded-md text-[13px] font-medium flex items-center justify-center gap-2 transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] hover:bg-primary/90 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
+            className="relative w-full h-[40px] overflow-hidden bg-primary text-primary-foreground rounded-md text-[13px] font-medium flex items-center justify-center gap-2 transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.2)] hover:bg-primary/90 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
           >
-            <Sparkles className="w-4 h-4 opacity-90" />
-            <span>{submitLabel}</span>
+            {submitDisabled && (
+              <span
+                aria-hidden="true"
+                className="shimmer-sweep absolute inset-0"
+              />
+            )}
+            <AnimatePresence mode="wait" initial={false}>
+              {submitDisabled ? (
+                <motion.span
+                  key="busy"
+                  initial={{ opacity: 0, scale: 0.6, rotate: -90 }}
+                  animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                  exit={{ opacity: 0, scale: 0.6, rotate: 90 }}
+                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                  className="flex items-center"
+                >
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                </motion.span>
+              ) : (
+                <motion.span
+                  key="idle"
+                  initial={{ opacity: 0, scale: 0.6, rotate: -90 }}
+                  animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                  exit={{ opacity: 0, scale: 0.6, rotate: 90 }}
+                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                  className="flex items-center"
+                >
+                  <Sparkles className="w-4 h-4 opacity-90" />
+                </motion.span>
+              )}
+            </AnimatePresence>
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.span
+                key={submitLabel}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+              >
+                {submitLabel}
+              </motion.span>
+            </AnimatePresence>
           </button>
         </div>
       </aside>

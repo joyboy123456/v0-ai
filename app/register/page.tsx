@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { KeyRound, LockKeyhole, ShieldCheck } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { BrandLoader } from '@/components/ui/brand-loader'
 import {
   Card,
   CardContent,
@@ -305,12 +306,7 @@ function RegisterFallback({
 }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-12">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle className="text-xl">{title}</CardTitle>
-          <CardDescription>{description}</CardDescription>
-        </CardHeader>
-      </Card>
+      <BrandLoader title={title} description={description} />
     </div>
   )
 }
