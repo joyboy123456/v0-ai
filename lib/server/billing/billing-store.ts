@@ -261,3 +261,148 @@ export async function getTodayBilling(): Promise<TodayBillingSummary> {
     byModel,
   }
 }
+
+// ---- 范围查询（周/月视图） ----
+
+/** 渠道过滤。 */
+export type ChannelFilter = 'grsai' | 'laozhang' | 'all'
+
+/** 单天计费统计（范围视图用）。 */
+export interface DayBillingSummary {
+  /** YYYY-MM-DD */
+  date: string
+  /** 当天生成图片总数 */
+  totalCount: number
+  /** 当天花费 USD */
+  totalUsd: number
+  /** 当天调用次数 */
+  totalCalls: number
+}
+
+/** 范围计费汇总（周/月视图用）。 */
+export interface RangeBillingSummary {
+  /** 范围内生成图片总数 */
+  totalCount: number
+  /** 范围内花费总额 USD */
+  totalUsd: number
+  /** 范围内调用总次数 */
+  totalCalls: number
+  /** 按模型汇总 */
+  byModel: ModelBillingSummary[]
+  /** 按天分布 */
+  byDay: DayBillingSummary[]
+}
+
+/** 按 providerId 前缀判断渠道。 */
+function matchChannel(providerId: string, channel: ChannelFilter): boolean {
+  if (channel === 'all') return true
+  if (channel === 'grsai') return providerId.startsWith('grsai')
+  if (channel === 'laozhang') return providerId.startsWith('laozhang')
+  return false
+}
+
+/**
+ * 获取指定日期范围的计费汇总（本地事件，固定单价估算）。
+ *
+ * 数据已在内存中（启动时全量加载），纯过滤聚合。
+ * channel 按 providerId 前缀过滤：grsai / laozhang / all。
+ */
+export async function getBillingSummaryByRange(
+  startDate: string,
+  endDate: string,
+  channel: ChannelFilter = 'all',
+): Promise<RangeBillingSummary> {
+  await ensureReady()
+
+  let totalCount = 0
+  let totalUsd = 0
+  let totalCalls = 0
+
+  const byModelMap = new Map<
+    string,
+    { count: number; totalUsd: number; calls: number; unitPriceUsd: number }
+  >()
+  const byDayMap = new Map<string, DayBillingSummary>()
+
+  // 遍历所有日期，筛选范围内的
+  for (const [date, events] of store.eventsByDate) {
+    if (date < startDate || date > endDate) continue
+
+    let dayCount = 0
+    let dayUsd = 0
+    let dayCalls = 0
+
+    for (const event of events) {
+      if (!matchChannel(event.providerId, channel)) continue
+
+      totalCount += event.count
+      totalUsd += event.totalUsd
+      totalCalls += 1
+      dayCount += event.count
+      dayUsd += event.totalUsd
+      dayCalls += 1
+
+      const existing = byModelMap.get(event.model)
+      if (existing) {
+        existing.count += event.count
+        existing.totalUsd += event.totalUsd
+        existing.calls += 1
+      } else {
+        byModelMap.set(event.model, {
+          count: event.count,
+          totalUsd: event.totalUsd,
+          calls: 1,
+          unitPriceUsd: event.unitPriceUsd,
+        })
+      }
+    }
+
+    if (dayCalls > 0) {
+      byDayMap.set(date, {
+        date,
+        totalCount: dayCount,
+        totalUsd: Number(dayUsd.toFixed(6)),
+        totalCalls: dayCalls,
+      })
+    }
+  }
+
+  const byModel: ModelBillingSummary[] = Array.from(byModelMap.entries())
+    .map(([model, v]) => ({
+      model,
+      unitPriceUsd: v.unitPriceUsd,
+      count: v.count,
+      totalUsd: Number(v.totalUsd.toFixed(6)),
+      calls: v.calls,
+    }))
+    .sort((a, b) => b.totalUsd - a.totalUsd)
+
+  const byDay: DayBillingSummary[] = Array.from(byDayMap.values()).sort((a, b) =>
+    a.date.localeCompare(b.date),
+  )
+
+  return {
+    totalCount,
+    totalUsd: Number(totalUsd.toFixed(6)),
+    totalCalls,
+    byModel,
+    byDay,
+  }
+}
+
+/**
+ * 获取某天的逐条计费事件（下钻用）。
+ *
+ * channel 按 providerId 前缀过滤。
+ */
+export async function getBillingEventsByDate(
+  date: string,
+  channel: ChannelFilter = 'all',
+): Promise<BillingEvent[]> {
+  await ensureReady()
+
+  const events = store.eventsByDate.get(date) ?? []
+  return events
+    .filter((e) => matchChannel(e.providerId, channel))
+    .sort((a, b) => b.tsMs - a.tsMs) // 按时间倒序
+}
