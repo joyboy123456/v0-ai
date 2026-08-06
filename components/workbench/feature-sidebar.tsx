@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Camera,
   DollarSign,
@@ -10,7 +11,6 @@ import {
   Repeat2,
   Trash2,
 } from "lucide-react";
-import { BillingDialog } from "./billing-dialog";
 import { CleanupDialog } from "./cleanup-dialog";
 import { InviteCodesDialog } from "./invite-codes-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -42,9 +42,9 @@ export function FeatureSidebar({
   onLogout,
   onRefreshTasks,
 }: FeatureSidebarProps) {
+  const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
-  const [billingOpen, setBillingOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const displayName = user?.displayName || user?.username || "未登录";
   const username = user?.username ?? "请先登录";
@@ -146,7 +146,7 @@ export function FeatureSidebar({
           </button>
         ) : null}
         <button
-          onClick={() => setBillingOpen(true)}
+          onClick={() => router.push("/billing")}
           className="w-full flex items-center gap-2 rounded-md px-2.5 py-2 text-[12px] font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
         >
           <DollarSign className="size-3.5" />
@@ -191,11 +191,6 @@ export function FeatureSidebar({
         open={cleanupOpen}
         onOpenChange={setCleanupOpen}
         onRefreshTasks={onRefreshTasks}
-      />
-
-      <BillingDialog
-        open={billingOpen}
-        onOpenChange={setBillingOpen}
       />
 
       {isAdmin ? (
