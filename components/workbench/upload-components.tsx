@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Upload, X } from "lucide-react";
 import { cn, readJsonResponse } from "@/lib/utils";
 import type { UploadedImage } from "@/lib/types";
@@ -105,8 +105,30 @@ export function UploadBox({
   optimizeForGeneration = false,
 }: UploadBoxProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const dragDepthRef = useRef(0);
   const [isUploading, setIsUploading] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [error, setError] = useState("");
+
+  // 兜底复位：拖拽以任何方式结束（放置/取消/拖出窗口）都关闭拖拽高亮，
+  // 避免 dragenter/dragleave 计数失配导致「松开以上传」遮罩卡死
+  useEffect(() => {
+    const resetDragState = () => {
+      dragDepthRef.current = 0;
+      setIsDragOver(false);
+    };
+    const handleDocumentDragLeave = (event: DragEvent) => {
+      if (!event.relatedTarget) resetDragState();
+    };
+    window.addEventListener("dragend", resetDragState);
+    window.addEventListener("drop", resetDragState);
+    document.documentElement.addEventListener("dragleave", handleDocumentDragLeave);
+    return () => {
+      window.removeEventListener("dragend", resetDragState);
+      window.removeEventListener("drop", resetDragState);
+      document.documentElement.removeEventListener("dragleave", handleDocumentDragLeave);
+    };
+  }, []);
 
   const releaseCurrentPreview = () => {
     if (image?.preview.startsWith("blob:")) {
@@ -114,12 +136,7 @@ export function UploadBox({
     }
   };
 
-  const handleChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-
-    if (!file) return;
-
+  const uploadFile = async (file: File) => {
     setError("");
     setIsUploading(true);
 
@@ -180,8 +197,72 @@ export function UploadBox({
     }
   };
 
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) return;
+    void uploadFile(file);
+  };
+
+  const hasDraggedFiles = (dataTransfer: DataTransfer) =>
+    Array.from(dataTransfer.types).includes("Files");
+
+  const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDragOver(true);
+  };
+
+  const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // 始终接受放置，拒绝放置（dropEffect="none"）会导致 drop 事件不触发、
+    // 拖拽高亮状态无法复位而卡死
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDragOver(false);
+
+    const file = event.dataTransfer.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("只能上传图片文件");
+      return;
+    }
+    if (isUploading) {
+      setError("图片正在上传，请稍候再添加");
+      return;
+    }
+    void uploadFile(file);
+  };
+
   return (
-    <div className={cn("space-y-2.5", className)}>
+    <div
+      className={cn("space-y-2.5", className)}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div className="flex items-center gap-1.5">
         {required && <span className="text-primary text-xs mt-0.5">*</span>}
         <span className="text-[14px] font-medium text-foreground tracking-wide">
@@ -198,6 +279,7 @@ export function UploadBox({
             "flex items-center gap-3 overflow-hidden p-3 text-left transition-all duration-300 cursor-pointer",
             "hover:bg-[#EAF8FF]/40 hover:border-sky-400 hover:shadow-soft",
             image && "border-solid border-sky-300 bg-[#EAF8FF]/20 shadow-card",
+            isDragOver && "border-primary bg-primary/5 ring-2 ring-primary/20",
           )}
         >
           <div className="flex flex-1 flex-col items-center justify-center gap-2 px-2">
@@ -250,6 +332,12 @@ export function UploadBox({
               </div>
             )}
           </div>
+
+          {isDragOver && (
+            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-background/90 text-[12px] font-medium text-primary backdrop-blur-sm">
+              松开以上传图片
+            </div>
+          )}
         </button>
       ) : (
         <button
@@ -260,6 +348,7 @@ export function UploadBox({
             "flex flex-col items-center justify-center gap-3 overflow-hidden transition-all duration-300 cursor-pointer",
             "hover:border-sky-400 hover:bg-[#EAF8FF]/40 hover:shadow-soft",
             image && "border-solid border-sky-300 bg-[#EAF8FF]/20 shadow-card",
+            isDragOver && "border-primary bg-primary/5 ring-2 ring-primary/20",
           )}
         >
           {image ? (
@@ -311,6 +400,12 @@ export function UploadBox({
                 </span>
               </div>
             </>
+          )}
+
+          {isDragOver && (
+            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-background/90 text-[13px] font-medium text-primary backdrop-blur-sm">
+              松开以上传图片
+            </div>
           )}
         </button>
       )}

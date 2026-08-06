@@ -1391,6 +1391,9 @@ function FashionReferenceUploader({
   const externalDragDepthRef = useRef(0);
   const isUploadingRef = useRef(false);
   const draggedReferenceAssetIdRef = useRef<string | null>(null);
+  const pendingFilesRef = useRef<File[]>([]);
+  const pendingMessagesRef = useRef<string[]>([]);
+  const referencesRef = useRef(references);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [isExternalDragging, setIsExternalDragging] = useState(false);
@@ -1398,84 +1401,116 @@ function FashionReferenceUploader({
   const [dragOverReferenceAssetId, setDragOverReferenceAssetId] = useState<string | null>(null);
   const canAddMore = references.length < 10;
 
-  const uploadFiles = async (files: File[]) => {
-    if (!files.length) return;
+  useEffect(() => {
+    referencesRef.current = references;
+  }, [references]);
 
-    if (isUploadingRef.current) {
-      setUploadError("图片正在上传，请稍候再添加");
-      return;
+  // 兜底复位：无论拖拽以何种方式结束（放置/取消/拖出窗口），都复位遮罩状态，
+  // 避免 dragenter/dragleave 计数在非常规路径下失配导致「松开以上传」遮罩卡死
+  useEffect(() => {
+    const resetExternalDrag = () => {
+      externalDragDepthRef.current = 0;
+      setIsExternalDragging(false);
+    };
+    const handleDocumentDragLeave = (event: DragEvent) => {
+      if (!event.relatedTarget) resetExternalDrag();
+    };
+    window.addEventListener("dragend", resetExternalDrag);
+    window.addEventListener("drop", resetExternalDrag);
+    document.documentElement.addEventListener("dragleave", handleDocumentDragLeave);
+    return () => {
+      window.removeEventListener("dragend", resetExternalDrag);
+      window.removeEventListener("drop", resetExternalDrag);
+      document.documentElement.removeEventListener("dragleave", handleDocumentDragLeave);
+    };
+  }, []);
+
+  const drainUploadQueue = async () => {
+    isUploadingRef.current = true;
+    setIsUploading(true);
+
+    const failedFiles: string[] = [];
+    let skippedOverLimit = 0;
+
+    try {
+      while (pendingFilesRef.current.length > 0) {
+        const file = pendingFilesRef.current.shift();
+        if (!file) break;
+
+        if (referencesRef.current.length >= 10) {
+          skippedOverLimit += 1 + pendingFilesRef.current.length;
+          pendingFilesRef.current = [];
+          break;
+        }
+
+        try {
+          const formData = new FormData();
+          formData.append("file", file);
+
+          const response = await fetch("/api/assets/upload", {
+            method: "POST",
+            body: formData,
+          });
+
+          const data = await readJsonResponse<{
+            assetId: string;
+            fileName: string;
+            width: number;
+            height: number;
+          }>(response, "上传失败");
+
+          onAddUploadReference({
+            assetId: data.assetId,
+            preview: URL.createObjectURL(file),
+            name: data.fileName,
+            width: data.width,
+            height: data.height,
+          });
+        } catch (error) {
+          failedFiles.push(
+            `${file.name}：${error instanceof Error ? error.message : "上传失败"}`,
+          );
+        }
+      }
+    } finally {
+      isUploadingRef.current = false;
+      setIsUploading(false);
+
+      const messages = [...pendingMessagesRef.current];
+      pendingMessagesRef.current = [];
+      if (skippedOverLimit > 0) {
+        messages.push("参考图最多上传10张，已自动忽略超出图片");
+      }
+      if (failedFiles.length > 0) {
+        messages.push(`上传失败：${failedFiles.join("；")}`);
+      }
+      setUploadError(messages.join("；"));
     }
+  };
+
+  const uploadFiles = (files: File[]) => {
+    if (!files.length) return;
 
     const imageFiles = files.filter((file) => file.type.startsWith("image/"));
     const invalidFileCount = files.length - imageFiles.length;
-
-    const availableSlots = 10 - references.length;
-    if (availableSlots <= 0) {
-      setUploadError("参考图最多上传10张");
-      return;
-    }
-
-    const acceptedFiles = imageFiles.slice(0, availableSlots);
-    const messages: string[] = [];
     if (invalidFileCount > 0) {
-      messages.push(`已忽略 ${invalidFileCount} 个非图片文件`);
+      pendingMessagesRef.current.push(`已忽略 ${invalidFileCount} 个非图片文件`);
     }
-    if (imageFiles.length > availableSlots) {
-      messages.push("参考图最多上传10张，已自动忽略超出图片");
-    }
-    if (!acceptedFiles.length) {
-      setUploadError(messages.join("；") || "只能上传图片文件");
+
+    // 上传进行中时新拖入/选择的图片进入队列，当前批次完成后自动接续上传
+    pendingFilesRef.current.push(...imageFiles);
+    if (isUploadingRef.current) return;
+    if (!pendingFilesRef.current.length && !pendingMessagesRef.current.length) {
       return;
     }
 
-    isUploadingRef.current = true;
-    setIsUploading(true);
-    setUploadError("");
-
-    const failedFiles: string[] = [];
-    for (const file of acceptedFiles) {
-      try {
-        const formData = new FormData();
-        formData.append("file", file);
-
-        const response = await fetch("/api/assets/upload", {
-          method: "POST",
-          body: formData,
-        });
-
-        const data = await readJsonResponse<{
-          assetId: string;
-          fileName: string;
-          width: number;
-          height: number;
-        }>(response, "上传失败");
-
-        onAddUploadReference({
-          assetId: data.assetId,
-          preview: URL.createObjectURL(file),
-          name: data.fileName,
-          width: data.width,
-          height: data.height,
-        });
-      } catch (error) {
-        failedFiles.push(
-          `${file.name}：${error instanceof Error ? error.message : "上传失败"}`,
-        );
-      }
-    }
-
-    if (failedFiles.length > 0) {
-      messages.push(`上传失败：${failedFiles.join("；")}`);
-    }
-    setUploadError(messages.join("；"));
-    isUploadingRef.current = false;
-    setIsUploading(false);
+    void drainUploadQueue();
   };
 
   const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    void uploadFiles(files);
+    uploadFiles(files);
   };
 
   const hasDraggedFiles = (dataTransfer: DataTransfer) =>
@@ -1493,7 +1528,10 @@ function FashionReferenceUploader({
     if (!hasDraggedFiles(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = isUploading ? "none" : "copy";
+    // 始终接受放置：上传中拖入的图片会进入队列接续上传。
+    // 若上传中拒绝放置（dropEffect="none"），浏览器不触发 drop 事件，
+    // handleExternalDrop 里的遮罩复位执行不到，「松开以上传」遮罩会卡死
+    event.dataTransfer.dropEffect = "copy";
   };
 
   const handleExternalDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
@@ -1512,7 +1550,7 @@ function FashionReferenceUploader({
     event.stopPropagation();
     externalDragDepthRef.current = 0;
     setIsExternalDragging(false);
-    void uploadFiles(Array.from(event.dataTransfer.files));
+    uploadFiles(Array.from(event.dataTransfer.files));
   };
 
   const resetReferenceDrag = () => {

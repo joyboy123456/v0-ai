@@ -81,6 +81,22 @@ export function Workbench() {
     return () => window.clearTimeout(timeoutId)
   }, [])
 
+  // 全局兜底：文件拖到非放置区时阻止浏览器默认行为（直接导航打开图片、丢失页面状态）。
+  // 仅拦截文件拖拽，不影响文本拖入输入框；放置区自身的 preventDefault 不受影响
+  useEffect(() => {
+    const hasFiles = (event: DragEvent) =>
+      Array.from(event.dataTransfer?.types ?? []).includes('Files')
+    const preventFileDropNavigation = (event: DragEvent) => {
+      if (hasFiles(event)) event.preventDefault()
+    }
+    window.addEventListener('dragover', preventFileDropNavigation)
+    window.addEventListener('drop', preventFileDropNavigation)
+    return () => {
+      window.removeEventListener('dragover', preventFileDropNavigation)
+      window.removeEventListener('drop', preventFileDropNavigation)
+    }
+  }, [])
+
   const redirectToLogin = useCallback(() => {
     // 防抖：避免重复 router.replace 把客户钉在 loading 文案上
     if (redirectFiredRef.current) return
