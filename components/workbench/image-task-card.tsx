@@ -152,7 +152,7 @@ function ImageSlotCard({
 // ==========================================
 // 增强版任务卡片组件 - 带丝滑动画
 // ==========================================
-export function EnhancedImageTaskCard({
+function EnhancedImageTaskCardComponent({
   task,
   isActive,
   onSelectTask,
@@ -274,6 +274,19 @@ export function EnhancedImageTaskCard({
     </motion.div>
   );
 }
+
+// 渲染收敛（2026-08 流畅性优化）：历史列表里轮询单个 in-flight 任务时，
+// 只有 task 引用变化的那张卡重渲染，其余卡片 props 未变则跳过。
+// 比较函数只看 task 引用 / isActive / favorites——三个 handler 均为 setState
+// 派生的稳定闭包，跨渲染语义不变，故不参与比较以避免 inline 箭头导致 memo 失效。
+export const EnhancedImageTaskCard = React.memo(
+  EnhancedImageTaskCardComponent,
+  (prev, next) =>
+    prev.task === next.task &&
+    prev.isActive === next.isActive &&
+    prev.favorites === next.favorites,
+);
+EnhancedImageTaskCard.displayName = "EnhancedImageTaskCard";
 
 // 状态徽章组件
 function StatusBadge({ status }: { status: GenerationTask["status"] }) {

@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 import { FeatureSidebar } from './feature-sidebar'
 import { LeftPanel } from './left-panel'
 import { RightPanel } from './right-panel'
 import { BrandLoader } from '@/components/ui/brand-loader'
+import { Toaster } from '@/components/ui/sonner'
 import { useAuth } from '@/hooks/use-auth'
 import {
   type CompanyModel,
@@ -15,11 +17,14 @@ import {
   type GenerationTask,
   type PhotoFissionCase,
   type SavedPose,
+  type TaskStatus,
 } from '@/lib/types'
 
 const companyModelsStorageKey = 'fashion_company_models'
 const faceIdModelsStorageKey = 'fashion_face_id_models'
 const maxFashionReferences = 10
+// 历史任务分页大小（2026-08 流畅性优化）：首屏只取最近 N 条，滚动到底再加载更多
+const tasksPageSize = 30
 
 function isTaskInFlight(task: GenerationTask) {
   return task.status === 'pending' || task.status === 'running'
@@ -49,6 +54,12 @@ export function Workbench() {
   const taskRequestSequenceRef = useRef(0)
   const latestTaskResponseRef = useRef(new Map<string, number>())
   const [tasksLoading, setTasksLoading] = useState(false)
+  const [tasksCursor, setTasksCursor] = useState<string | null>(null)
+  const [tasksHasMore, setTasksHasMore] = useState(false)
+  const [tasksLoadingMore, setTasksLoadingMore] = useState(false)
+  // 记录每个任务上一次的状态，用于「生成中 → 终态」跳变时弹完成 toast；
+  // 只在从 pending/running 转为终态时触发，首屏灌入的历史完成任务不会误报。
+  const prevTaskStatusRef = useRef(new Map<string, TaskStatus>())
   const [savedPoses, setSavedPoses] = useState<SavedPose[]>([])
   const [selectedPoses, setSelectedPoses] = useState<SavedPose[]>([])
   const [companyModelLibraryRequestKey, setCompanyModelLibraryRequestKey] = useState(0)
@@ -111,14 +122,21 @@ export function Workbench() {
     const requestSequence = ++taskRequestSequenceRef.current
     setTasksLoading(true)
     try {
-      const response = await fetch('/api/tasks', { cache: 'no-store' })
+      // 首屏只拉最近一页（tasksPageSize），其余靠滚动加载更多，缩小首屏 payload
+      const response = await fetch(`/api/tasks?limit=${tasksPageSize}`, { cache: 'no-store' })
       if (response.status === 401) {
         redirectToLogin()
         return
       }
       if (!response.ok) return
 
-      const data = (await response.json()) as { tasks: GenerationTask[] }
+      const data = (await response.json()) as {
+        tasks: GenerationTask[]
+        hasMore?: boolean
+        nextCursor?: string | null
+      }
+      setTasksCursor(data.nextCursor ?? null)
+      setTasksHasMore(Boolean(data.hasMore))
       setTasks((currentTasks) => {
         const currentById = new Map(currentTasks.map((task) => [task.taskId, task]))
         const serverTaskIds = new Set(data.tasks.map((task) => task.taskId))
@@ -145,6 +163,39 @@ export function Workbench() {
       setTasksLoading(false)
     }
   }, [redirectToLogin])
+
+  // 滚动到底加载更早的历史任务（游标分页，按 taskId 去重，防止新建任务顶号导致重复）
+  const loadMoreTasks = useCallback(async () => {
+    if (!tasksHasMore || !tasksCursor || tasksLoadingMore) return
+    setTasksLoadingMore(true)
+    try {
+      const params = new URLSearchParams({
+        limit: String(tasksPageSize),
+        cursor: tasksCursor,
+      })
+      const response = await fetch(`/api/tasks?${params.toString()}`, { cache: 'no-store' })
+      if (response.status === 401) {
+        redirectToLogin()
+        return
+      }
+      if (!response.ok) return
+
+      const data = (await response.json()) as {
+        tasks: GenerationTask[]
+        hasMore?: boolean
+        nextCursor?: string | null
+      }
+      setTasksCursor(data.nextCursor ?? null)
+      setTasksHasMore(Boolean(data.hasMore))
+      setTasks((currentTasks) => {
+        const existingIds = new Set(currentTasks.map((task) => task.taskId))
+        const appended = data.tasks.filter((task) => !existingIds.has(task.taskId))
+        return [...currentTasks, ...appended]
+      })
+    } finally {
+      setTasksLoadingMore(false)
+    }
+  }, [redirectToLogin, tasksCursor, tasksHasMore, tasksLoadingMore])
 
   // 从右侧图片卡片或详情弹窗删除单张「效果不好的」生成图。
   // 后端会同步把 task.results 中对应条目移除（删空整个 task 也会被一起删），
@@ -269,6 +320,32 @@ export function Workbench() {
 
   useEffect(() => {
     tasksRef.current = tasks
+  }, [tasks])
+
+  // 任务从「生成中/排队」跳到终态时弹完成提示（含切到其它功能页/后台时也提醒）。
+  // 用 prevTaskStatusRef 只在 in-flight → 终态 跳变时触发；首屏灌入的历史任务不弹。
+  useEffect(() => {
+    for (const task of tasks) {
+      const prev = prevTaskStatusRef.current.get(task.taskId)
+      const wasInFlight = prev === 'pending' || prev === 'running'
+      const isInFlight = task.status === 'pending' || task.status === 'running'
+      if (wasInFlight && !isInFlight) {
+        if (task.status === 'success') {
+          toast.success('生成完成', {
+            description: `已完成 ${task.results.length} 张图片，可点击任务查看`,
+          })
+        } else if (task.status === 'partial') {
+          toast.warning('部分完成', {
+            description: `成功 ${task.results.length} 张，部分镜头失败，可在任务里重跑`,
+          })
+        } else if (task.status === 'failed') {
+          toast.error('生成失败', {
+            description: task.errorMessage ?? task.message ?? '请重试',
+          })
+        }
+      }
+      prevTaskStatusRef.current.set(task.taskId, task.status)
+    }
   }, [tasks])
 
   useEffect(() => {
@@ -566,6 +643,7 @@ export function Workbench() {
 
   return (
     <main className="flex h-screen overflow-hidden bg-ice-blue-gradient">
+      <Toaster position="top-center" />
       <FeatureSidebar
         activeFeature={currentFeature}
         onFeatureChange={setCurrentFeature}
@@ -604,6 +682,9 @@ export function Workbench() {
         activeTask={activeTask}
         tasks={tasks}
         tasksLoading={tasksLoading}
+        tasksHasMore={tasksHasMore}
+        tasksLoadingMore={tasksLoadingMore}
+        onLoadMoreTasks={loadMoreTasks}
         companyModels={companyModels}
         fashionReferences={fashionReferences}
         companyModelLibraryRequestKey={companyModelLibraryRequestKey}

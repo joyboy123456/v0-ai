@@ -456,11 +456,34 @@ export async function getAsset(assetId: string) {
  * 与 listTasksByUser repo 接口保持同向：local 模式过滤 in-memory map，
  * cloud 模式由 D1 WHERE 子句过滤。
  */
-export async function listTasks(opts?: { userId?: string }) {
+export interface ListTasksPage {
+  tasks: GenerationTask[]
+  hasMore: boolean
+  nextCursor: string | null
+}
+
+/**
+ * 列出任务。PR4 起支持按 userId 过滤。
+ *
+ * - 不传 opts.userId（或传 undefined / 空字符串）：返回全表（兼容历史调用）
+ * - 传 opts.userId：仅返回 task.userId === opts.userId 的任务
+ *
+ * 与 listTasksByUser repo 接口保持同向：local 模式过滤 in-memory map，
+ * cloud 模式由 D1 WHERE 子句过滤。
+ *
+ * 分页（2026-08 流畅性优化）：传 opts.limit 启用游标分页，按 createdAt desc 排序后，
+ * 用 opts.cursor（上一页末条 createdAt）做严格小于切片，返回 hasMore/nextCursor。
+ * 不传 limit 时返回全量（hasMore=false），保持旧调用方行为不变。
+ */
+export async function listTasks(opts?: {
+  userId?: string
+  limit?: number
+  cursor?: string
+}): Promise<ListTasksPage> {
   await ensureStoreReady()
   const userId = opts?.userId?.trim()
   const bypassOwnership = shouldBypassOwnership(userId)
-  return Array.from(store.tasks.values())
+  const sorted = Array.from(store.tasks.values())
     .filter((task) => {
       if (!userId || bypassOwnership) return true
       // 历史任务 task.userId 可能 undefined，过滤时视为 demo_user
@@ -470,6 +493,25 @@ export async function listTasks(opts?: { userId?: string }) {
     .sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )
+
+  const cursorTime = opts?.cursor ? new Date(opts.cursor).getTime() : null
+  const afterCursor =
+    cursorTime != null && !Number.isNaN(cursorTime)
+      ? sorted.filter(
+          (task) => new Date(task.createdAt).getTime() < cursorTime,
+        )
+      : sorted
+
+  const limit =
+    opts?.limit && opts.limit > 0 ? Math.floor(opts.limit) : null
+  if (!limit) {
+    return { tasks: afterCursor, hasMore: false, nextCursor: null }
+  }
+
+  const tasks = afterCursor.slice(0, limit)
+  const hasMore = afterCursor.length > limit
+  const nextCursor = tasks.length > 0 ? tasks[tasks.length - 1].createdAt : null
+  return { tasks, hasMore, nextCursor }
 }
 
 /**

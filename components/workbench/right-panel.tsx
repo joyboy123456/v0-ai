@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Check,
   CheckCircle2,
@@ -68,12 +69,6 @@ type ResultGridItem =
   | { kind: "image"; image: ResultAsset; progress?: ShotProgress }
   | { kind: "progress"; progress: ShotProgress };
 
-function isPantsFissionTask(task: GenerationTask): boolean {
-  if (task.featureType !== "photo-fission") return false;
-  const params = task.params as Partial<PhotoFissionParams>;
-  return params.childrensCategory === "pants";
-}
-
 function isCancellableTask(task: GenerationTask): boolean {
   return task.status === "pending" || task.status === "running";
 }
@@ -83,11 +78,9 @@ function canDeleteTaskResult(task: GenerationTask): boolean {
 }
 
 function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
-  // 裤子保留逐镜头进度卡；连衣裙/套装只在顶部运行面板提供任务级取消入口，不显示进度卡。
-  const showProgress = isPantsFissionTask(task);
   const params = task.params as {
-    shotPlan?: { shotId?: string }[];
-    poses?: { id?: string }[];
+    shotPlan?: { shotId?: string; label?: string }[];
+    poses?: { id?: string; name?: string }[];
   };
   const resultsByShotId = new Map(
     task.results
@@ -95,15 +88,32 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
       .map((result) => [result.shotId as string, result]),
   );
 
+  // 生成中/排队时为每个未出图的镜头/姿势渲染占位进度卡（含连衣裙/套装/姿势裂变，
+  // 不再只限裤子），避免「生成中」网格空白。任务到终态后不再补占位——
+  // 失败的镜头由服务端 shotProgress 里的 failed 态呈现，成功任务则全部有结果。
+  const isInFlight = task.status === "pending" || task.status === "running";
+  const buildPlaceholder = (id: string, label: string): ShotProgress => ({
+    shotId: id,
+    label,
+    status: task.status === "running" ? "generating" : "prompting",
+    message: task.status === "running" ? "处理中" : "排队中",
+  });
+
   if (task.featureType === "photo-fission" && Array.isArray(params.shotPlan)) {
     const plannedItems = params.shotPlan.flatMap<ResultGridItem>((shot, index) => {
       const shotId = shot.shotId ?? `shot_${index + 1}`;
       const result = resultsByShotId.get(shotId);
-      const progress = showProgress
-        ? task.shotProgress?.find((item) => item.shotId === shotId)
-        : undefined;
-      if (result) return [{ kind: "image", image: result, progress }];
-      if (progress) return [{ kind: "progress", progress }];
+      const existing = task.shotProgress?.find((item) => item.shotId === shotId);
+      if (result) return [{ kind: "image", image: result, progress: existing }];
+      if (existing) return [{ kind: "progress", progress: existing }];
+      if (isInFlight) {
+        return [
+          {
+            kind: "progress",
+            progress: buildPlaceholder(shotId, shot.label ?? `镜头 ${index + 1}`),
+          },
+        ];
+      }
       return [];
     });
     const plannedIds = new Set(
@@ -119,11 +129,17 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
     const plannedItems = params.poses.flatMap<ResultGridItem>((pose, index) => {
       const poseId = pose.id ?? `pose_${index + 1}`;
       const result = resultsByShotId.get(poseId);
-      const progress = showProgress
-        ? task.shotProgress?.find((item) => item.shotId === poseId)
-        : undefined;
-      if (result) return [{ kind: "image", image: result, progress }];
-      if (progress) return [{ kind: "progress", progress }];
+      const existing = task.shotProgress?.find((item) => item.shotId === poseId);
+      if (result) return [{ kind: "image", image: result, progress: existing }];
+      if (existing) return [{ kind: "progress", progress: existing }];
+      if (isInFlight) {
+        return [
+          {
+            kind: "progress",
+            progress: buildPlaceholder(poseId, pose.name ?? `姿势 ${index + 1}`),
+          },
+        ];
+      }
       return [];
     });
     const plannedIds = new Set(params.poses.map((pose, index) => pose.id ?? `pose_${index + 1}`));
@@ -221,6 +237,9 @@ interface RightPanelProps {
   activeTask: GenerationTask | null;
   tasks: GenerationTask[];
   tasksLoading?: boolean;
+  tasksHasMore?: boolean;
+  tasksLoadingMore?: boolean;
+  onLoadMoreTasks?: () => void;
   companyModels: CompanyModel[];
   fashionReferences: FashionReferenceImage[];
   companyModelLibraryRequestKey: number;
@@ -248,6 +267,9 @@ export function RightPanel({
   activeTask,
   tasks,
   tasksLoading,
+  tasksHasMore,
+  tasksLoadingMore,
+  onLoadMoreTasks,
   companyModels,
   fashionReferences,
   companyModelLibraryRequestKey,
@@ -1119,26 +1141,32 @@ export function RightPanel({
         <TaskHistory
           tasks={historyTasks}
           tasksLoading={tasksLoading}
+          hasMore={tasksHasMore}
+          loadingMore={tasksLoadingMore}
+          onLoadMore={onLoadMoreTasks}
           topContent={
-            showHistoryLiveTask && visibleTask ? (
-              <LiveTaskProgressPanel
-                task={visibleTask}
-                gridItems={visibleTaskGridItems}
-                favorites={favorites}
-                isFaceVariantRunning={isFaceVariantRunning}
-                onRetryShots={handleRetryShots}
-                onCancelTask={onCancelTask}
-                onPreviewImage={(image) =>
-                  setPreviewResult({ image, task: visibleTask })
-                }
-                onToggleFavorite={handleToggleFavorite}
-                onRefineFace={(image) => openFaceRefine(visibleTask, image)}
-                onRegenerate={(image) => handleRegenerateShot(visibleTask, image)}
-                onDelete={(image) =>
-                  void handleDeleteResult(visibleTask.taskId, image.assetId)
-                }
-              />
-            ) : null
+            <AnimatePresence>
+              {showHistoryLiveTask && visibleTask ? (
+                <LiveTaskProgressPanel
+                  key={`live-${visibleTask.taskId}`}
+                  task={visibleTask}
+                  gridItems={visibleTaskGridItems}
+                  favorites={favorites}
+                  isFaceVariantRunning={isFaceVariantRunning}
+                  onRetryShots={handleRetryShots}
+                  onCancelTask={onCancelTask}
+                  onPreviewImage={(image) =>
+                    setPreviewResult({ image, task: visibleTask })
+                  }
+                  onToggleFavorite={handleToggleFavorite}
+                  onRefineFace={(image) => openFaceRefine(visibleTask, image)}
+                  onRegenerate={(image) => handleRegenerateShot(visibleTask, image)}
+                  onDelete={(image) =>
+                    void handleDeleteResult(visibleTask.taskId, image.assetId)
+                  }
+                />
+              ) : null}
+            </AnimatePresence>
           }
           activeTaskId={activeTask?.taskId}
           favorites={favorites}
@@ -1198,7 +1226,8 @@ export function RightPanel({
 
               {visibleTaskGridItems.length > 0 ? (
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                  {visibleTaskGridItems.map((item) => {
+                  <AnimatePresence>
+                    {visibleTaskGridItems.map((item, gridIndex) => {
                     if (item.kind === "progress") {
                       return (
                         <ResultProgressCard
@@ -1222,6 +1251,7 @@ export function RightPanel({
                         canRefineFace={canUseFaceActions}
                         canRegenerate={visibleTask.featureType === "photo-fission"}
                         actionDisabled={isFaceVariantRunning}
+                        index={gridIndex}
                         onClick={() => setPreviewResult({ image, task: visibleTask })}
                         onToggleFavorite={() => {
                           handleToggleFavorite(image.assetId);
@@ -1233,7 +1263,8 @@ export function RightPanel({
                         onDelete={() => handleDeleteResult(visibleTask.taskId, image.assetId)}
                       />
                     );
-                  })}
+                    })}
+                  </AnimatePresence>
                 </div>
               ) : (
                 <EmptyResults status={visibleTask.status} />
@@ -1324,6 +1355,7 @@ function ResultImageCard({
   canRefineFace,
   canRegenerate,
   actionDisabled,
+  index = 0,
   onClick,
   onToggleFavorite,
   onRefineFace,
@@ -1335,6 +1367,8 @@ function ResultImageCard({
   canRefineFace: boolean;
   canRegenerate: boolean;
   actionDisabled: boolean;
+  /** 用于网格内错落入场动画的序号（与历史列表卡节奏一致） */
+  index?: number;
   onClick: () => void;
   onToggleFavorite: () => void;
   onRefineFace: () => void;
@@ -1342,7 +1376,11 @@ function ResultImageCard({
   onDelete: () => void;
 }) {
   return (
-    <div
+    <motion.div
+      initial={{ opacity: 0, y: 10, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.96 }}
+      transition={{ duration: 0.32, delay: index * 0.05, ease: [0.16, 1, 0.3, 1] }}
       role="button"
       tabIndex={0}
       onClick={onClick}
@@ -1437,7 +1475,7 @@ function ResultImageCard({
           删除
         </button>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -2607,7 +2645,13 @@ function ResultProgressCard({ progress }: { progress: ShotProgress }) {
   const retryAttempt = progress.retryAttempt ?? 0;
 
   return (
-    <div className="relative aspect-[3/4] overflow-hidden rounded-lg border border-dashed border-border bg-card/70 p-3 text-left">
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.96 }}
+      transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+      className="relative aspect-[3/4] overflow-hidden rounded-lg border border-dashed border-border bg-card/70 p-3 text-left"
+    >
       {isActive && (
         <span
           aria-hidden="true"
@@ -2647,7 +2691,7 @@ function ResultProgressCard({ progress }: { progress: ShotProgress }) {
           </div>
         )}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -2866,7 +2910,16 @@ function StatusBadge({ status }: { status: TaskStatus }) {
         status === "cancelled" && "bg-muted text-muted-foreground",
       )}
     >
-      {status === "success" && <CheckCircle2 className="w-3 h-3" />}
+      {status === "success" && (
+        <motion.span
+          initial={{ opacity: 0, scale: 0.4 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ type: "spring", stiffness: 500, damping: 22 }}
+          className="flex items-center"
+        >
+          <CheckCircle2 className="w-3 h-3" />
+        </motion.span>
+      )}
       {status === "running" && (
         <span className="status-dot h-1.5 w-1.5 bg-blue-500 text-blue-500" />
       )}
@@ -2925,7 +2978,13 @@ function LiveTaskProgressPanel({
     Boolean((task.params as PhotoFissionParams).faceIdModelId);
 
   return (
-    <div className="mb-5 space-y-4">
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+      className="mb-5 space-y-4"
+    >
       <TaskStatusCard
         task={task}
         onRetryShots={onRetryShots}
@@ -2933,7 +2992,8 @@ function LiveTaskProgressPanel({
       />
       {gridItems.length > 0 && (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-          {gridItems.map((item) => {
+          <AnimatePresence>
+            {gridItems.map((item, gridIndex) => {
             if (item.kind === "progress") {
               return (
                 <ResultProgressCard
@@ -2951,6 +3011,7 @@ function LiveTaskProgressPanel({
                 canRefineFace={canUseFaceActions}
                 canRegenerate={task.featureType === "photo-fission"}
                 actionDisabled={isFaceVariantRunning}
+                index={gridIndex}
                 onClick={() => onPreviewImage(item.image)}
                 onToggleFavorite={() => onToggleFavorite(item.image.assetId)}
                 onRefineFace={() => onRefineFace(item.image)}
@@ -2958,16 +3019,20 @@ function LiveTaskProgressPanel({
                 onDelete={() => onDelete(item.image)}
               />
             );
-          })}
+            })}
+          </AnimatePresence>
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }
 
 function TaskHistory({
   tasks,
   tasksLoading,
+  hasMore,
+  loadingMore,
+  onLoadMore,
   topContent,
   activeTaskId,
   favorites,
@@ -2980,6 +3045,9 @@ function TaskHistory({
 }: {
   tasks: GenerationTask[];
   tasksLoading?: boolean;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
   topContent?: ReactNode;
   activeTaskId?: string;
   favorites: Set<string>;
@@ -2990,6 +3058,31 @@ function TaskHistory({
   onPreviewImage: (image: ResultAsset, task: GenerationTask) => void;
   onToggleImageSelection: (assetId: string, url: string, downloadUrl: string) => void;
 }) {
+  // 滚动到底自动加载更早历史：哨兵进入视口时触发 onLoadMore。
+  // hooks 必须在 early-return 之前声明，故 IntersectionObserver 逻辑放这里。
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  const onLoadMoreRef = useRef(onLoadMore);
+  useEffect(() => {
+    onLoadMoreRef.current = onLoadMore;
+  }, [onLoadMore]);
+
+  useEffect(() => {
+    if (!hasMore || !onLoadMore) return;
+    const sentinel = loadMoreSentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          onLoadMoreRef.current?.();
+        }
+      },
+      // 提前 200px 触发，滚动接近底部就开始拉，体感更顺
+      { rootMargin: "200px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, onLoadMore, tasks.length]);
+
   if (!tasks.length) {
     if (tasksLoading) {
       return (
@@ -3068,6 +3161,35 @@ function TaskHistory({
             />
           );
         })}
+
+        {/* 滚动加载更多哨兵 + 加载中指示 */}
+        {hasMore ? (
+          <div ref={loadMoreSentinelRef} className="py-2">
+            {loadingMore ? (
+              <div className="space-y-3">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="w-full rounded-lg border border-border bg-card p-4"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="skeleton-shimmer h-5 w-16 rounded" />
+                      <div className="skeleton-shimmer h-3 w-28 rounded" />
+                    </div>
+                    <div className="mt-3 grid grid-cols-4 gap-1.5">
+                      {Array.from({ length: 4 }).map((_, j) => (
+                        <div
+                          key={j}
+                          className="skeleton-shimmer aspect-[3/4] rounded"
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
