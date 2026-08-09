@@ -81,6 +81,22 @@ export interface CallLogResult {
   hasMore: boolean
 }
 
+/** 单小时用量（本地时区 0-23）。 */
+export interface HourlyUsage {
+  hour: number
+  totalUsd: number
+  calls: number
+}
+
+/** 某天逐小时用量聚合结果。 */
+export interface HourlyUsageResult {
+  date: string
+  /** 24 个小时的完整数组（无消费的小时全 0） */
+  hours: HourlyUsage[]
+  /** 日志翻页触达上限，聚合可能不完整 */
+  truncated: boolean
+}
+
 // ---- 进程内缓存 ----
 
 interface CacheEntry<T> {
@@ -89,12 +105,19 @@ interface CacheEntry<T> {
 }
 
 const dailyCacheKey = '__laozhang_daily_usage_cache__'
+const hourlyCacheKey = '__laozhang_hourly_usage_cache__'
 const globalAny = globalThis as typeof globalThis & {
   [dailyCacheKey]?: CacheEntry<Record<string, RangeUsageSummary>>
+  [hourlyCacheKey]?: Record<string, CacheEntry<HourlyUsageResult>>
 }
 
 /** daily 聚合缓存有效期（ms）。 */
 const DAILY_CACHE_TTL_MS = 60_000
+/** hourly 聚合缓存：今天 60s（数据在变），历史天 30min（基本不变）。 */
+const HOURLY_CACHE_TTL_TODAY_MS = 60_000
+const HOURLY_CACHE_TTL_PAST_MS = 30 * 60_000
+/** hourly 聚合翻页上限（10 条/页 → 最多聚合 500 条调用），防异常天刷爆上游。 */
+const HOURLY_MAX_PAGES = 50
 
 // ---- 时间工具 ----
 
@@ -338,4 +361,56 @@ export async function getLaozhangCallLogs(date: string, page = 1): Promise<CallL
     items,
     hasMore: rows.length === 10,
   }
+}
+
+/**
+ * 查询老张 API 某天逐小时用量（下钻图表用）。
+ *
+ * 基于 /api/log/self 逐页拉全当天日志后按本地小时分桶；
+ * 结果按日期缓存（今天 60s / 历史天 30min），避免每次下钻都打满上游翻页。
+ */
+export async function getLaozhangHourlyUsage(date: string): Promise<HourlyUsageResult> {
+  const now = Date.now()
+  const isToday = date === getLocalDateString(new Date(now))
+  const ttl = isToday ? HOURLY_CACHE_TTL_TODAY_MS : HOURLY_CACHE_TTL_PAST_MS
+
+  const cached = globalAny[hourlyCacheKey]?.[date]
+  if (cached && now - cached.tsMs < ttl) {
+    return cached.data
+  }
+
+  const buckets = new Map<number, { totalUsd: number; calls: number }>()
+  let truncated = false
+
+  for (let page = 1; ; page += 1) {
+    const result = await getLaozhangCallLogs(date, page)
+    for (const item of result.items) {
+      const hour = new Date(item.createdAt * 1000).getHours()
+      const bucket = buckets.get(hour) ?? { totalUsd: 0, calls: 0 }
+      bucket.totalUsd += item.usd
+      bucket.calls += 1
+      buckets.set(hour, bucket)
+    }
+    if (!result.hasMore) break
+    if (page >= HOURLY_MAX_PAGES) {
+      truncated = true
+      break
+    }
+  }
+
+  const hours: HourlyUsage[] = Array.from({ length: 24 }, (_, hour) => {
+    const bucket = buckets.get(hour)
+    return {
+      hour,
+      totalUsd: Number((bucket?.totalUsd ?? 0).toFixed(6)),
+      calls: bucket?.calls ?? 0,
+    }
+  })
+
+  const aggregated: HourlyUsageResult = { date, hours, truncated }
+  if (!globalAny[hourlyCacheKey]) {
+    globalAny[hourlyCacheKey] = {}
+  }
+  globalAny[hourlyCacheKey]![date] = { data: aggregated, tsMs: now }
+  return aggregated
 }

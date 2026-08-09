@@ -237,7 +237,7 @@ export function InviteCodesDialog({
                           "text-[10px]",
                           item.status === "available" &&
                             "bg-emerald-50 text-emerald-700",
-                          item.status === "used" && "bg-slate-100 text-slate-600",
+                          item.status === "used" && "bg-secondary text-muted-foreground",
                           item.status === "expired" &&
                             "bg-amber-50 text-amber-700",
                         )}

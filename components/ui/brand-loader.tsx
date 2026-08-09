@@ -27,7 +27,7 @@ function BrandLoader({
           className="animate-breathe absolute inset-1 rounded-2xl bg-brand-light/25 blur-md"
         />
         {/* 品牌图标底卡 */}
-        <div className="absolute inset-0 rounded-2xl border border-border bg-white shadow-soft" />
+        <div className="absolute inset-0 rounded-2xl border border-border bg-card shadow-soft" />
         <Sparkles className="relative h-6 w-6 text-primary" />
         {/* 旋转弧线环 */}
         <svg

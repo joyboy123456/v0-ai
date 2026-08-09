@@ -83,6 +83,47 @@
   --sidebar-ring: var(--color-brand-light);
 }
 
+/* ============================================================
+   Dark Theme — 深夜蓝（与冰蓝品牌同色系，非纯黑）
+   只覆盖设计 token，语义变量（--background 等）与 Tailwind
+   工具类经 @theme inline 自动跟随，组件层无需改动。
+   ============================================================ */
+.dark {
+  --color-bg-main: #0B1220;
+  --color-bg-gradient-start: #0B1220;
+  --color-bg-gradient-mid: #0D1A2E;
+  --color-bg-gradient-end: #10233C;
+
+  --color-surface: #131E32;
+  --color-surface-soft: #1B2942;
+  --color-surface-hover: #223450;
+
+  --color-text-primary: #E8EEF6;
+  --color-text-secondary: #A8B7C8;
+  --color-text-muted: #71829A;
+
+  /* 暗色下品牌主色提亮一档保证对比度，主色上文字用深色 */
+  --color-brand-primary: #38BDF8;
+  --color-brand-light: #7DD3FC;
+  --color-brand-soft: rgba(56, 189, 248, 0.14);
+  --color-brand-dark: #BAE6FD;
+
+  --color-button-primary: #E8EEF6;
+  --color-button-primary-hover: #C7D3E2;
+
+  --color-border: rgba(232, 238, 246, 0.10);
+  --color-border-blue: rgba(56, 189, 248, 0.35);
+
+  --shadow-soft: 0 12px 40px rgba(0, 0, 0, 0.45), 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.25);
+
+  --primary-foreground: #08283F;
+  --destructive: #F87171;
+  --destructive-foreground: #3F0A0A;
+
+  --sidebar: rgba(19, 30, 50, 0.86);
+}
+
 @theme inline {
   --font-sans: "Geist", "Geist Fallback";
   --font-mono: "Geist Mono", "Geist Mono Fallback";
@@ -137,6 +178,7 @@
   --color-button-primary-hover: var(--color-button-primary-hover);
   --color-border-blue: var(--color-border-blue);
   --color-surface-soft: var(--color-surface-soft);
+  --color-surface-hover: var(--color-surface-hover);
 
   /* Expose motion tokens to Tailwind (ease-out-expo / ease-spring utilities) */
   --ease-out-expo: var(--ease-out-expo);
@@ -172,6 +214,17 @@
   ::-webkit-scrollbar-thumb:hover {
     background: rgba(17, 24, 39, 0.16);
   }
+
+  /* 暗色：顶部辉光与滚动条换成暗色系 */
+  .dark body {
+    background-image: radial-gradient(circle at 50% -20%, rgba(56, 189, 248, 0.10) 0%, rgba(11, 18, 32, 0) 70%);
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background: rgba(232, 238, 246, 0.14);
+  }
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: rgba(232, 238, 246, 0.24);
+  }
 }
 
 @layer components {
@@ -193,6 +246,35 @@
 
   .glass-card-hover {
     @apply hover:bg-white hover:-translate-y-[2px] hover:shadow-soft transition-all duration-300;
+  }
+
+  /* 暗色覆盖：含硬编码白色的组件类 */
+  .dark .btn-black {
+    /* 暗色下 --color-button-primary 变为浅色，文字随之反深 */
+    @apply text-[#0B1220];
+  }
+
+  .dark .btn-secondary-light {
+    @apply bg-surface-soft hover:bg-surface-hover;
+  }
+
+  .dark .glass-card {
+    background: rgba(19, 30, 50, 0.86);
+  }
+
+  .dark .glass-card-hover {
+    @apply hover:bg-surface-hover;
+  }
+}
+
+@layer utilities {
+  /* iPhone Home 指示条 / 刘海安全区（需 layout viewportFit: 'cover'） */
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .mb-safe {
+    margin-bottom: env(safe-area-inset-bottom);
   }
 }
 
@@ -402,6 +484,27 @@
   .loading-dot,
   .loader-arc,
   .animate-breathe {
+    animation: none !important;
+  }
+}
+
+/* 登录页「生成之墙」：纵向无缝无限滚动（内容需复制两份，-50% 处循环） */
+@keyframes login-marquee-y {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-50%);
+  }
+}
+
+.login-marquee-y {
+  animation: login-marquee-y linear infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-marquee-y {
     animation: none !important;
   }
 }

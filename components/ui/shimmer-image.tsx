@@ -58,6 +58,8 @@ function ShimmerImage({
         {...props}
         ref={ref}
         onLoad={handleLoad}
+        loading="lazy"
+        decoding="async"
         style={{
           transitionDelay: loaded ? `${fadeDelay}s` : undefined,
         }}

@@ -405,7 +405,7 @@ export function FaceMaskPainterDialog({
           onWheel={handleWheel}
         >
           <div
-            className="relative mx-auto bg-white shadow-sm"
+            className="relative mx-auto bg-card shadow-sm"
             style={{ width: displaySize.width, height: displaySize.height }}
           >
             <img
@@ -417,7 +417,7 @@ export function FaceMaskPainterDialog({
               className="absolute inset-0 h-full w-full select-none object-contain"
             />
             {imageStatus !== "loaded" && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/90 px-6 text-center text-sm text-muted-foreground">
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-card/90 px-6 text-center text-sm text-muted-foreground">
                 {imageStatus === "error"
                   ? "底图加载失败，请关闭后刷新任务再重试"
                   : "底图加载中..."}

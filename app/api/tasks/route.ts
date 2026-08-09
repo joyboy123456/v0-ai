@@ -38,13 +38,39 @@ function estimateTaskUnits(featureType: FeatureType, params: TaskParams): number
 
 export const runtime = 'nodejs'
 
+/** 历史任务分页：默认每页 20，上限 100。 */
+const TASKS_PAGE_DEFAULT_LIMIT = 20
+const TASKS_PAGE_MAX_LIMIT = 100
+
 export async function GET(request: NextRequest) {
   const userResult = await requireUser(request)
   if (userResult instanceof NextResponse) return userResult
   const { userId } = userResult
 
+  // 分页 + 按功能过滤：历史任务可能有几千个，全量返回会导致首屏 JSON 十几 MB
+  const { searchParams } = request.nextUrl
+  const featureType = searchParams.get('featureType')
+  const offset = Math.max(0, parseInt(searchParams.get('offset') ?? '0', 10) || 0)
+  const limit = Math.min(
+    TASKS_PAGE_MAX_LIMIT,
+    Math.max(
+      1,
+      parseInt(searchParams.get('limit') ?? String(TASKS_PAGE_DEFAULT_LIMIT), 10) ||
+        TASKS_PAGE_DEFAULT_LIMIT,
+    ),
+  )
+
+  let tasks = await listTasks({ userId })
+  if (featureType && featureIds.has(featureType as FeatureType)) {
+    tasks = tasks.filter((task) => task.featureType === featureType)
+  }
+
+  const total = tasks.length
+  const page = tasks.slice(offset, offset + limit)
   return NextResponse.json({
-    tasks: (await listTasks({ userId })).map(withTaskScheduling),
+    tasks: page.map(withTaskScheduling),
+    total,
+    hasMore: offset + page.length < total,
   })
 }
 

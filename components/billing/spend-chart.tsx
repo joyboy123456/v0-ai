@@ -12,9 +12,10 @@ import {
   ResponsiveContainer,
   type TooltipProps,
 } from "recharts";
-import { BarChart3 } from "lucide-react";
+import { ArrowLeft, BarChart3 } from "lucide-react";
 import {
   formatUsd,
+  formatDateCn,
   CHANNEL_LABELS,
   LAOZHANG_ACCENT,
   GRSAI_ACCENT,
@@ -28,18 +29,30 @@ export interface SpendDayPoint {
   total: number;
 }
 
+/** 合并后的单小时数据点（双渠道）。 */
+export interface SpendHourPoint {
+  hour: number;
+  laozhang: number;
+  grsai: number;
+  total: number;
+}
+
 interface SpendChartProps {
   /** 合并按天数据（已排序、已补空天） */
   days: SpendDayPoint[];
   /** 渠道范围小计（图例用），未加载完为 null */
   laozhangTotal: number | null;
   grsaiTotal: number | null;
-  /** 当前选中日期 */
+  /** 当前选中日期（选中后图表进入逐小时模式） */
   selectedDate: string | null;
   /** 点击柱子选中/取消某天 */
   onSelectDate: (date: string | null) => void;
   /** 是否加载中 */
   isLoading: boolean;
+  /** 选中天的逐小时数据，未加载完为 null */
+  hours: SpendHourPoint[] | null;
+  /** 逐小时数据加载中 */
+  hoursLoading: boolean;
 }
 
 const SPRING = { type: "spring" as const, stiffness: 260, damping: 30 };
@@ -77,6 +90,21 @@ function SpendTooltip({ active, payload, label }: TooltipProps<number, string>) 
   );
 }
 
+/** 骨架条（按天/逐小时共用）。 */
+function SkeletonBars({ count, height = 280 }: { count: number; height?: number }) {
+  return (
+    <div className="flex items-end gap-1.5 px-4 pb-8" style={{ height }}>
+      {Array.from({ length: count }).map((_, i) => (
+        <div
+          key={i}
+          className="skeleton-shimmer flex-1 rounded-t-md"
+          style={{ height: `${15 + ((i * 37) % 60)}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
 export function SpendChart({
   days,
   laozhangTotal,
@@ -84,10 +112,16 @@ export function SpendChart({
   selectedDate,
   onSelectDate,
   isLoading,
+  hours,
+  hoursLoading,
 }: SpendChartProps) {
   const hasData = days.some((d) => d.total > 0);
   // 30 天抽稀刻度，避免日期标签互相压叠
   const tickInterval = days.length > 14 ? Math.floor(days.length / 8) : 0;
+
+  // 逐小时模式：选中某天后展示当天 24 小时分布
+  const hourlyMode = selectedDate !== null;
+  const hasHourlyData = (hours ?? []).some((h) => h.total > 0);
 
   return (
     <motion.section
@@ -99,8 +133,21 @@ export function SpendChart({
       {/* 头部：标题 + 图例（含渠道小计） */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-5 pb-1">
         <div className="flex items-center gap-2">
-          <BarChart3 className="size-4 text-primary" />
-          <h2 className="text-[15px] font-semibold text-foreground">按天花费</h2>
+          {hourlyMode ? (
+            <button
+              type="button"
+              onClick={() => onSelectDate(null)}
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <ArrowLeft className="size-3.5" />
+              按天
+            </button>
+          ) : (
+            <BarChart3 className="size-4 text-primary" />
+          )}
+          <h2 className="text-[15px] font-semibold text-foreground">
+            {hourlyMode ? `${formatDateCn(selectedDate)} 逐小时花费` : "按天花费"}
+          </h2>
         </div>
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1.5 tabular-nums">
@@ -121,16 +168,45 @@ export function SpendChart({
       </div>
 
       <div className="px-3 pb-3">
-        {isLoading ? (
-          <div className="flex h-[280px] items-end gap-1.5 px-4 pb-8">
-            {Array.from({ length: 14 }).map((_, i) => (
-              <div
-                key={i}
-                className="skeleton-shimmer flex-1 rounded-t-md"
-                style={{ height: `${15 + ((i * 37) % 60)}%` }}
-              />
-            ))}
-          </div>
+        {hourlyMode ? (
+          hoursLoading ? (
+            <SkeletonBars count={24} />
+          ) : !hasHourlyData ? (
+            <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
+              当日暂无消费记录
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={hours ?? []} margin={{ top: 12, right: 12, left: 0, bottom: 0 }}>
+                <CartesianGrid vertical={false} stroke={GRID_STROKE} />
+                <XAxis
+                  dataKey="hour"
+                  tickFormatter={(h: number) => `${h}时`}
+                  tick={AXIS_TICK}
+                  axisLine={false}
+                  tickLine={false}
+                  interval={2}
+                  tickMargin={8}
+                />
+                <YAxis
+                  tickFormatter={(v: number) => `$${v}`}
+                  tick={AXIS_TICK}
+                  axisLine={false}
+                  tickLine={false}
+                  width={52}
+                />
+                <Tooltip
+                  content={<SpendTooltip />}
+                  labelFormatter={(h) => `${h}:00 – ${Number(h) + 1}:00`}
+                  cursor={{ fill: "rgba(2, 132, 199, 0.06)" }}
+                />
+                <Bar dataKey="laozhang" stackId="spend" fill={LAOZHANG_ACCENT} fillOpacity={0.95} />
+                <Bar dataKey="grsai" stackId="spend" fill={GRSAI_ACCENT} fillOpacity={0.95} />
+              </BarChart>
+            </ResponsiveContainer>
+          )
+        ) : isLoading ? (
+          <SkeletonBars count={14} />
         ) : !hasData ? (
           <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
             范围内暂无消费记录
@@ -187,7 +263,9 @@ export function SpendChart({
       </div>
 
       <p className="border-t border-border/50 px-5 py-2.5 text-xs text-muted-foreground/80">
-        点击柱子查看当日逐条调用明细{selectedDate ? "，再次点击取消选择" : ""}
+        {hourlyMode
+          ? "当日各小时消费分布，左上角返回按天视图"
+          : `点击柱子查看当日逐小时分布与调用明细${selectedDate ? "，再次点击取消选择" : ""}`}
       </p>
     </motion.section>
   );

@@ -36,7 +36,7 @@ const SEGMENTED_OPTION_CLASS = cn(
   'text-muted-foreground hover:text-foreground',
 )
 const SEGMENTED_ACTIVE_CLASS =
-  'border border-border/70 bg-white/5 text-foreground shadow-sm'
+  'border border-border/70 bg-card/5 text-foreground shadow-sm'
 
 interface MyPoseLibraryProps {
   poses: SavedPose[]
@@ -74,7 +74,7 @@ export function MyPoseLibrary({
                   key={pose.id}
                   src={pose.url}
                   alt={pose.name}
-                  className="h-12 w-12 rounded-md border border-border bg-white object-cover"
+                  className="h-12 w-12 rounded-md border border-border bg-card object-cover"
                 />
               ))}
             </div>
@@ -99,7 +99,7 @@ export function MyPoseLibrary({
               key={pose.id}
               type="button"
               onClick={() => setOpen(true)}
-              className="relative h-11 w-11 overflow-hidden rounded-md border border-border bg-white"
+              className="relative h-11 w-11 overflow-hidden rounded-md border border-border bg-card"
             >
               <img src={pose.url} alt={pose.name} className="h-full w-full object-cover" />
               <span className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-primary-foreground">
@@ -446,7 +446,7 @@ function PoseCard({
             : 'border-border hover:border-primary/60 cursor-pointer',
       )}
     >
-      <div className="relative aspect-[3/4] bg-white">
+      <div className="relative aspect-[3/4] bg-card">
         <img src={pose.url} alt={pose.name} className="h-full w-full object-contain object-center" />
         <span className="absolute left-2 top-2 rounded-full bg-background/90 px-2.5 py-1 text-[11px] font-medium text-foreground shadow-sm">
           {BODY_PART_LABELS[pose.bodyPart]}

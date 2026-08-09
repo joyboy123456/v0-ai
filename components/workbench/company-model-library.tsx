@@ -35,7 +35,7 @@ export function CompanyModelLibrary({
             <img
               src={selectedModel.preview}
               alt={selectedModel.name}
-              className="w-12 h-12 rounded-md object-cover bg-white"
+              className="w-12 h-12 rounded-md object-cover bg-card"
             />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm text-foreground">{selectedModel.name}</p>
@@ -54,7 +54,7 @@ export function CompanyModelLibrary({
               key={model.assetId}
               onClick={() => onSelectModel(model)}
               className={cn(
-                'relative w-11 h-11 rounded-md overflow-hidden border bg-white',
+                'relative w-11 h-11 rounded-md overflow-hidden border bg-card',
                 selectedModel?.assetId === model.assetId ? 'border-primary' : 'border-border',
               )}
             >
@@ -192,7 +192,7 @@ function CompanyModelDialog({
                     isSelected ? 'border-primary' : 'border-border hover:border-primary/60',
                   )}
                 >
-                  <div className="aspect-[3/4] bg-white">
+                  <div className="aspect-[3/4] bg-card">
                     <img src={model.preview} alt={model.name} className="w-full h-full object-cover" />
                   </div>
                   <div className="px-3 py-2">

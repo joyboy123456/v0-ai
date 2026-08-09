@@ -4,9 +4,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { FeatureSidebar } from './feature-sidebar'
 import { LeftPanel } from './left-panel'
+import { MobileShell } from './mobile-shell'
 import { RightPanel } from './right-panel'
 import { BrandLoader } from '@/components/ui/brand-loader'
 import { useAuth } from '@/hooks/use-auth'
+import { useIsMobile } from '@/hooks/use-mobile'
 import {
   type CompanyModel,
   type FashionReferenceImage,
@@ -35,6 +37,10 @@ export function Workbench() {
   const router = useRouter()
   const pathname = usePathname()
   const { user, isLoading: isAuthLoading, error: authError, logout, refresh: refreshAuth } = useAuth()
+  const isMobile = useIsMobile()
+  // 手机版创作表单滑层：首次打开才挂载 LeftPanel（省首屏），之后常驻 DOM 保留表单输入
+  const [mobileFormOpen, setMobileFormOpen] = useState(false)
+  const [mobileFormMounted, setMobileFormMounted] = useState(false)
   const [redirectingToLogin, setRedirectingToLogin] = useState(false)
   // 公网客户曾反复反馈「正在前往登录页」一直挂着不动 —— root cause 是 useAuth fetch
   // 短暂时网络抖动 / 等待 /api/auth/me 时，下方守卫把 !user 当成「准备跳转」状态展示，
@@ -49,6 +55,11 @@ export function Workbench() {
   const taskRequestSequenceRef = useRef(0)
   const latestTaskResponseRef = useRef(new Map<string, number>())
   const [tasksLoading, setTasksLoading] = useState(false)
+  // 历史任务分页：记录服务端已加载条数（offset 基准）、总数与是否还有下一页
+  const tasksOffsetRef = useRef(0)
+  const [tasksTotal, setTasksTotal] = useState(0)
+  const [tasksHasMore, setTasksHasMore] = useState(false)
+  const [tasksLoadingMore, setTasksLoadingMore] = useState(false)
   const [savedPoses, setSavedPoses] = useState<SavedPose[]>([])
   const [selectedPoses, setSelectedPoses] = useState<SavedPose[]>([])
   const [companyModelLibraryRequestKey, setCompanyModelLibraryRequestKey] = useState(0)
@@ -107,18 +118,31 @@ export function Workbench() {
     router.refresh()
   }, [pathname, router])
 
+  const TASKS_PAGE_SIZE = 20
+
   const loadTasks = useCallback(async () => {
     const requestSequence = ++taskRequestSequenceRef.current
     setTasksLoading(true)
     try {
-      const response = await fetch('/api/tasks', { cache: 'no-store' })
+      // 只拉当前功能的第一页，避免历史任务几千个时首屏 JSON 十几 MB
+      const response = await fetch(
+        `/api/tasks?featureType=${currentFeature}&offset=0&limit=${TASKS_PAGE_SIZE}`,
+        { cache: 'no-store' },
+      )
       if (response.status === 401) {
         redirectToLogin()
         return
       }
       if (!response.ok) return
 
-      const data = (await response.json()) as { tasks: GenerationTask[] }
+      const data = (await response.json()) as {
+        tasks: GenerationTask[]
+        total: number
+        hasMore: boolean
+      }
+      tasksOffsetRef.current = data.tasks.length
+      setTasksTotal(data.total)
+      setTasksHasMore(data.hasMore)
       setTasks((currentTasks) => {
         const currentById = new Map(currentTasks.map((task) => [task.taskId, task]))
         const serverTaskIds = new Set(data.tasks.map((task) => task.taskId))
@@ -144,7 +168,36 @@ export function Workbench() {
     } finally {
       setTasksLoading(false)
     }
-  }, [redirectToLogin])
+  }, [currentFeature, redirectToLogin])
+
+  // 加载历史任务下一页（追加 + 按 taskId 去重，offset 以服务端已加载条数为准）
+  const loadMoreTasks = useCallback(async () => {
+    if (tasksLoadingMore) return
+    setTasksLoadingMore(true)
+    try {
+      const offset = tasksOffsetRef.current
+      const response = await fetch(
+        `/api/tasks?featureType=${currentFeature}&offset=${offset}&limit=${TASKS_PAGE_SIZE}`,
+        { cache: 'no-store' },
+      )
+      if (!response.ok) return
+
+      const data = (await response.json()) as {
+        tasks: GenerationTask[]
+        total: number
+        hasMore: boolean
+      }
+      tasksOffsetRef.current = offset + data.tasks.length
+      setTasksTotal(data.total)
+      setTasksHasMore(data.hasMore)
+      setTasks((currentTasks) => {
+        const seen = new Set(currentTasks.map((task) => task.taskId))
+        return [...currentTasks, ...data.tasks.filter((task) => !seen.has(task.taskId))]
+      })
+    } finally {
+      setTasksLoadingMore(false)
+    }
+  }, [currentFeature, tasksLoadingMore])
 
   // 从右侧图片卡片或详情弹窗删除单张「效果不好的」生成图。
   // 后端会同步把 task.results 中对应条目移除（删空整个 task 也会被一起删），
@@ -453,6 +506,12 @@ export function Workbench() {
     router.refresh()
   }, [logout, router])
 
+  // 手机版：打开滑层时顺带把 LeftPanel 挂载标记置位（懒挂载只需一次）
+  const handleMobileFormOpenChange = useCallback((open: boolean) => {
+    if (open) setMobileFormMounted(true)
+    setMobileFormOpen(open)
+  }, [])
+
   const loadPoses = useCallback(async () => {
     if (!user) return
     try {
@@ -564,6 +623,121 @@ export function Workbench() {
     )
   }
 
+  const leftPanel = (
+    <LeftPanel
+      mobile={isMobile}
+      feature={currentFeature}
+      selectedPoses={selectedPoses}
+      savedPoses={savedPoses}
+      companyModels={companyModels}
+      fashionReferences={fashionReferences}
+      fashionRemixRequest={fashionRemixRequest}
+      photoFissionCaseRequest={photoFissionCaseRequest}
+      faceIdModels={faceIdModels}
+      selectedFaceIdModel={selectedFaceIdModel}
+      onChangeSelectedFaceIdModel={setSelectedFaceIdModel}
+      onChangeSelectedPoses={setSelectedPoses}
+      onAddFashionReference={handleAddFashionReference}
+      onRemoveFashionReference={handleRemoveFashionReference}
+      onReorderFashionReferences={handleReorderFashionReferences}
+      onOpenCompanyModelLibrary={() => setCompanyModelLibraryRequestKey((currentKey) => currentKey + 1)}
+      onOpenFaceIdLibrary={() => setFaceIdLibraryRequestKey((currentKey) => currentKey + 1)}
+      onAddPose={handleAddPose}
+      onRenamePose={handleRenamePose}
+      onDeletePose={handleDeletePose}
+      onTaskCreated={(taskId) => {
+        setActiveTaskId(taskId)
+        setMobileFormOpen(false)
+        void loadTask(taskId)
+      }}
+    />
+  )
+
+  const rightPanel = (
+    <RightPanel
+      feature={currentFeature}
+      activeTask={activeTask}
+      tasks={tasks}
+      tasksLoading={tasksLoading}
+      tasksTotal={tasksTotal}
+      tasksHasMore={tasksHasMore}
+      tasksLoadingMore={tasksLoadingMore}
+      onLoadMoreTasks={() => void loadMoreTasks()}
+      companyModels={companyModels}
+      fashionReferences={fashionReferences}
+      companyModelLibraryRequestKey={companyModelLibraryRequestKey}
+      faceIdModels={faceIdModels}
+      faceIdLibraryRequestKey={faceIdLibraryRequestKey}
+      selectedFaceIdModel={selectedFaceIdModel}
+      onAddCompanyModel={(model) => {
+        setCompanyModels((currentModels) => {
+          if (currentModels.some((item) => item.assetId === model.assetId)) return currentModels
+          return [model, ...currentModels]
+        })
+      }}
+      onDeleteCompanyModel={(assetId) => {
+        setCompanyModels((currentModels) =>
+          currentModels.filter((item) => item.assetId !== assetId),
+        )
+      }}
+      onRenameCompanyModel={(assetId, name) => {
+        setCompanyModels((currentModels) =>
+          currentModels.map((item) =>
+            item.assetId === assetId ? { ...item, name } : item,
+          ),
+        )
+      }}
+      onAddFaceIdModel={(model) => {
+        setFaceIdModels((currentModels) => {
+          if (currentModels.some((item) => item.assetId === model.assetId)) return currentModels
+          return [model, ...currentModels]
+        })
+      }}
+      onDeleteFaceIdModel={(assetId) => {
+        setFaceIdModels((currentModels) =>
+          currentModels.filter((item) => item.assetId !== assetId),
+        )
+        setSelectedFaceIdModel((current) => current?.assetId === assetId ? null : current)
+      }}
+      onRenameFaceIdModel={(assetId, name) => {
+        setFaceIdModels((currentModels) =>
+          currentModels.map((item) =>
+            item.assetId === assetId ? { ...item, name } : item,
+          ),
+        )
+        setSelectedFaceIdModel((current) => current?.assetId === assetId ? { ...current, name } : current)
+      }}
+      onSelectFaceIdModel={setSelectedFaceIdModel}
+      onAddFashionReference={handleAddFashionReference}
+      onUseTaskAsFashionReference={handleUseTaskAsFashionReference}
+      onSelectPhotoFissionCase={handleSelectPhotoFissionCase}
+      onSelectTask={setActiveTaskId}
+      onRefreshTasks={loadTasks}
+      onCancelTask={handleCancelTask}
+      onDeleteTaskResult={handleDeleteTaskResult}
+    />
+  )
+
+  // 手机版（<768px）：MobileShell 换壳，LeftPanel/RightPanel/状态全部复用
+  if (isMobile) {
+    return (
+      <MobileShell
+        activeFeature={currentFeature}
+        onFeatureChange={setCurrentFeature}
+        user={user}
+        isAuthLoading={isAuthLoading}
+        onLogout={handleLogout}
+        onRefreshTasks={loadTasks}
+        formOpen={mobileFormOpen}
+        onFormOpenChange={handleMobileFormOpenChange}
+        formMounted={mobileFormMounted}
+        form={leftPanel}
+      >
+        {rightPanel}
+      </MobileShell>
+    )
+  }
+
   return (
     <main className="flex h-screen overflow-hidden bg-ice-blue-gradient">
       <FeatureSidebar
@@ -574,89 +748,8 @@ export function Workbench() {
         onLogout={handleLogout}
         onRefreshTasks={loadTasks}
       />
-      <LeftPanel
-        feature={currentFeature}
-        selectedPoses={selectedPoses}
-        savedPoses={savedPoses}
-        companyModels={companyModels}
-        fashionReferences={fashionReferences}
-        fashionRemixRequest={fashionRemixRequest}
-        photoFissionCaseRequest={photoFissionCaseRequest}
-        faceIdModels={faceIdModels}
-        selectedFaceIdModel={selectedFaceIdModel}
-        onChangeSelectedFaceIdModel={setSelectedFaceIdModel}
-        onChangeSelectedPoses={setSelectedPoses}
-        onAddFashionReference={handleAddFashionReference}
-        onRemoveFashionReference={handleRemoveFashionReference}
-        onReorderFashionReferences={handleReorderFashionReferences}
-        onOpenCompanyModelLibrary={() => setCompanyModelLibraryRequestKey((currentKey) => currentKey + 1)}
-        onOpenFaceIdLibrary={() => setFaceIdLibraryRequestKey((currentKey) => currentKey + 1)}
-        onAddPose={handleAddPose}
-        onRenamePose={handleRenamePose}
-        onDeletePose={handleDeletePose}
-        onTaskCreated={(taskId) => {
-          setActiveTaskId(taskId)
-          void loadTask(taskId)
-        }}
-      />
-      <RightPanel
-        feature={currentFeature}
-        activeTask={activeTask}
-        tasks={tasks}
-        tasksLoading={tasksLoading}
-        companyModels={companyModels}
-        fashionReferences={fashionReferences}
-        companyModelLibraryRequestKey={companyModelLibraryRequestKey}
-        faceIdModels={faceIdModels}
-        faceIdLibraryRequestKey={faceIdLibraryRequestKey}
-        selectedFaceIdModel={selectedFaceIdModel}
-        onAddCompanyModel={(model) => {
-          setCompanyModels((currentModels) => {
-            if (currentModels.some((item) => item.assetId === model.assetId)) return currentModels
-            return [model, ...currentModels]
-          })
-        }}
-        onDeleteCompanyModel={(assetId) => {
-          setCompanyModels((currentModels) =>
-            currentModels.filter((item) => item.assetId !== assetId),
-          )
-        }}
-        onRenameCompanyModel={(assetId, name) => {
-          setCompanyModels((currentModels) =>
-            currentModels.map((item) =>
-              item.assetId === assetId ? { ...item, name } : item,
-            ),
-          )
-        }}
-        onAddFaceIdModel={(model) => {
-          setFaceIdModels((currentModels) => {
-            if (currentModels.some((item) => item.assetId === model.assetId)) return currentModels
-            return [model, ...currentModels]
-          })
-        }}
-        onDeleteFaceIdModel={(assetId) => {
-          setFaceIdModels((currentModels) =>
-            currentModels.filter((item) => item.assetId !== assetId),
-          )
-          setSelectedFaceIdModel((current) => current?.assetId === assetId ? null : current)
-        }}
-        onRenameFaceIdModel={(assetId, name) => {
-          setFaceIdModels((currentModels) =>
-            currentModels.map((item) =>
-              item.assetId === assetId ? { ...item, name } : item,
-            ),
-          )
-          setSelectedFaceIdModel((current) => current?.assetId === assetId ? { ...current, name } : current)
-        }}
-        onSelectFaceIdModel={setSelectedFaceIdModel}
-        onAddFashionReference={handleAddFashionReference}
-        onUseTaskAsFashionReference={handleUseTaskAsFashionReference}
-        onSelectPhotoFissionCase={handleSelectPhotoFissionCase}
-        onSelectTask={setActiveTaskId}
-        onRefreshTasks={loadTasks}
-        onCancelTask={handleCancelTask}
-        onDeleteTaskResult={handleDeleteTaskResult}
-      />
+      {leftPanel}
+      {rightPanel}
     </main>
   )
 }

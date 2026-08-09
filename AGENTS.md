@@ -49,3 +49,12 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 - 5/29-6/22 的 task 和图永久丢失（无备份 + OSS Lifecycle 已删）
 - createTask 现已记录完整 params 到日志，下次事故可从日志恢复提示词
 
+## 前端约定（2026-08 移动端 + 暗色主题改造后）
+
+- **双主题**：class 式暗色（`next-themes`，默认跟随系统，localStorage 持久化）。暗色只覆盖 `app/globals.css` 的 `:root` 设计 token（`.dark { ... }` 块），语义 token 经 `@theme inline` 自动级联
+- **写样式必须用语义 token**（bg-card / bg-background / text-foreground / text-muted-foreground / bg-secondary / border-border / text-primary-foreground 等），禁止新增 `bg-white`、`text-slate-*` 这类硬编码亮色；图片预览舞台的深色 `bg-[#111315]` / `bg-[#101010]` 是两主题共用的有意设计，保留
+- **移动端断点 768px**：`hooks/use-mobile.ts` 的 `useIsMobile()` 或 Tailwind `max-md:`/`md:`。Workbench 在 `workbench.tsx` 按 isMobile 分两套外壳（桌面三栏 / 移动 MobileShell），状态全复用
+- **hover 才显示的操作必须补 `max-md:opacity-100`**（触屏无 hover）
+- 生产构建会改写 `next-env.d.ts` / `tsconfig.json` 的 distDir 引用；用非默认 distDir 验证构建后记得 `git checkout` 还原
+
+

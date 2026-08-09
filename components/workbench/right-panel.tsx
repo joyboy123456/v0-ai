@@ -8,6 +8,7 @@ import {
   ChevronUp,
   Download,
   ImageIcon,
+  Loader2,
   Pencil,
   Plus,
   RefreshCw,
@@ -221,6 +222,12 @@ interface RightPanelProps {
   activeTask: GenerationTask | null;
   tasks: GenerationTask[];
   tasksLoading?: boolean;
+  /** 历史任务总数（服务端分页口径） */
+  tasksTotal?: number;
+  /** 历史任务是否还有下一页 */
+  tasksHasMore?: boolean;
+  tasksLoadingMore?: boolean;
+  onLoadMoreTasks?: () => void;
   companyModels: CompanyModel[];
   fashionReferences: FashionReferenceImage[];
   companyModelLibraryRequestKey: number;
@@ -248,6 +255,10 @@ export function RightPanel({
   activeTask,
   tasks,
   tasksLoading,
+  tasksTotal = 0,
+  tasksHasMore = false,
+  tasksLoadingMore = false,
+  onLoadMoreTasks,
   companyModels,
   fashionReferences,
   companyModelLibraryRequestKey,
@@ -623,7 +634,7 @@ export function RightPanel({
   loadFavoriteCasesRef.current = loadFavoriteCases;
 
   const handlePreviewFavoriteCase = useCallback(
-    (asset: FavoriteCaseAsset) => {
+    async (asset: FavoriteCaseAsset) => {
       const task =
         (asset.taskId
           ? tasks.find((candidate) => candidate.taskId === asset.taskId)
@@ -631,20 +642,45 @@ export function RightPanel({
         tasks.find((candidate) =>
           candidate.results.some((result) => result.assetId === asset.assetId),
         );
-      if (!task) {
+      if (task) {
+        setPreviewResult({
+          image: {
+            assetId: asset.assetId,
+            url: asset.fileUrl,
+            downloadUrl: asset.fileUrl,
+            width: asset.width,
+            height: asset.height,
+          },
+          task,
+        });
+        return;
+      }
+      if (!asset.taskId) {
         window.open(asset.fileUrl, "_blank", "noopener,noreferrer");
         return;
       }
-      setPreviewResult({
-        image: {
-          assetId: asset.assetId,
-          url: asset.fileUrl,
-          downloadUrl: asset.fileUrl,
-          width: asset.width,
-          height: asset.height,
-        },
-        task,
-      });
+      try {
+        const response = await fetch(`/api/tasks/${asset.taskId}`, {
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          window.open(asset.fileUrl, "_blank", "noopener,noreferrer");
+          return;
+        }
+        const fetchedTask = (await response.json()) as GenerationTask;
+        setPreviewResult({
+          image: {
+            assetId: asset.assetId,
+            url: asset.fileUrl,
+            downloadUrl: asset.fileUrl,
+            width: asset.width,
+            height: asset.height,
+          },
+          task: fetchedTask,
+        });
+      } catch {
+        window.open(asset.fileUrl, "_blank", "noopener,noreferrer");
+      }
     },
     [tasks],
   );
@@ -960,7 +996,7 @@ export function RightPanel({
     );
 
     return (
-      <section className="flex min-h-screen flex-1 flex-col bg-background">
+      <section className="flex min-h-screen max-md:min-h-0 flex-1 flex-col bg-background">
         <MyModelLibraryPanel
           models={companyModels}
           referencedModelIds={referencedModelIds}
@@ -991,7 +1027,7 @@ export function RightPanel({
 
   if (activeTab === "my-id-photo-library") {
     return (
-      <section className="flex min-h-screen flex-1 flex-col bg-background">
+      <section className="flex min-h-screen max-md:min-h-0 flex-1 flex-col bg-background">
         <MyFaceIdLibraryPanel
           models={faceIdModels}
           selectedModelId={selectedFaceIdModel?.assetId ?? null}
@@ -1009,8 +1045,8 @@ export function RightPanel({
   }
 
   return (
-    <section className="flex-1 min-h-screen bg-transparent flex flex-col">
-      <header className="flex items-center justify-between gap-4 p-5 border-b border-border">
+    <section className="flex-1 min-h-screen max-md:min-h-0 bg-transparent flex flex-col">
+      <header className="flex items-center justify-between gap-4 p-3 md:p-5 border-b border-border">
         <div className="flex items-center gap-3">
           <div className="flex items-center bg-secondary rounded-md p-1 border border-border">
             <button
@@ -1053,7 +1089,7 @@ export function RightPanel({
           </div>
 
           {isAiFashionPhoto && activeTab === "current" && (
-            <div className="flex items-center gap-4 pl-4 text-sm text-foreground">
+            <div className="flex items-center gap-4 pl-4 text-sm text-foreground max-md:hidden">
               <label className="flex cursor-pointer items-center gap-2">
                 <input
                   type="radio"
@@ -1093,7 +1129,7 @@ export function RightPanel({
             <button
               onClick={toggleBatchSelectMode}
               className={cn(
-                "h-8 px-3 rounded-md border text-[12px] font-medium flex items-center gap-1.5 transition-colors",
+                "h-8 px-3 rounded-md border text-[12px] font-medium flex items-center gap-1.5 transition-colors max-md:hidden",
                 batchSelectMode
                   ? "border-primary bg-primary/10 text-primary"
                   : "border-border bg-transparent text-muted-foreground hover:text-foreground hover:bg-surface-soft",
@@ -1104,7 +1140,49 @@ export function RightPanel({
             </button>
           )}
         </div>
+
+        {/* 移动端：批量选择入口（iOS 相册式——平时只是一个「选择」按钮，进入选择模式后由底部悬浮条承载操作） */}
+        {(activeTab === "history" ||
+          (isAiFashionPhoto && activeTab === "current")) && (
+          <button
+            onClick={toggleBatchSelectMode}
+            className={cn(
+              "md:hidden h-8 shrink-0 px-3 rounded-md border text-[12px] font-medium flex items-center gap-1.5 transition-colors",
+              batchSelectMode
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border bg-transparent text-muted-foreground",
+            )}
+          >
+            <Download className="w-3.5 h-3.5" />
+            {batchSelectMode ? "取消" : "选择"}
+          </button>
+        )}
       </header>
+
+      {/* 移动端：案例库筛选 chips（淘宝/小红书式二级筛选行，替代桌面端 radio） */}
+      {isAiFashionPhoto && activeTab === "current" && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2 md:hidden">
+          {(
+            [
+              { value: "current-feature", label: "当前功能" },
+              { value: "favorites", label: "收藏" },
+            ] as const
+          ).map((option) => (
+            <button
+              key={option.value}
+              onClick={() => selectAiFashionGalleryFilter(option.value)}
+              className={cn(
+                "shrink-0 rounded-full border px-3 py-1.5 text-[12px] font-medium transition-colors",
+                aiFashionGalleryFilter === option.value
+                  ? "border-sky-100/50 bg-accent/80 text-primary shadow-sm"
+                  : "border-border bg-card text-muted-foreground",
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {activeTab === "favorites" ? (
         <FavoriteCasesGallery
@@ -1119,6 +1197,10 @@ export function RightPanel({
         <TaskHistory
           tasks={historyTasks}
           tasksLoading={tasksLoading}
+          tasksTotal={tasksTotal}
+          tasksHasMore={tasksHasMore}
+          tasksLoadingMore={tasksLoadingMore}
+          onLoadMoreTasks={onLoadMoreTasks}
           topContent={
             showHistoryLiveTask && visibleTask ? (
               <LiveTaskProgressPanel
@@ -1293,7 +1375,7 @@ export function RightPanel({
       )}
 
       {batchSelectMode && selectedAssets.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-full border border-border bg-card px-5 py-3 shadow-lg">
+        <div className="fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] max-md:bottom-[calc(4.75rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-full border border-border bg-card px-5 py-3 shadow-lg">
           <span className="text-sm text-foreground">
             已选 <span className="font-semibold text-primary">{selectedAssets.size}</span> 张
           </span>
@@ -1363,7 +1445,7 @@ function ResultImageCard({
         containerClassName="h-full w-full"
         className="h-full w-full object-cover"
       />
-      <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
         <button
           type="button"
           onClick={(event) => {
@@ -1393,7 +1475,7 @@ function ResultImageCard({
         </button>
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 space-y-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="absolute inset-x-0 bottom-0 space-y-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
         <div className="grid grid-cols-2 gap-1.5">
           {canRefineFace && (
             <button
@@ -1549,7 +1631,7 @@ function AiFashionMasonryGallery({
                     className="block h-full w-full object-cover"
                   />
 
-                  <span className="pointer-events-none absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-lg bg-white/85 backdrop-blur-md border border-sky-100/80 px-2 py-0.5 text-[10px] font-semibold text-sky-700 shadow-xs z-10">
+                  <span className="pointer-events-none absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-lg bg-card/85 backdrop-blur-md border border-sky-100/80 px-2 py-0.5 text-[10px] font-semibold text-sky-700 shadow-xs z-10">
                     <ImageIcon className="h-3 w-3 text-sky-500" />
                     AI服装大片
                   </span>
@@ -1567,7 +1649,7 @@ function AiFashionMasonryGallery({
                     </div>
                   ) : (
                     <>
-                      <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                      <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
                         <button
                           type="button"
                           onClick={(event) => {
@@ -1613,7 +1695,7 @@ function AiFashionMasonryGallery({
                         )}
                       </div>
 
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-3 opacity-0 transition-opacity group-hover:opacity-100">
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-3 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
                         <button
                           type="button"
                           disabled={!canUseSameStyle}
@@ -1640,7 +1722,7 @@ function AiFashionMasonryGallery({
           </div>
         ) : (
           <div className="min-h-[520px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mx-4 my-8">
-            <div className="w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
+            <div className="w-12 h-12 rounded-md bg-card/[0.03] border border-border flex items-center justify-center mb-4">
               <ImageIcon className="w-5 h-5 text-muted-foreground" />
             </div>
             <p className="text-[13px] font-medium text-foreground">
@@ -1680,6 +1762,7 @@ function GenerationDetailDialog({
   onClose: () => void;
 }) {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
+  const [previewAsset, setPreviewAsset] = useState<AssetRecord | null>(null);
   const { image, task } = preview;
   const isFavorite = favorites.has(image.assetId);
   const rawParams = task.params as {
@@ -1740,8 +1823,8 @@ function GenerationDetailDialog({
   };
 
   return (
-    <div className="grid h-[100dvh] min-h-0 grid-cols-[minmax(0,1fr)_360px_72px] bg-background text-foreground">
-      <div className="relative min-h-0 overflow-hidden bg-[#111315]">
+    <div className="grid h-[100dvh] min-h-0 grid-cols-1 grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_360px_72px] md:grid-rows-1 bg-background text-foreground">
+      <div className="relative min-h-0 overflow-hidden bg-[#111315] max-md:order-1">
         <div className="flex h-full items-center justify-center px-8 py-10">
           <ShimmerImage
             src={image.url}
@@ -1751,7 +1834,7 @@ function GenerationDetailDialog({
               "--skeleton-bg": "rgba(255, 255, 255, 0.05)",
               "--skeleton-sweep": "rgba(255, 255, 255, 0.08)",
             } as React.CSSProperties}
-            className="max-h-[calc(100dvh-104px)] max-w-full rounded-sm object-contain"
+            className="max-h-[55dvh] md:max-h-[calc(100dvh-104px)] max-w-full rounded-sm object-contain"
           />
         </div>
         <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center bg-gradient-to-t from-background/80 to-transparent px-6 py-5">
@@ -1761,7 +1844,7 @@ function GenerationDetailDialog({
         </div>
       </div>
 
-      <aside className="flex min-h-0 flex-col border-l border-border bg-background">
+      <aside className="flex min-h-0 flex-col border-l border-border bg-background max-md:order-2 max-md:max-h-[40dvh] max-md:overflow-y-auto max-md:border-l-0 max-md:border-t">
         <div className="flex items-start justify-between gap-4 px-5 py-5">
           <div className="min-w-0">
             <div className="flex items-center gap-3">
@@ -1932,6 +2015,7 @@ function GenerationDetailDialog({
                       key={asset.assetId}
                       asset={asset}
                       index={index}
+                      onPreview={setPreviewAsset}
                     />
                   ))}
                 </div>
@@ -1945,8 +2029,8 @@ function GenerationDetailDialog({
         </div>
       </aside>
 
-      <aside className="min-h-0 overflow-y-auto border-l border-border bg-background px-2 py-5">
-        <div className="space-y-2">
+      <aside className="min-h-0 overflow-y-auto border-l border-border bg-background px-2 py-5 max-md:order-3 max-md:w-full max-md:overflow-x-auto max-md:overflow-y-hidden max-md:border-l-0 max-md:border-t max-md:py-2">
+        <div className="space-y-2 max-md:flex max-md:gap-2 max-md:space-y-0">
           {resultImages.map((resultImage) => {
             const isActive = resultImage.assetId === image.assetId;
 
@@ -1956,7 +2040,7 @@ function GenerationDetailDialog({
                 type="button"
                 onClick={() => onSelectPreview(resultImage, task)}
                 className={cn(
-                  "relative aspect-[3/4] w-full overflow-hidden rounded-md border bg-card transition-colors",
+                  "relative aspect-[3/4] w-full overflow-hidden rounded-md border bg-card transition-colors max-md:w-14 max-md:shrink-0",
                   isActive
                     ? "border-primary shadow-[0_0_0_1px_var(--primary)]"
                     : "border-border hover:border-primary/60",
@@ -1975,6 +2059,29 @@ function GenerationDetailDialog({
           })}
         </div>
       </aside>
+
+      <Dialog
+        open={previewAsset !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewAsset(null);
+        }}
+      >
+        <DialogContent
+          className="z-[60] flex h-auto max-h-[92dvh] w-auto max-w-[calc(100vw-2rem)] items-center justify-center overflow-hidden border-0 bg-transparent p-0 shadow-none sm:max-w-[88vw]"
+          aria-describedby={undefined}
+        >
+          <DialogTitle className="sr-only">
+            {previewAsset ? `预览${previewAsset.fileName}` : "参考图预览"}
+          </DialogTitle>
+          {previewAsset && (
+            <img
+              src={previewAsset.fileUrl}
+              alt={previewAsset.fileName}
+              className="max-h-[88dvh] w-auto max-w-full rounded-lg object-contain"
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1982,19 +2089,26 @@ function GenerationDetailDialog({
 function ReferenceAssetThumb({
   asset,
   index,
+  onPreview,
 }: {
   asset: AssetRecord;
   index: number;
+  onPreview: (asset: AssetRecord) => void;
 }) {
   return (
     <div className="space-y-1">
-      <div className="aspect-square overflow-hidden rounded border border-border bg-card">
+      <button
+        type="button"
+        onClick={() => onPreview(asset)}
+        title="点击查看大图"
+        className="block aspect-square w-full cursor-zoom-in overflow-hidden rounded border border-border bg-card transition-colors hover:border-primary/60"
+      >
         <img
           src={asset.fileUrl}
           alt={asset.fileName}
           className="h-full w-full object-cover"
         />
-      </div>
+      </button>
       <p
         className="truncate text-[10px] text-muted-foreground"
         title={asset.fileName}
@@ -2100,7 +2214,7 @@ function MyModelLibraryPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
-      <div className="flex items-center justify-between border-b border-border px-5 py-3">
+      <div className="flex items-center justify-between border-b border-border px-3 py-3 md:px-5">
         <div className="flex rounded-full bg-secondary p-1">
           <span className="rounded-full bg-card px-5 py-2 text-sm font-medium text-foreground">
             我的模特库
@@ -2288,7 +2402,7 @@ function ModelCard({
             : "border-border hover:border-primary/60 cursor-pointer",
       )}
     >
-      <div className="aspect-[3/4] bg-white">
+      <div className="aspect-[3/4] bg-card">
         <img
           src={model.preview}
           alt={model.name}
@@ -2340,7 +2454,7 @@ function ModelCard({
 
       {/* hover actions */}
       {!referenced && (
-        <div className="absolute left-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="absolute left-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
           <button
             type="button"
             onClick={(event) => {
@@ -2418,7 +2532,7 @@ function PhotoFissionCaseLibrary({
     return (
       <div className="flex-1 overflow-y-auto p-5">
         <div className="min-h-[420px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mx-4 my-8">
-          <div className="w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
+          <div className="w-12 h-12 rounded-md bg-card/[0.03] border border-border flex items-center justify-center mb-4">
             <ImageIcon className="w-5 h-5 text-muted-foreground" />
           </div>
           <p className="text-[13px] font-medium text-foreground">暂无案例</p>
@@ -2968,6 +3082,10 @@ function LiveTaskProgressPanel({
 function TaskHistory({
   tasks,
   tasksLoading,
+  tasksTotal = 0,
+  tasksHasMore = false,
+  tasksLoadingMore = false,
+  onLoadMoreTasks,
   topContent,
   activeTaskId,
   favorites,
@@ -2980,6 +3098,12 @@ function TaskHistory({
 }: {
   tasks: GenerationTask[];
   tasksLoading?: boolean;
+  /** 历史任务总数（服务端分页口径） */
+  tasksTotal?: number;
+  /** 是否还有下一页 */
+  tasksHasMore?: boolean;
+  tasksLoadingMore?: boolean;
+  onLoadMoreTasks?: () => void;
   topContent?: ReactNode;
   activeTaskId?: string;
   favorites: Set<string>;
@@ -3068,6 +3192,26 @@ function TaskHistory({
             />
           );
         })}
+
+        {/* 分页 footer：历史任务几千个时不全量渲染，按需加载下一页 */}
+        {tasksHasMore && (
+          <div className="flex flex-col items-center gap-1.5 pb-2 pt-1">
+            <button
+              type="button"
+              onClick={onLoadMoreTasks}
+              disabled={tasksLoadingMore}
+              className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-4 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground disabled:opacity-60"
+            >
+              {tasksLoadingMore && <Loader2 className="size-3.5 animate-spin" />}
+              {tasksLoadingMore ? "加载中…" : "加载更多"}
+            </button>
+            {tasksTotal > 0 && (
+              <span className="text-[11px] tabular-nums text-muted-foreground/70">
+                已加载 {tasks.length} / 共 {tasksTotal} 个任务
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3267,7 +3411,7 @@ function TaskHistoryCard({
                   </div>
                 )}
                 {!batchSelectMode && (
-                <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 bg-gradient-to-t from-black/70 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+                <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 bg-gradient-to-t from-black/70 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
                   <button
                     type="button"
                     onClick={(event) => {
@@ -3371,7 +3515,7 @@ function EmptyResults({ status }: { status: TaskStatus }) {
   const isFailed = status === "failed";
   return (
     <div className="min-h-[360px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mt-4">
-      <div className="relative w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
+      <div className="relative w-12 h-12 rounded-md bg-card/[0.03] border border-border flex items-center justify-center mb-4">
         {!isFailed && (
           <>
             <span
@@ -3419,7 +3563,7 @@ function EmptyResults({ status }: { status: TaskStatus }) {
 function EmptyState() {
   return (
     <div className="min-h-[520px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8">
-      <div className="w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
+      <div className="w-12 h-12 rounded-md bg-card/[0.03] border border-border flex items-center justify-center mb-4">
         <Sparkles className="w-5 h-5 text-muted-foreground" />
       </div>
       <p className="text-[13px] font-medium text-foreground">
@@ -3552,7 +3696,7 @@ function MyFaceIdLibraryPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[#101010] text-foreground">
-      <div className="flex items-center justify-between border-b border-border px-5 py-3 bg-[#101010]">
+      <div className="flex items-center justify-between border-b border-border px-3 py-3 md:px-5 bg-[#101010]">
         <div className="flex rounded-full bg-secondary p-1">
           <span className="rounded-full bg-card px-5 py-2 text-sm font-medium text-foreground">
             我的人像小卡
@@ -3709,7 +3853,7 @@ function FavoriteCasesGallery({
     return (
       <div className="flex-1 overflow-y-auto p-5">
         <div className="min-h-[420px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mx-4 my-8">
-          <div className="w-12 h-12 rounded-md bg-white/[0.03] border border-border flex items-center justify-center mb-4">
+          <div className="w-12 h-12 rounded-md bg-card/[0.03] border border-border flex items-center justify-center mb-4">
             <Star className="w-5 h-5 text-muted-foreground" />
           </div>
           <p className="text-[13px] font-medium text-foreground">暂无收藏案例</p>
@@ -3796,7 +3940,7 @@ function FavoriteCasesGallery({
                   {isSelected && <Check className="h-4 w-4" />}
                 </div>
               ) : (
-                <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                <div className="absolute right-2 top-2 flex flex-col gap-2 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
                   <button
                     type="button"
                     onClick={(event) => {

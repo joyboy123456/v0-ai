@@ -275,10 +275,10 @@ export function UploadBox({
           type="button"
           onClick={() => inputRef.current?.click()}
           className={cn(
-            "group relative w-full min-h-[120px] rounded-xl border border-dashed border-sky-200 bg-white/60",
+            "group relative w-full min-h-[120px] rounded-xl border border-dashed border-sky-200 bg-card/60",
             "flex items-center gap-3 overflow-hidden p-3 text-left transition-all duration-300 cursor-pointer",
-            "hover:bg-[#EAF8FF]/40 hover:border-sky-400 hover:shadow-soft",
-            image && "border-solid border-sky-300 bg-[#EAF8FF]/20 shadow-card",
+            "hover:bg-accent/40 hover:border-sky-400 hover:shadow-soft",
+            image && "border-solid border-sky-300 bg-accent/20 shadow-card",
             isDragOver && "border-primary bg-primary/5 ring-2 ring-primary/20",
           )}
         >
@@ -344,10 +344,10 @@ export function UploadBox({
           type="button"
           onClick={() => inputRef.current?.click()}
           className={cn(
-            "group relative w-full min-h-[140px] rounded-xl border border-dashed border-sky-200 bg-white/60",
+            "group relative w-full min-h-[140px] rounded-xl border border-dashed border-sky-200 bg-card/60",
             "flex flex-col items-center justify-center gap-3 overflow-hidden transition-all duration-300 cursor-pointer",
-            "hover:border-sky-400 hover:bg-[#EAF8FF]/40 hover:shadow-soft",
-            image && "border-solid border-sky-300 bg-[#EAF8FF]/20 shadow-card",
+            "hover:border-sky-400 hover:bg-accent/40 hover:shadow-soft",
+            image && "border-solid border-sky-300 bg-accent/20 shadow-card",
             isDragOver && "border-primary bg-primary/5 ring-2 ring-primary/20",
           )}
         >

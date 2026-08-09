@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { CleanupDialog } from "./cleanup-dialog";
 import { InviteCodesDialog } from "./invite-codes-dialog";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import type { AuthUser } from "@/hooks/use-auth";
@@ -100,7 +101,7 @@ export function FeatureSidebar({
                     className={cn(
                       "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors",
                       isActive
-                        ? "bg-white text-primary shadow-xs"
+                        ? "bg-card text-primary shadow-xs"
                         : "bg-transparent text-muted-foreground group-hover:text-primary",
                     )}
                   >
@@ -113,7 +114,7 @@ export function FeatureSidebar({
                           "text-[13px] font-semibold transition-colors",
                           isActive
                             ? "text-primary"
-                            : "text-slate-700 group-hover:text-slate-900",
+                            : "text-foreground group-hover:text-foreground",
                         )}
                       >
                         {feature.name}
@@ -124,7 +125,7 @@ export function FeatureSidebar({
                         </span>
                       )}
                     </div>
-                    <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed transition-colors group-hover:text-slate-500">
+                    <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed transition-colors group-hover:text-muted-foreground">
                       {feature.description}
                     </p>
                   </div>
@@ -159,8 +160,9 @@ export function FeatureSidebar({
           <Trash2 className="size-3.5" />
           清理生成图
         </button>
+        <ThemeToggle />
         <div className="flex items-center gap-3 rounded-md bg-secondary/50 p-2.5 hover:bg-secondary transition-colors">
-          <Avatar className="size-8 border border-border bg-white shadow-sm">
+          <Avatar className="size-8 border border-border bg-card shadow-sm">
             <AvatarFallback className="bg-secondary text-[11px] font-medium text-foreground">
               {isAuthLoading ? "…" : avatarLabel}
             </AvatarFallback>

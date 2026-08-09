@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Check,
+  ChevronLeft,
+  ChevronRight,
   Loader2,
   Sparkles,
   Upload,
@@ -19,6 +21,7 @@ import {
 import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
 import {
   cn,
+  getOssThumbnailUrl,
   readJsonResponse,
 } from "@/lib/utils";
 import {
@@ -36,6 +39,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DEFAULT_FASHION_MODEL,
   FEATURE_LABELS,
@@ -107,6 +115,8 @@ interface LeftPanelProps {
   photoFissionCaseRequest: PhotoFissionCaseRequest | null;
   faceIdModels?: CompanyModel[];
   selectedFaceIdModel?: CompanyModel | null;
+  /** 移动端全屏滑层内嵌：去掉 h-screen/border-r/固定宽度，占满容器 */
+  mobile?: boolean;
   onChangeSelectedPoses: (poses: SavedPose[]) => void;
   onChangeSelectedFaceIdModel?: (model: CompanyModel | null) => void;
   onAddFashionReference: (reference: FashionReferenceImage) => void;
@@ -135,6 +145,7 @@ export function LeftPanel({
   photoFissionCaseRequest,
   faceIdModels = [],
   selectedFaceIdModel = null,
+  mobile = false,
   onChangeSelectedPoses,
   onChangeSelectedFaceIdModel = () => {},
   onAddFashionReference,
@@ -704,8 +715,10 @@ export function LeftPanel({
     <>
       <aside
         className={cn(
-          "h-screen min-h-0 overflow-hidden bg-card border-r border-border flex flex-col",
-          isAiFashionPhoto ? "w-[460px]" : "w-[320px]",
+          mobile
+            ? "w-full h-full min-h-0 overflow-hidden bg-card flex flex-col"
+            : "h-screen min-h-0 overflow-hidden bg-card border-r border-border flex flex-col",
+          !mobile && (isAiFashionPhoto ? "w-[460px]" : "w-[320px]"),
         )}
       >
         <div className="shrink-0 p-5 border-b border-border">
@@ -1242,7 +1255,7 @@ function AiFashionPhotoForm({
             onChange={(event) => onPromptChange(event.target.value)}
             placeholder="请输入提示词"
             maxLength={800}
-            className="h-[132px] w-full resize-none rounded-md border border-border bg-white p-4 text-sm text-black placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="h-[132px] w-full resize-none rounded-md border border-border bg-card p-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
           />
           <span className="absolute bottom-2 right-2 text-xs text-muted-foreground">
             {prompt.length}/800
@@ -1374,6 +1387,164 @@ function CompanyModelStrip({
   );
 }
 
+function reorderFashionReferenceList(
+  list: FashionReferenceImage[],
+  sourceAssetId: string,
+  targetAssetId: string,
+): FashionReferenceImage[] {
+  const sourceIndex = list.findIndex((item) => item.assetId === sourceAssetId);
+  const targetIndex = list.findIndex((item) => item.assetId === targetAssetId);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+    return list;
+  }
+
+  const next = list.slice();
+  const [moved] = next.splice(sourceIndex, 1);
+  next.splice(targetIndex, 0, moved);
+  return next;
+}
+
+function sameFashionReferenceOrder(
+  left: FashionReferenceImage[],
+  right: FashionReferenceImage[],
+) {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => {
+    const other = right[index];
+    return (
+      other != null &&
+      item.assetId === other.assetId &&
+      item.preview === other.preview &&
+      item.name === other.name &&
+      item.source === other.source
+    );
+  });
+}
+
+/** 已拖入/已选择但尚未完成上传的本地图片：drop 后立刻以 blob 缩略图占位 */
+interface PendingReferenceUpload {
+  tempId: string;
+  file: File;
+  /** 本地 blob 缩略图，上传成功或手动移除时 revoke */
+  preview: string;
+  name: string;
+  status: "uploading" | "error";
+  error?: string;
+}
+
+interface FashionReferenceCardProps {
+  reference: FashionReferenceImage;
+  index: number;
+  isDragged: boolean;
+  isDragOver: boolean;
+  /** 移动端「前移/后移」按钮的邻居，null 表示该方向不可移动 */
+  previousAssetId: string | null;
+  nextAssetId: string | null;
+  onDragStart: (
+    event: React.DragEvent<HTMLDivElement>,
+    reference: FashionReferenceImage,
+  ) => void;
+  onDragOver: (event: React.DragEvent<HTMLDivElement>, targetAssetId: string) => void;
+  onDrop: (event: React.DragEvent<HTMLDivElement>, targetAssetId: string) => void;
+  onDragEnd: () => void;
+  onRemove: (assetId: string) => void;
+  onMove: (sourceAssetId: string, targetAssetId: string) => void;
+  onPreview: (reference: FashionReferenceImage) => void;
+}
+
+// memo 化：上传过程中 pending 卡片状态频繁变化时，已有参考图卡片整体跳过重渲染
+const FashionReferenceCard = memo(function FashionReferenceCard({
+  reference,
+  index,
+  isDragged,
+  isDragOver,
+  previousAssetId,
+  nextAssetId,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  onRemove,
+  onMove,
+  onPreview,
+}: FashionReferenceCardProps) {
+  return (
+    <div
+      role="listitem"
+      draggable
+      onDragStart={(event) => onDragStart(event, reference)}
+      onDragOver={(event) => onDragOver(event, reference.assetId)}
+      onDrop={(event) => onDrop(event, reference.assetId)}
+      onDragEnd={onDragEnd}
+      onClick={() => onPreview(reference)}
+      title={`参考图 ${index + 1}，点击可预览，拖拽可调整模型读取顺序`}
+      className={cn(
+        "group relative aspect-square cursor-grab overflow-hidden rounded-md border border-border bg-background transition-colors active:cursor-grabbing",
+        isDragged && "opacity-45",
+        isDragOver && !isDragged && "border-primary ring-2 ring-primary/40",
+      )}
+    >
+      <img
+        src={getOssThumbnailUrl(reference.preview, 200)}
+        alt={reference.name}
+        draggable={false}
+        className="pointer-events-none h-full w-full select-none object-cover"
+      />
+      <span className="absolute left-1.5 top-1.5 max-w-[72px] truncate rounded bg-background/85 px-1.5 py-0.5 text-[10px] text-foreground">
+        {reference.source === "model" ? "模特" : "参考"}
+      </span>
+      <span
+        className="absolute bottom-1.5 left-1.5 flex h-6 min-w-6 items-center justify-center rounded-full border border-white/70 bg-black/75 px-1.5 text-xs font-semibold text-white shadow"
+        aria-label={`模型读取序号 ${index + 1}`}
+      >
+        {index + 1}
+      </span>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onRemove(reference.assetId);
+        }}
+        className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background/90 opacity-0 transition-opacity hover:bg-destructive hover:text-destructive-foreground group-hover:opacity-100 max-md:opacity-100"
+        aria-label="移除参考图"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+      {/* 触屏无法拖拽排序：移动端用「前移/后移」按钮替代（仅 <md 显示） */}
+      {(previousAssetId || nextAssetId) && (
+        <div className="absolute bottom-1.5 right-1.5 flex gap-1 md:hidden">
+          {previousAssetId && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onMove(reference.assetId, previousAssetId);
+              }}
+              className="flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background/90 transition-colors hover:bg-muted"
+              aria-label="前移参考图"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {nextAssetId && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onMove(reference.assetId, nextAssetId);
+              }}
+              className="flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background/90 transition-colors hover:bg-muted"
+              aria-label="后移参考图"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
 function FashionReferenceUploader({
   references,
   helperText,
@@ -1389,24 +1560,36 @@ function FashionReferenceUploader({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const externalDragDepthRef = useRef(0);
-  const isUploadingRef = useRef(false);
+  const isDrainingUploadsRef = useRef(false);
   const draggedReferenceAssetIdRef = useRef<string | null>(null);
-  const pendingFilesRef = useRef<File[]>([]);
-  const pendingMessagesRef = useRef<string[]>([]);
+  // 上传中的本地图片：以 ref 为处理队列的唯一事实来源，state 仅用于渲染
+  const pendingUploadsRef = useRef<PendingReferenceUpload[]>([]);
   const referencesRef = useRef(references);
-  const [isUploading, setIsUploading] = useState(false);
+  // 本地展示顺序：松手后立刻换位，避免等 Workbench/RightPanel 整树重渲染才有反馈
+  const [displayReferences, setDisplayReferences] = useState(references);
+  const [pendingUploads, setPendingUploads] = useState<PendingReferenceUpload[]>([]);
   const [uploadError, setUploadError] = useState("");
   const [isExternalDragging, setIsExternalDragging] = useState(false);
   const [draggedReferenceAssetId, setDraggedReferenceAssetId] = useState<string | null>(null);
   const [dragOverReferenceAssetId, setDragOverReferenceAssetId] = useState<string | null>(null);
-  const canAddMore = references.length < 10;
+  const [previewReference, setPreviewReference] = useState<FashionReferenceImage | null>(null);
+  // 拖拽刚结束时浏览器可能在源元素上补发一次 click，用它挡掉，避免拖完排序误开预览
+  const suppressNextClickRef = useRef(false);
+  // 上传中的图片也计入数量：drop 后计数立即更新
+  const totalImageCount = displayReferences.length + pendingUploads.length;
+  const canAddMore = totalImageCount < 10;
 
   useEffect(() => {
     referencesRef.current = references;
+    // 拖拽过程中不拿父级顺序覆盖本地乐观顺序
+    if (draggedReferenceAssetIdRef.current !== null) return;
+    setDisplayReferences((current) =>
+      sameFashionReferenceOrder(current, references) ? current : references,
+    );
   }, [references]);
 
-  // 兜底复位：无论拖拽以何种方式结束（放置/取消/拖出窗口），都复位遮罩状态，
-  // 避免 dragenter/dragleave 计数在非常规路径下失配导致「松开以上传」遮罩卡死
+  // 兜底复位：无论拖拽以何种方式结束（放置/取消/拖出窗口），都复位高亮状态，
+  // 避免 dragenter/dragleave 计数在非常规路径下失配导致拖入高亮卡死
   useEffect(() => {
     const resetExternalDrag = () => {
       externalDragDepthRef.current = 0;
@@ -1425,66 +1608,86 @@ function FashionReferenceUploader({
     };
   }, []);
 
-  const drainUploadQueue = async () => {
-    isUploadingRef.current = true;
-    setIsUploading(true);
+  // 卸载时回收仍未完成的本地 blob 缩略图，避免内存泄漏
+  useEffect(() => {
+    return () => {
+      for (const pending of pendingUploadsRef.current) {
+        URL.revokeObjectURL(pending.preview);
+      }
+      pendingUploadsRef.current = [];
+    };
+  }, []);
 
-    const failedFiles: string[] = [];
-    let skippedOverLimit = 0;
+  const updatePendingUploads = (
+    updater: (current: PendingReferenceUpload[]) => PendingReferenceUpload[],
+  ) => {
+    const next = updater(pendingUploadsRef.current);
+    pendingUploadsRef.current = next;
+    setPendingUploads(next);
+  };
 
+  const uploadPendingEntry = async (entry: PendingReferenceUpload) => {
     try {
-      while (pendingFilesRef.current.length > 0) {
-        const file = pendingFilesRef.current.shift();
-        if (!file) break;
+      const formData = new FormData();
+      formData.append("file", entry.file);
 
-        if (referencesRef.current.length >= 10) {
-          skippedOverLimit += 1 + pendingFilesRef.current.length;
-          pendingFilesRef.current = [];
-          break;
-        }
+      const response = await fetch("/api/assets/upload", {
+        method: "POST",
+        body: formData,
+      });
 
-        try {
-          const formData = new FormData();
-          formData.append("file", file);
+      const data = await readJsonResponse<{
+        assetId: string;
+        url: string;
+        fileName: string;
+        width: number;
+        height: number;
+      }>(response, "上传失败");
 
-          const response = await fetch("/api/assets/upload", {
-            method: "POST",
-            body: formData,
-          });
+      // 成功：撤掉 pending 卡片并回收本地 blob，用服务器返回的 URL 作为正式缩略图
+      updatePendingUploads((current) =>
+        current.filter((item) => item.tempId !== entry.tempId),
+      );
+      URL.revokeObjectURL(entry.preview);
 
-          const data = await readJsonResponse<{
-            assetId: string;
-            fileName: string;
-            width: number;
-            height: number;
-          }>(response, "上传失败");
+      onAddUploadReference({
+        assetId: data.assetId,
+        preview: data.url,
+        name: data.fileName,
+        width: data.width,
+        height: data.height,
+      });
+    } catch (error) {
+      // 失败只标记对应卡片的失败/重试状态，不刷新整个参考图列表
+      updatePendingUploads((current) =>
+        current.map((item) =>
+          item.tempId === entry.tempId
+            ? {
+                ...item,
+                status: "error",
+                error: error instanceof Error ? error.message : "上传失败",
+              }
+            : item,
+        ),
+      );
+    }
+  };
 
-          onAddUploadReference({
-            assetId: data.assetId,
-            preview: URL.createObjectURL(file),
-            name: data.fileName,
-            width: data.width,
-            height: data.height,
-          });
-        } catch (error) {
-          failedFiles.push(
-            `${file.name}：${error instanceof Error ? error.message : "上传失败"}`,
-          );
-        }
+  // 顺序上传，保证正式参考图的顺序与拖入顺序一致（序号即模型读取顺序）。
+  // 队列持续运行：上传中再拖入/重试的图片会被自动接续处理
+  const drainPendingUploads = async () => {
+    if (isDrainingUploadsRef.current) return;
+    isDrainingUploadsRef.current = true;
+    try {
+      for (;;) {
+        const next = pendingUploadsRef.current.find(
+          (item) => item.status === "uploading",
+        );
+        if (!next) break;
+        await uploadPendingEntry(next);
       }
     } finally {
-      isUploadingRef.current = false;
-      setIsUploading(false);
-
-      const messages = [...pendingMessagesRef.current];
-      pendingMessagesRef.current = [];
-      if (skippedOverLimit > 0) {
-        messages.push("参考图最多上传10张，已自动忽略超出图片");
-      }
-      if (failedFiles.length > 0) {
-        messages.push(`上传失败：${failedFiles.join("；")}`);
-      }
-      setUploadError(messages.join("；"));
+      isDrainingUploadsRef.current = false;
     }
   };
 
@@ -1493,18 +1696,53 @@ function FashionReferenceUploader({
 
     const imageFiles = files.filter((file) => file.type.startsWith("image/"));
     const invalidFileCount = files.length - imageFiles.length;
+
+    const availableSlots =
+      10 - referencesRef.current.length - pendingUploadsRef.current.length;
+    const acceptedFiles =
+      availableSlots > 0 ? imageFiles.slice(0, availableSlots) : [];
+
+    const messages: string[] = [];
     if (invalidFileCount > 0) {
-      pendingMessagesRef.current.push(`已忽略 ${invalidFileCount} 个非图片文件`);
+      messages.push(`已忽略 ${invalidFileCount} 个非图片文件`);
     }
-
-    // 上传进行中时新拖入/选择的图片进入队列，当前批次完成后自动接续上传
-    pendingFilesRef.current.push(...imageFiles);
-    if (isUploadingRef.current) return;
-    if (!pendingFilesRef.current.length && !pendingMessagesRef.current.length) {
-      return;
+    if (availableSlots <= 0 && imageFiles.length > 0) {
+      messages.push("参考图最多上传10张");
+    } else if (imageFiles.length > acceptedFiles.length) {
+      messages.push("参考图最多上传10张，已自动忽略超出图片");
     }
+    setUploadError(messages.join("；"));
 
-    void drainUploadQueue();
+    if (!acceptedFiles.length) return;
+
+    // drop/选择后立刻创建本地 blob 缩略图卡片，不等服务器响应
+    const entries: PendingReferenceUpload[] = acceptedFiles.map((file) => ({
+      tempId: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
+      preview: URL.createObjectURL(file),
+      name: file.name,
+      status: "uploading",
+    }));
+    updatePendingUploads((current) => [...current, ...entries]);
+    void drainPendingUploads();
+  };
+
+  const retryPendingUpload = (entry: PendingReferenceUpload) => {
+    updatePendingUploads((current) =>
+      current.map((item) =>
+        item.tempId === entry.tempId
+          ? { ...item, status: "uploading", error: undefined }
+          : item,
+      ),
+    );
+    void drainPendingUploads();
+  };
+
+  const discardPendingUpload = (entry: PendingReferenceUpload) => {
+    updatePendingUploads((current) =>
+      current.filter((item) => item.tempId !== entry.tempId),
+    );
+    URL.revokeObjectURL(entry.preview);
   };
 
   const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1553,55 +1791,119 @@ function FashionReferenceUploader({
     uploadFiles(Array.from(event.dataTransfer.files));
   };
 
-  const resetReferenceDrag = () => {
+  const resetReferenceDrag = useCallback(() => {
     draggedReferenceAssetIdRef.current = null;
     setDraggedReferenceAssetId(null);
     setDragOverReferenceAssetId(null);
-  };
+    // 同一事件循环内到达的 click 视为拖拽尾巴，之后恢复
+    suppressNextClickRef.current = true;
+    window.setTimeout(() => {
+      suppressNextClickRef.current = false;
+    }, 0);
+  }, []);
 
-  const handleReferenceDragStart = (
-    event: React.DragEvent<HTMLDivElement>,
-    reference: FashionReferenceImage,
-  ) => {
-    draggedReferenceAssetIdRef.current = reference.assetId;
-    setDraggedReferenceAssetId(reference.assetId);
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", reference.assetId);
-  };
+  const handleReferencePreview = useCallback(
+    (reference: FashionReferenceImage) => {
+      if (suppressNextClickRef.current) return;
+      setPreviewReference(reference);
+    },
+    [],
+  );
 
-  const handleReferenceDragOver = (
-    event: React.DragEvent<HTMLDivElement>,
-    targetAssetId: string,
-  ) => {
-    if (draggedReferenceAssetIdRef.current === null) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = "move";
-    setDragOverReferenceAssetId(targetAssetId);
-  };
+  const handleReferenceDragStart = useCallback(
+    (event: React.DragEvent<HTMLDivElement>, reference: FashionReferenceImage) => {
+      draggedReferenceAssetIdRef.current = reference.assetId;
+      setDraggedReferenceAssetId(reference.assetId);
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", reference.assetId);
 
-  const handleReferenceDrop = (
-    event: React.DragEvent<HTMLDivElement>,
-    targetAssetId: string,
-  ) => {
-    const sourceAssetId = draggedReferenceAssetIdRef.current;
-    if (sourceAssetId === null) return;
-    event.preventDefault();
-    event.stopPropagation();
+      // 用轻量幽灵图，避免浏览器拖拽时合成整张原图导致主线程卡顿
+      const target = event.currentTarget;
+      const previewImage = target.querySelector("img");
+      if (previewImage instanceof HTMLImageElement && previewImage.naturalWidth > 0) {
+        const ghost = document.createElement("canvas");
+        const size = 72;
+        ghost.width = size;
+        ghost.height = size;
+        ghost.style.position = "fixed";
+        ghost.style.top = "-9999px";
+        ghost.style.left = "-9999px";
+        const ctx = ghost.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(previewImage, 0, 0, size, size);
+          document.body.appendChild(ghost);
+          event.dataTransfer.setDragImage(ghost, size / 2, size / 2);
+          window.setTimeout(() => {
+            ghost.remove();
+          }, 0);
+        }
+      }
+    },
+    [],
+  );
 
-    if (sourceAssetId !== targetAssetId) {
-      onReorderReferences(sourceAssetId, targetAssetId);
-    }
+  const handleReferenceDragOver = useCallback(
+    (event: React.DragEvent<HTMLDivElement>, targetAssetId: string) => {
+      if (draggedReferenceAssetIdRef.current === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      // 目标未变时不 setState，减少 dragOver 高频重渲染
+      setDragOverReferenceAssetId((current) =>
+        current === targetAssetId ? current : targetAssetId,
+      );
+    },
+    [],
+  );
 
-    resetReferenceDrag();
-  };
+  const handleReferenceDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>, targetAssetId: string) => {
+      const sourceAssetId = draggedReferenceAssetIdRef.current;
+      if (sourceAssetId === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      // 先清本地拖拽态，让浏览器尽快结束 DnD 会话并恢复默认光标
+      resetReferenceDrag();
+
+      if (sourceAssetId === targetAssetId) return;
+
+      // 本地立刻换序：用户松手就能看到序号/位置变化，不必等父树重渲染
+      setDisplayReferences((current) =>
+        reorderFashionReferenceList(current, sourceAssetId, targetAssetId),
+      );
+
+      // 延后同步 Workbench，避免在 drop 同步阶段触发 Left+Right 整树重绘堵住主线程
+      // （否则会出现：手套光标一直挂着，直到顺序终于刷出来才消失）
+      window.setTimeout(() => {
+        onReorderReferences(sourceAssetId, targetAssetId);
+      }, 0);
+    },
+    [onReorderReferences, resetReferenceDrag],
+  );
+
+  // 触屏无 DnD：移动端「前移/后移」按钮与相邻项交换，复用同一套本地乐观换序 + 延后同步
+  const handleReferenceMove = useCallback(
+    (sourceAssetId: string, targetAssetId: string) => {
+      if (sourceAssetId === targetAssetId) return;
+
+      setDisplayReferences((current) =>
+        reorderFashionReferenceList(current, sourceAssetId, targetAssetId),
+      );
+
+      window.setTimeout(() => {
+        onReorderReferences(sourceAssetId, targetAssetId);
+      }, 0);
+    },
+    [onReorderReferences],
+  );
 
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <RequiredLabel label="参考图（最多支持10张参考图）" />
         <span className="shrink-0 text-xs text-muted-foreground">
-          {references.length}/10
+          {totalImageCount}/10
         </span>
       </div>
       <p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -1613,52 +1915,85 @@ function FashionReferenceUploader({
         onDragLeave={handleExternalDragLeave}
         onDrop={handleExternalDrop}
         className={cn(
-          "relative max-h-[276px] overflow-y-auto rounded-lg border border-transparent p-1 pr-1 transition-colors",
-          isExternalDragging && "border-primary bg-primary/10 ring-2 ring-primary/20",
+          "max-h-[276px] overflow-y-auto rounded-lg border border-transparent p-1 pr-1 transition-colors",
+          isExternalDragging && "border-primary bg-primary/5 ring-2 ring-primary/20",
         )}
       >
         <div className="grid grid-cols-4 gap-2" role="list" aria-label="服装大片参考图顺序">
-          {references.map((reference, index) => (
-            <div
+          {displayReferences.map((reference, index) => (
+            <FashionReferenceCard
               key={reference.assetId}
-              role="listitem"
-              draggable={!isUploading}
-              onDragStart={(event) => handleReferenceDragStart(event, reference)}
-              onDragOver={(event) => handleReferenceDragOver(event, reference.assetId)}
-              onDrop={(event) => handleReferenceDrop(event, reference.assetId)}
+              reference={reference}
+              index={index}
+              isDragged={draggedReferenceAssetId === reference.assetId}
+              isDragOver={dragOverReferenceAssetId === reference.assetId}
+              previousAssetId={
+                index > 0 ? displayReferences[index - 1].assetId : null
+              }
+              nextAssetId={
+                index < displayReferences.length - 1
+                  ? displayReferences[index + 1].assetId
+                  : null
+              }
+              onDragStart={handleReferenceDragStart}
+              onDragOver={handleReferenceDragOver}
+              onDrop={handleReferenceDrop}
               onDragEnd={resetReferenceDrag}
-              title={`参考图 ${index + 1}，拖拽可调整模型读取顺序`}
+              onRemove={onRemoveReference}
+              onMove={handleReferenceMove}
+              onPreview={handleReferencePreview}
+            />
+          ))}
+
+          {pendingUploads.map((pending) => (
+            <div
+              key={pending.tempId}
+              title={
+                pending.status === "error"
+                  ? pending.error ?? "上传失败"
+                  : `${pending.name}，上传中`
+              }
               className={cn(
-                "group relative aspect-square cursor-grab overflow-hidden rounded-md border border-border bg-background transition-all active:cursor-grabbing",
-                draggedReferenceAssetId === reference.assetId && "scale-95 opacity-45",
-                dragOverReferenceAssetId === reference.assetId &&
-                  draggedReferenceAssetId !== reference.assetId &&
-                  "border-primary ring-2 ring-primary/40",
+                "relative aspect-square overflow-hidden rounded-md border bg-background",
+                pending.status === "error" ? "border-destructive" : "border-border",
               )}
             >
               <img
-                src={reference.preview}
-                alt={reference.name}
+                src={pending.preview}
+                alt={pending.name}
                 draggable={false}
                 className="pointer-events-none h-full w-full select-none object-cover"
               />
               <span className="absolute left-1.5 top-1.5 max-w-[72px] truncate rounded bg-background/85 px-1.5 py-0.5 text-[10px] text-foreground">
-                {reference.source === "model" ? "模特" : "参考"}
+                参考
               </span>
-              <span
-                className="absolute bottom-1.5 left-1.5 flex h-6 min-w-6 items-center justify-center rounded-full border border-white/70 bg-black/75 px-1.5 text-xs font-semibold text-white shadow"
-                aria-label={`模型读取序号 ${index + 1}`}
-              >
-                {index + 1}
-              </span>
-              <button
-                type="button"
-                onClick={() => onRemoveReference(reference.assetId)}
-                className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background/90 opacity-0 transition-opacity hover:bg-destructive hover:text-destructive-foreground group-hover:opacity-100"
-                aria-label="移除参考图"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
+              {pending.status === "uploading" ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-background/60">
+                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                  <span className="text-[10px] text-muted-foreground">上传中</span>
+                </div>
+              ) : (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-destructive/80 p-1.5">
+                  <span className="text-[10px] font-medium text-destructive-foreground">
+                    上传失败
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => retryPendingUpload(pending)}
+                    className="rounded bg-background/90 px-2 py-0.5 text-[10px] font-medium text-foreground transition-colors hover:bg-background"
+                  >
+                    重试
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => discardPendingUpload(pending)}
+                    className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background/90 transition-colors hover:bg-destructive hover:text-destructive-foreground"
+                    aria-label="移除上传失败的图片"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
             </div>
           ))}
 
@@ -1666,25 +2001,15 @@ function FashionReferenceUploader({
             <button
               type="button"
               onClick={() => inputRef.current?.click()}
-              disabled={isUploading}
-              className="aspect-square rounded-md border border-dashed border-border bg-secondary px-3 text-center transition-colors hover:border-primary/60 hover:bg-primary/5 disabled:cursor-wait disabled:opacity-70"
+              className="aspect-square rounded-md border border-dashed border-border bg-secondary px-3 text-center transition-colors hover:border-primary/60 hover:bg-primary/5"
             >
               <span className="flex h-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
-                {isUploading ? (
-                  <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                ) : (
-                  <Upload className="h-5 w-5" />
-                )}
-                <span>{isUploading ? "上传中..." : helperText}</span>
+                <Upload className="h-5 w-5" />
+                <span>{helperText}</span>
               </span>
             </button>
           )}
         </div>
-        {isExternalDragging && (
-          <div className="pointer-events-none absolute inset-1 z-20 flex items-center justify-center rounded-md bg-background/90 text-center text-sm font-medium text-primary backdrop-blur-sm">
-            {canAddMore ? "松开以上传图片" : "参考图已达 10 张上限"}
-          </div>
-        )}
       </div>
       {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
       <input
@@ -1695,6 +2020,30 @@ function FashionReferenceUploader({
         className="hidden"
         onChange={handleUpload}
       />
+      <Dialog
+        open={previewReference !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewReference(null);
+        }}
+      >
+        <DialogContent
+          className="inset-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 items-center justify-center overflow-hidden border-0 bg-transparent p-0 shadow-none sm:max-w-none"
+          aria-describedby={undefined}
+          onClick={() => setPreviewReference(null)}
+        >
+          <DialogTitle className="sr-only">
+            {previewReference ? `预览${previewReference.name}` : "参考图预览"}
+          </DialogTitle>
+          {previewReference && (
+            <img
+              src={previewReference.preview}
+              alt={previewReference.name}
+              className="max-h-[88dvh] w-auto max-w-[calc(100vw-2rem)] rounded-lg object-contain sm:max-w-[88vw]"
+              onClick={(event) => event.stopPropagation()}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -2160,7 +2509,7 @@ function PhotoFissionForm({
               <img
                 src={faceMaskImage.preview}
                 alt=""
-                className="h-12 w-12 rounded-md border border-border bg-white object-cover"
+                className="h-12 w-12 rounded-md border border-border bg-card object-cover"
               />
             )}
           </div>
@@ -2432,7 +2781,7 @@ function FaceIdModelSelect({
             <img
               src={selectedModel.preview}
               alt={selectedModel.name}
-              className="w-12 h-12 rounded-md object-cover bg-white"
+              className="w-12 h-12 rounded-md object-cover bg-card"
             />
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between">
@@ -2463,7 +2812,7 @@ function FaceIdModelSelect({
                 type="button"
                 onClick={() => onSelectModel(isActive ? null : model)}
                 className={cn(
-                  'relative w-11 h-11 rounded-md overflow-hidden border bg-white',
+                  'relative w-11 h-11 rounded-md overflow-hidden border bg-card',
                   isActive ? 'border-primary' : 'border-border',
                 )}
               >

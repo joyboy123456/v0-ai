@@ -13,6 +13,7 @@ import {
   LAOZHANG_ACCENT,
   GRSAI_ACCENT,
   type BillingRange,
+  type BillingHourlyResponse,
   type CallLogEntry,
   type ChannelBalanceResult,
   type GrsaiEventsResponse,
@@ -24,11 +25,19 @@ import {
 } from "./shared";
 import { KpiCards } from "./kpi-cards";
 import { BalanceCards } from "./balance-cards";
-import { SpendChart, type SpendDayPoint } from "./spend-chart";
+import { SpendChart, type SpendDayPoint, type SpendHourPoint } from "./spend-chart";
 import { CallLogTable } from "./call-log-table";
 import { ModelSummary } from "./model-summary";
 
 const SPRING = { type: "spring" as const, stiffness: 260, damping: 30 };
+
+/** 本地时区日期字符串 YYYY-MM-DD（与服务端按天/按小时聚合同口径）。 */
+function getLocalDateString(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 export function BillingPage() {
   const router = useRouter();
@@ -61,6 +70,9 @@ export function BillingPage() {
   const [laozhangLogsHasMore, setLaozhangLogsHasMore] = useState(false);
   const [grsaiEvents, setGrsaiEvents] = useState<CallLogEntry[]>([]);
   const [grsaiEventsLoading, setGrsaiEventsLoading] = useState(false);
+  // 下钻当天的逐小时分布（图表用）
+  const [hourlyPoints, setHourlyPoints] = useState<SpendHourPoint[] | null>(null);
+  const [hourlyLoading, setHourlyLoading] = useState(false);
 
   // ---- 登录守卫 ----
 
@@ -142,9 +154,25 @@ export function BillingPage() {
       setSelectedDate(null);
       setLaozhangLogs([]);
       setGrsaiEvents([]);
+      setHourlyPoints(null);
       return;
     }
     setSelectedDate(date);
+
+    // 逐小时分布（图表）
+    setHourlyPoints(null);
+    setHourlyLoading(true);
+    fetch(`/api/billing/hourly?date=${date}`, { cache: "no-store" })
+      .then((res) => res.json())
+      .then((body: BillingHourlyResponse) => {
+        if (body.ok) {
+          setHourlyPoints(body.hours);
+        }
+      })
+      .catch(() => {
+        // 静默：小时图失败不阻塞明细表
+      })
+      .finally(() => setHourlyLoading(false));
 
     // 老张日志第 1 页
     setLaozhangLogs([]);
@@ -251,12 +279,18 @@ export function BillingPage() {
     fetchRangeData(range);
   }, [user, range, refreshKey, fetchBalance, fetchRangeData]);
 
-  // 切换范围时清除下钻
+  // 切换范围时重置下钻；「今日」直接下钻到今天展示逐小时分布
+  // （单天在按天图里只有一根柱子，看不出当天明细）
   useEffect(() => {
+    if (range === "today") {
+      void fetchDrillDown(getLocalDateString(new Date()));
+      return;
+    }
     setSelectedDate(null);
     setLaozhangLogs([]);
     setGrsaiEvents([]);
-  }, [range]);
+    setHourlyPoints(null);
+  }, [range, fetchDrillDown]);
 
   // ---- 派生数据 ----
 
@@ -384,7 +418,7 @@ export function BillingPage() {
         {/* 实时余额 */}
         <BalanceCards channels={balanceChannels} loading={balanceLoading} />
 
-        {/* 合并按天图表 */}
+        {/* 合并按天图表（选中某天后切换为当日逐小时分布） */}
         <SpendChart
           days={mergedDays}
           laozhangTotal={laozhangData?.totalUsd ?? null}
@@ -392,6 +426,8 @@ export function BillingPage() {
           selectedDate={selectedDate}
           onSelectDate={(date) => void fetchDrillDown(date)}
           isLoading={initialLoading}
+          hours={hourlyPoints}
+          hoursLoading={hourlyLoading}
         />
 
         {/* 下钻明细表 */}

@@ -161,6 +161,25 @@ export interface GrsaiEventsResponse {
   error?: string;
 }
 
+/** 某天逐小时花费（双渠道合并，下钻图表用）。 */
+export interface BillingHourlyResponse {
+  ok: boolean;
+  date: string;
+  hours: Array<{
+    /** 0-23（服务器本地时区，与按天聚合同口径） */
+    hour: number;
+    laozhang: number;
+    grsai: number;
+    total: number;
+    calls: number;
+  }>;
+  /** 老张日志翻页触达上限，聚合可能不完整 */
+  truncated?: boolean;
+  laozhangError?: string;
+  grsaiError?: string;
+  error?: string;
+}
+
 /** 老张渠道余额数据。 */
 export interface LaozhangChannelData {
   channel: "laozhang";

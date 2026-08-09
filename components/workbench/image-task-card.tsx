@@ -112,7 +112,7 @@ function ImageSlotCard({
               duration: 0.22,
               delay: 0.12,
             }}
-            className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 bg-gradient-to-t from-black/70 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100"
+            className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 bg-gradient-to-t from-black/70 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100"
           >
             <button
               type="button"
