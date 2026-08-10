@@ -4,10 +4,14 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Check,
-  ChevronLeft,
-  ChevronRight,
+  Eye,
+  Grip,
   Loader2,
+  Pencil,
+  Pin,
+  PinOff,
   Sparkles,
+  Trash2,
   Upload,
   X,
   Zap,
@@ -19,6 +23,11 @@ import {
   UploadBox,
 } from "./upload-components";
 import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
+import {
+  ImageEditorDialog,
+  type CutoutAsset,
+} from "./image-editor-dialog";
+import { reorderUnpinnedFashionReferences } from "./fashion-reference-order";
 import {
   cn,
   getOssThumbnailUrl,
@@ -120,8 +129,12 @@ interface LeftPanelProps {
   onChangeSelectedPoses: (poses: SavedPose[]) => void;
   onChangeSelectedFaceIdModel?: (model: CompanyModel | null) => void;
   onAddFashionReference: (reference: FashionReferenceImage) => void;
+  onReplaceFashionReference: (
+    sourceAssetId: string,
+    reference: FashionReferenceImage,
+  ) => void;
   onRemoveFashionReference: (assetId: string) => void;
-  onReorderFashionReferences: (sourceAssetId: string, targetAssetId: string) => void;
+  onReorderFashionReferences: (orderedAssetIds: string[]) => void;
   onOpenCompanyModelLibrary: () => void;
   onOpenFaceIdLibrary?: () => void;
   onAddPose: (pose: SavedPose) => void;
@@ -149,6 +162,7 @@ export function LeftPanel({
   onChangeSelectedPoses,
   onChangeSelectedFaceIdModel = () => {},
   onAddFashionReference,
+  onReplaceFashionReference,
   onRemoveFashionReference,
   onReorderFashionReferences,
   onOpenCompanyModelLibrary,
@@ -800,6 +814,7 @@ export function LeftPanel({
                   });
                 }}
                 onRemoveReference={onRemoveFashionReference}
+                onReplaceReference={onReplaceFashionReference}
                 onReorderReferences={onReorderFashionReferences}
                 onPromptChange={setFashionPrompt}
                 onPromptModeChange={setFashionPromptMode}
@@ -1179,6 +1194,7 @@ function AiFashionPhotoForm({
   onAddUploadReference,
   onAddModelReference,
   onRemoveReference,
+  onReplaceReference,
   onReorderReferences,
   onPromptChange,
   onPromptModeChange,
@@ -1198,7 +1214,11 @@ function AiFashionPhotoForm({
   onAddUploadReference: (image: UploadedImage) => void;
   onAddModelReference: (model: CompanyModel) => void;
   onRemoveReference: (assetId: string) => void;
-  onReorderReferences: (sourceAssetId: string, targetAssetId: string) => void;
+  onReplaceReference: (
+    sourceAssetId: string,
+    reference: FashionReferenceImage,
+  ) => void;
+  onReorderReferences: (orderedAssetIds: string[]) => void;
   onPromptChange: (value: string) => void;
   onPromptModeChange: (value: FashionPromptMode) => void;
   onModelChange: (value: FashionModelId) => void;
@@ -1235,6 +1255,7 @@ function AiFashionPhotoForm({
           helperText={helperText}
           onAddUploadReference={onAddUploadReference}
           onRemoveReference={onRemoveReference}
+          onReplaceReference={onReplaceReference}
           onReorderReferences={onReorderReferences}
         />
 
@@ -1387,23 +1408,6 @@ function CompanyModelStrip({
   );
 }
 
-function reorderFashionReferenceList(
-  list: FashionReferenceImage[],
-  sourceAssetId: string,
-  targetAssetId: string,
-): FashionReferenceImage[] {
-  const sourceIndex = list.findIndex((item) => item.assetId === sourceAssetId);
-  const targetIndex = list.findIndex((item) => item.assetId === targetAssetId);
-  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
-    return list;
-  }
-
-  const next = list.slice();
-  const [moved] = next.splice(sourceIndex, 1);
-  next.splice(targetIndex, 0, moved);
-  return next;
-}
-
 function sameFashionReferenceOrder(
   left: FashionReferenceImage[],
   right: FashionReferenceImage[],
@@ -1435,20 +1439,25 @@ interface PendingReferenceUpload {
 interface FashionReferenceCardProps {
   reference: FashionReferenceImage;
   index: number;
+  isPinned: boolean;
   isDragged: boolean;
   isDragOver: boolean;
-  /** 移动端「前移/后移」按钮的邻居，null 表示该方向不可移动 */
-  previousAssetId: string | null;
-  nextAssetId: string | null;
+  previousMovableAssetId: string | null;
+  nextMovableAssetId: string | null;
   onDragStart: (
-    event: React.DragEvent<HTMLDivElement>,
+    event: React.DragEvent<HTMLButtonElement>,
     reference: FashionReferenceImage,
   ) => void;
   onDragOver: (event: React.DragEvent<HTMLDivElement>, targetAssetId: string) => void;
   onDrop: (event: React.DragEvent<HTMLDivElement>, targetAssetId: string) => void;
   onDragEnd: () => void;
+  onPointerDragStart: (reference: FashionReferenceImage) => void;
+  onPointerDragMove: (clientX: number, clientY: number) => void;
+  onPointerDragEnd: (cancelled: boolean) => void;
+  onTogglePin: (assetId: string) => void;
   onRemove: (assetId: string) => void;
   onMove: (sourceAssetId: string, targetAssetId: string) => void;
+  onEdit: (reference: FashionReferenceImage) => void;
   onPreview: (reference: FashionReferenceImage) => void;
 }
 
@@ -1456,30 +1465,118 @@ interface FashionReferenceCardProps {
 const FashionReferenceCard = memo(function FashionReferenceCard({
   reference,
   index,
+  isPinned,
   isDragged,
   isDragOver,
-  previousAssetId,
-  nextAssetId,
+  previousMovableAssetId,
+  nextMovableAssetId,
   onDragStart,
   onDragOver,
   onDrop,
   onDragEnd,
+  onPointerDragStart,
+  onPointerDragMove,
+  onPointerDragEnd,
+  onTogglePin,
   onRemove,
   onMove,
+  onEdit,
   onPreview,
 }: FashionReferenceCardProps) {
+  const pointerPressRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    active: boolean;
+    timerId: number;
+  } | null>(null);
+
+  const clearPointerPress = useCallback(() => {
+    const press = pointerPressRef.current;
+    if (press) window.clearTimeout(press.timerId);
+    pointerPressRef.current = null;
+  }, []);
+
+  useEffect(() => clearPointerPress, [clearPointerPress]);
+
+  const handlePointerDown = (
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    event.stopPropagation();
+    if (isPinned || event.pointerType === "mouse") return;
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const press = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+      timerId: 0,
+    };
+    press.timerId = window.setTimeout(() => {
+      if (pointerPressRef.current !== press) return;
+      press.active = true;
+      onPointerDragStart(reference);
+    }, 320);
+    pointerPressRef.current = press;
+  };
+
+  const handlePointerMove = (
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    const press = pointerPressRef.current;
+    if (!press || press.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+
+    if (!press.active) {
+      const distance = Math.hypot(
+        event.clientX - press.startX,
+        event.clientY - press.startY,
+      );
+      if (distance > 8) clearPointerPress();
+      return;
+    }
+
+    event.preventDefault();
+    onPointerDragMove(event.clientX, event.clientY);
+  };
+
+  const finishPointerDrag = (
+    event: React.PointerEvent<HTMLButtonElement>,
+    cancelled: boolean,
+  ) => {
+    const press = pointerPressRef.current;
+    if (!press || press.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    if (press.active) {
+      event.preventDefault();
+      onPointerDragEnd(cancelled);
+    }
+    clearPointerPress();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const cardActionClass =
+    "absolute z-10 flex h-7 w-7 items-center justify-center rounded-full border border-border bg-background/90 text-foreground shadow-sm transition-colors hover:border-primary/60 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary";
+
   return (
     <div
       role="listitem"
-      draggable
-      onDragStart={(event) => onDragStart(event, reference)}
-      onDragOver={(event) => onDragOver(event, reference.assetId)}
-      onDrop={(event) => onDrop(event, reference.assetId)}
-      onDragEnd={onDragEnd}
-      onClick={() => onPreview(reference)}
-      title={`参考图 ${index + 1}，点击可预览，拖拽可调整模型读取顺序`}
+      data-fashion-reference-id={reference.assetId}
+      onDragOver={(event) => {
+        if (!isPinned) onDragOver(event, reference.assetId);
+      }}
+      onDrop={(event) => {
+        if (!isPinned) onDrop(event, reference.assetId);
+      }}
+      title={`${reference.source === "model" ? "模特" : "参考"}图 ${index + 1}${
+        isPinned ? "，已固定" : ""
+      }`}
       className={cn(
-        "group relative aspect-square cursor-grab overflow-hidden rounded-md border border-border bg-background transition-colors active:cursor-grabbing",
+        "group relative aspect-square overflow-hidden rounded-md border border-border bg-background transition-colors",
+        isPinned && "ring-1 ring-primary/35",
         isDragged && "opacity-45",
         isDragOver && !isDragged && "border-primary ring-2 ring-primary/40",
       )}
@@ -1490,11 +1587,8 @@ const FashionReferenceCard = memo(function FashionReferenceCard({
         draggable={false}
         className="pointer-events-none h-full w-full select-none object-cover"
       />
-      <span className="absolute left-1.5 top-1.5 max-w-[72px] truncate rounded bg-background/85 px-1.5 py-0.5 text-[10px] text-foreground">
-        {reference.source === "model" ? "模特" : "参考"}
-      </span>
       <span
-        className="absolute bottom-1.5 left-1.5 flex h-6 min-w-6 items-center justify-center rounded-full border border-white/70 bg-black/75 px-1.5 text-xs font-semibold text-white shadow"
+        className="pointer-events-none absolute left-1/2 top-1.5 flex h-7 min-w-7 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-background/90 px-1 text-[10px] font-semibold text-foreground shadow-sm"
         aria-label={`模型读取序号 ${index + 1}`}
       >
         {index + 1}
@@ -1503,78 +1597,131 @@ const FashionReferenceCard = memo(function FashionReferenceCard({
         type="button"
         onClick={(event) => {
           event.stopPropagation();
+          onTogglePin(reference.assetId);
+        }}
+        className={cn(cardActionClass, "left-1.5 top-1.5")}
+        aria-label={isPinned ? "取消固定参考图" : "固定参考图"}
+        aria-pressed={isPinned}
+      >
+        {isPinned ? (
+          <PinOff className="h-3.5 w-3.5 text-primary" />
+        ) : (
+          <Pin className="h-3.5 w-3.5" />
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
           onRemove(reference.assetId);
         }}
-        className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background/90 opacity-0 transition-opacity hover:bg-destructive hover:text-destructive-foreground group-hover:opacity-100 max-md:opacity-100"
+        className={cn(
+          cardActionClass,
+          "right-1.5 top-1.5 hover:border-destructive hover:bg-destructive hover:text-destructive-foreground",
+        )}
         aria-label="移除参考图"
       >
-        <X className="h-3.5 w-3.5" />
+        <Trash2 className="h-3.5 w-3.5" />
       </button>
-      {/* 触屏无法拖拽排序：移动端用「前移/后移」按钮替代（仅 <md 显示） */}
-      {(previousAssetId || nextAssetId) && (
-        <div className="absolute bottom-1.5 right-1.5 flex gap-1 md:hidden">
-          {previousAssetId && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onMove(reference.assetId, previousAssetId);
-              }}
-              className="flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background/90 transition-colors hover:bg-muted"
-              aria-label="前移参考图"
-            >
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {nextAssetId && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onMove(reference.assetId, nextAssetId);
-              }}
-              className="flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background/90 transition-colors hover:bg-muted"
-              aria-label="后移参考图"
-            >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-      )}
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onEdit(reference);
+        }}
+        className={cn(cardActionClass, "bottom-1.5 left-1.5")}
+        aria-label="编辑参考图"
+      >
+        <Pencil className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onPreview(reference);
+        }}
+        className={cn(cardActionClass, "bottom-1.5 right-1.5")}
+        aria-label="查看参考图"
+      >
+        <Eye className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        draggable={!isPinned}
+        disabled={isPinned}
+        onDragStart={(event) => onDragStart(event, reference)}
+        onDragEnd={onDragEnd}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={(event) => finishPointerDrag(event, false)}
+        onPointerCancel={(event) => finishPointerDrag(event, true)}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft" && previousMovableAssetId) {
+            event.preventDefault();
+            onMove(reference.assetId, previousMovableAssetId);
+          }
+          if (event.key === "ArrowRight" && nextMovableAssetId) {
+            event.preventDefault();
+            onMove(reference.assetId, nextMovableAssetId);
+          }
+        }}
+        className={cn(
+          "absolute left-1/2 top-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 touch-none items-center justify-center rounded-full border border-border bg-background/90 text-foreground shadow-md transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+          isPinned
+            ? "cursor-not-allowed opacity-60"
+            : "cursor-grab hover:scale-105 hover:border-primary/60 active:cursor-grabbing",
+          isDragged && "scale-110 border-primary bg-primary text-primary-foreground",
+        )}
+        aria-label={
+          isPinned
+            ? `参考图 ${index + 1} 已固定，不能排序`
+            : `长按拖拽参考图 ${index + 1} 调整顺序，方向键可微调`
+        }
+      >
+        <Grip className="h-4 w-4" />
+      </button>
     </div>
   );
 });
-
 function FashionReferenceUploader({
   references,
   helperText,
   onAddUploadReference,
   onRemoveReference,
+  onReplaceReference,
   onReorderReferences,
 }: {
   references: FashionReferenceImage[];
   helperText: string;
   onAddUploadReference: (image: UploadedImage) => void;
   onRemoveReference: (assetId: string) => void;
-  onReorderReferences: (sourceAssetId: string, targetAssetId: string) => void;
+  onReplaceReference: (
+    sourceAssetId: string,
+    reference: FashionReferenceImage,
+  ) => void;
+  onReorderReferences: (orderedAssetIds: string[]) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const externalDragDepthRef = useRef(0);
   const isDrainingUploadsRef = useRef(false);
   const draggedReferenceAssetIdRef = useRef<string | null>(null);
+  const pointerDropTargetAssetIdRef = useRef<string | null>(null);
+  const pinnedAssetIdsRef = useRef<Set<string>>(new Set());
   // 上传中的本地图片：以 ref 为处理队列的唯一事实来源，state 仅用于渲染
   const pendingUploadsRef = useRef<PendingReferenceUpload[]>([]);
   const referencesRef = useRef(references);
   // 本地展示顺序：松手后立刻换位，避免等 Workbench/RightPanel 整树重渲染才有反馈
   const [displayReferences, setDisplayReferences] = useState(references);
+  const displayReferencesRef = useRef(references);
   const [pendingUploads, setPendingUploads] = useState<PendingReferenceUpload[]>([]);
   const [uploadError, setUploadError] = useState("");
   const [isExternalDragging, setIsExternalDragging] = useState(false);
+  const [pinnedAssetIds, setPinnedAssetIds] = useState<Set<string>>(new Set());
   const [draggedReferenceAssetId, setDraggedReferenceAssetId] = useState<string | null>(null);
   const [dragOverReferenceAssetId, setDragOverReferenceAssetId] = useState<string | null>(null);
   const [previewReference, setPreviewReference] = useState<FashionReferenceImage | null>(null);
-  // 拖拽刚结束时浏览器可能在源元素上补发一次 click，用它挡掉，避免拖完排序误开预览
-  const suppressNextClickRef = useRef(false);
+  const [editingReference, setEditingReference] = useState<FashionReferenceImage | null>(null);
   // 上传中的图片也计入数量：drop 后计数立即更新
   const totalImageCount = displayReferences.length + pendingUploads.length;
   const canAddMore = totalImageCount < 10;
@@ -1583,9 +1730,23 @@ function FashionReferenceUploader({
     referencesRef.current = references;
     // 拖拽过程中不拿父级顺序覆盖本地乐观顺序
     if (draggedReferenceAssetIdRef.current !== null) return;
-    setDisplayReferences((current) =>
-      sameFashionReferenceOrder(current, references) ? current : references,
-    );
+    setDisplayReferences((current) => {
+      const next = sameFashionReferenceOrder(current, references)
+        ? current
+        : references;
+      displayReferencesRef.current = next;
+      return next;
+    });
+
+    const validAssetIds = new Set(references.map((reference) => reference.assetId));
+    setPinnedAssetIds((current) => {
+      const next = new Set(
+        Array.from(current).filter((assetId) => validAssetIds.has(assetId)),
+      );
+      if (next.size === current.size) return current;
+      pinnedAssetIdsRef.current = next;
+      return next;
+    });
   }, [references]);
 
   // 兜底复位：无论拖拽以何种方式结束（放置/取消/拖出窗口），都复位高亮状态，
@@ -1793,33 +1954,72 @@ function FashionReferenceUploader({
 
   const resetReferenceDrag = useCallback(() => {
     draggedReferenceAssetIdRef.current = null;
+    pointerDropTargetAssetIdRef.current = null;
     setDraggedReferenceAssetId(null);
     setDragOverReferenceAssetId(null);
-    // 同一事件循环内到达的 click 视为拖拽尾巴，之后恢复
-    suppressNextClickRef.current = true;
-    window.setTimeout(() => {
-      suppressNextClickRef.current = false;
-    }, 0);
   }, []);
 
   const handleReferencePreview = useCallback(
     (reference: FashionReferenceImage) => {
-      if (suppressNextClickRef.current) return;
       setPreviewReference(reference);
     },
     [],
   );
 
+  const commitReferenceReorder = useCallback(
+    (sourceAssetId: string, targetAssetId: string) => {
+      const current = displayReferencesRef.current;
+      const next = reorderUnpinnedFashionReferences(
+        current,
+        sourceAssetId,
+        targetAssetId,
+        pinnedAssetIdsRef.current,
+      );
+      if (next === current) return;
+
+      displayReferencesRef.current = next;
+      setDisplayReferences(next);
+
+      // 延后同步 Workbench，避免在 drop 同步阶段触发 Left+Right 整树重绘。
+      window.setTimeout(() => {
+        onReorderReferences(next.map((reference) => reference.assetId));
+      }, 0);
+    },
+    [onReorderReferences],
+  );
+
+  const handleToggleReferencePin = useCallback(
+    (assetId: string) => {
+      const next = new Set(pinnedAssetIdsRef.current);
+      const willPin = !next.has(assetId);
+      if (willPin) {
+        next.add(assetId);
+        if (draggedReferenceAssetIdRef.current === assetId) {
+          resetReferenceDrag();
+        }
+      } else {
+        next.delete(assetId);
+      }
+      pinnedAssetIdsRef.current = next;
+      setPinnedAssetIds(next);
+    },
+    [resetReferenceDrag],
+  );
   const handleReferenceDragStart = useCallback(
-    (event: React.DragEvent<HTMLDivElement>, reference: FashionReferenceImage) => {
+    (event: React.DragEvent<HTMLButtonElement>, reference: FashionReferenceImage) => {
+      if (pinnedAssetIdsRef.current.has(reference.assetId)) {
+        event.preventDefault();
+        return;
+      }
       draggedReferenceAssetIdRef.current = reference.assetId;
+      pointerDropTargetAssetIdRef.current = null;
       setDraggedReferenceAssetId(reference.assetId);
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", reference.assetId);
 
       // 用轻量幽灵图，避免浏览器拖拽时合成整张原图导致主线程卡顿
-      const target = event.currentTarget;
-      const previewImage = target.querySelector("img");
+      const card = event.currentTarget.closest("[data-fashion-reference-id]");
+      const previewImage = card?.querySelector("img");
       if (previewImage instanceof HTMLImageElement && previewImage.naturalWidth > 0) {
         const ghost = document.createElement("canvas");
         const size = 72;
@@ -1844,7 +2044,12 @@ function FashionReferenceUploader({
 
   const handleReferenceDragOver = useCallback(
     (event: React.DragEvent<HTMLDivElement>, targetAssetId: string) => {
-      if (draggedReferenceAssetIdRef.current === null) return;
+      if (
+        draggedReferenceAssetIdRef.current === null ||
+        pinnedAssetIdsRef.current.has(targetAssetId)
+      ) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       event.dataTransfer.dropEffect = "move";
@@ -1865,37 +2070,124 @@ function FashionReferenceUploader({
 
       // 先清本地拖拽态，让浏览器尽快结束 DnD 会话并恢复默认光标
       resetReferenceDrag();
-
-      if (sourceAssetId === targetAssetId) return;
-
-      // 本地立刻换序：用户松手就能看到序号/位置变化，不必等父树重渲染
-      setDisplayReferences((current) =>
-        reorderFashionReferenceList(current, sourceAssetId, targetAssetId),
-      );
-
-      // 延后同步 Workbench，避免在 drop 同步阶段触发 Left+Right 整树重绘堵住主线程
-      // （否则会出现：手套光标一直挂着，直到顺序终于刷出来才消失）
-      window.setTimeout(() => {
-        onReorderReferences(sourceAssetId, targetAssetId);
-      }, 0);
+      commitReferenceReorder(sourceAssetId, targetAssetId);
     },
-    [onReorderReferences, resetReferenceDrag],
+    [commitReferenceReorder, resetReferenceDrag],
   );
 
-  // 触屏无 DnD：移动端「前移/后移」按钮与相邻项交换，复用同一套本地乐观换序 + 延后同步
   const handleReferenceMove = useCallback(
     (sourceAssetId: string, targetAssetId: string) => {
-      if (sourceAssetId === targetAssetId) return;
-
-      setDisplayReferences((current) =>
-        reorderFashionReferenceList(current, sourceAssetId, targetAssetId),
-      );
-
-      window.setTimeout(() => {
-        onReorderReferences(sourceAssetId, targetAssetId);
-      }, 0);
+      commitReferenceReorder(sourceAssetId, targetAssetId);
     },
-    [onReorderReferences],
+    [commitReferenceReorder],
+  );
+
+  const handlePointerReferenceDragStart = useCallback(
+    (reference: FashionReferenceImage) => {
+      if (pinnedAssetIdsRef.current.has(reference.assetId)) return;
+      draggedReferenceAssetIdRef.current = reference.assetId;
+      pointerDropTargetAssetIdRef.current = null;
+      setDraggedReferenceAssetId(reference.assetId);
+      setDragOverReferenceAssetId(null);
+    },
+    [],
+  );
+
+  const handlePointerReferenceDragMove = useCallback(
+    (clientX: number, clientY: number) => {
+      const sourceAssetId = draggedReferenceAssetIdRef.current;
+      if (!sourceAssetId) return;
+
+      const card = document
+        .elementFromPoint(clientX, clientY)
+        ?.closest<HTMLElement>("[data-fashion-reference-id]");
+      const targetAssetId = card?.dataset.fashionReferenceId ?? null;
+      const validTargetAssetId =
+        targetAssetId &&
+        targetAssetId !== sourceAssetId &&
+        !pinnedAssetIdsRef.current.has(targetAssetId)
+          ? targetAssetId
+          : null;
+
+      pointerDropTargetAssetIdRef.current = validTargetAssetId;
+      setDragOverReferenceAssetId((current) =>
+        current === validTargetAssetId ? current : validTargetAssetId,
+      );
+    },
+    [],
+  );
+
+  const handlePointerReferenceDragEnd = useCallback(
+    (cancelled: boolean) => {
+      const sourceAssetId = draggedReferenceAssetIdRef.current;
+      const targetAssetId = pointerDropTargetAssetIdRef.current;
+      resetReferenceDrag();
+      if (!cancelled && sourceAssetId && targetAssetId) {
+        commitReferenceReorder(sourceAssetId, targetAssetId);
+      }
+    },
+    [commitReferenceReorder, resetReferenceDrag],
+  );
+
+  const handleRemoveReference = useCallback(
+    (assetId: string) => {
+      if (pinnedAssetIdsRef.current.has(assetId)) {
+        const next = new Set(pinnedAssetIdsRef.current);
+        next.delete(assetId);
+        pinnedAssetIdsRef.current = next;
+        setPinnedAssetIds(next);
+      }
+      setPreviewReference((current) =>
+        current?.assetId === assetId ? null : current,
+      );
+      setEditingReference((current) =>
+        current?.assetId === assetId ? null : current,
+      );
+      onRemoveReference(assetId);
+    },
+    [onRemoveReference],
+  );
+
+  const handleApplyEditedReference = useCallback(
+    (asset: CutoutAsset) => {
+      const source = editingReference;
+      if (!source) return;
+
+      const nextReference: FashionReferenceImage = {
+        assetId: asset.assetId,
+        source: "upload",
+        preview: asset.url,
+        name: asset.fileName,
+        width: asset.width,
+        height: asset.height,
+      };
+
+      const nextDisplayReferences = displayReferencesRef.current.map((reference) =>
+        reference.assetId === source.assetId ? nextReference : reference,
+      );
+      displayReferencesRef.current = nextDisplayReferences;
+      setDisplayReferences(nextDisplayReferences);
+
+      if (pinnedAssetIdsRef.current.has(source.assetId)) {
+        const nextPinnedAssetIds = new Set(pinnedAssetIdsRef.current);
+        nextPinnedAssetIds.delete(source.assetId);
+        nextPinnedAssetIds.add(asset.assetId);
+        pinnedAssetIdsRef.current = nextPinnedAssetIds;
+        setPinnedAssetIds(nextPinnedAssetIds);
+      }
+
+      setEditingReference(null);
+      onReplaceReference(source.assetId, nextReference);
+    },
+    [editingReference, onReplaceReference],
+  );
+
+  const movableReferences = useMemo(
+    () =>
+      displayReferences.filter(
+        (reference) => !pinnedAssetIds.has(reference.assetId),
+      ),
+    [displayReferences, pinnedAssetIds],
   );
 
   return (
@@ -1907,7 +2199,7 @@ function FashionReferenceUploader({
         </span>
       </div>
       <p className="text-[11px] leading-relaxed text-muted-foreground">
-        可从本地拖入多张图片；拖拽缩略图可调整顺序，序号即模型读取顺序
+        可从本地拖入多张图片；长按中央手柄调整顺序，固定后保持当前索引
       </p>
       <div
         onDragEnter={handleExternalDragEnter}
@@ -1920,30 +2212,43 @@ function FashionReferenceUploader({
         )}
       >
         <div className="grid grid-cols-4 gap-2" role="list" aria-label="服装大片参考图顺序">
-          {displayReferences.map((reference, index) => (
-            <FashionReferenceCard
-              key={reference.assetId}
-              reference={reference}
-              index={index}
-              isDragged={draggedReferenceAssetId === reference.assetId}
-              isDragOver={dragOverReferenceAssetId === reference.assetId}
-              previousAssetId={
-                index > 0 ? displayReferences[index - 1].assetId : null
-              }
-              nextAssetId={
-                index < displayReferences.length - 1
-                  ? displayReferences[index + 1].assetId
-                  : null
-              }
-              onDragStart={handleReferenceDragStart}
-              onDragOver={handleReferenceDragOver}
-              onDrop={handleReferenceDrop}
-              onDragEnd={resetReferenceDrag}
-              onRemove={onRemoveReference}
-              onMove={handleReferenceMove}
-              onPreview={handleReferencePreview}
-            />
-          ))}
+          {displayReferences.map((reference, index) => {
+            const movableIndex = movableReferences.findIndex(
+              (item) => item.assetId === reference.assetId,
+            );
+            return (
+              <FashionReferenceCard
+                key={reference.assetId}
+                reference={reference}
+                index={index}
+                isPinned={pinnedAssetIds.has(reference.assetId)}
+                isDragged={draggedReferenceAssetId === reference.assetId}
+                isDragOver={dragOverReferenceAssetId === reference.assetId}
+                previousMovableAssetId={
+                  movableIndex > 0
+                    ? movableReferences[movableIndex - 1].assetId
+                    : null
+                }
+                nextMovableAssetId={
+                  movableIndex >= 0 && movableIndex < movableReferences.length - 1
+                    ? movableReferences[movableIndex + 1].assetId
+                    : null
+                }
+                onDragStart={handleReferenceDragStart}
+                onDragOver={handleReferenceDragOver}
+                onDrop={handleReferenceDrop}
+                onDragEnd={resetReferenceDrag}
+                onPointerDragStart={handlePointerReferenceDragStart}
+                onPointerDragMove={handlePointerReferenceDragMove}
+                onPointerDragEnd={handlePointerReferenceDragEnd}
+                onTogglePin={handleToggleReferencePin}
+                onRemove={handleRemoveReference}
+                onMove={handleReferenceMove}
+                onEdit={setEditingReference}
+                onPreview={handleReferencePreview}
+              />
+            );
+          })}
 
           {pendingUploads.map((pending) => (
             <div
@@ -2044,6 +2349,14 @@ function FashionReferenceUploader({
           )}
         </DialogContent>
       </Dialog>
+      <ImageEditorDialog
+        open={editingReference !== null}
+        image={editingReference}
+        onOpenChange={(open) => {
+          if (!open) setEditingReference(null);
+        }}
+        onApply={handleApplyEditedReference}
+      />
     </div>
   );
 }

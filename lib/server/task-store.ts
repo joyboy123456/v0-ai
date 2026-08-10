@@ -198,7 +198,7 @@ async function storeAssetFromDataUrl(
   assetId: string,
   mimeTypeHint: string,
   userId: string,
-): Promise<{ url: string; mime: string }> {
+): Promise<{ url: string; mime: string; bytes: number }> {
   // G-fix: 不再静默返回 null。OSS 上传失败时直接抛错，让上传接口返回 500，
   // 拒绝把 base64 dataUrl 留在 store.json 里（否则 JSON.stringify 内存膨胀 → OOM）。
   const extension = getExtension(mimeTypeHint || 'image/png')
@@ -209,7 +209,24 @@ async function storeAssetFromDataUrl(
     filename,
     dataUrl,
   })
-  return { url: result.publicUrl, mime: result.mime }
+  return { url: result.publicUrl, mime: result.mime, bytes: result.bytes }
+}
+
+async function storeAssetFromBuffer(
+  body: Buffer | Uint8Array,
+  assetId: string,
+  mimeType: string,
+  userId: string,
+): Promise<{ url: string; mime: string; bytes: number }> {
+  const extension = getExtension(mimeType || 'image/png')
+  const result = await storage().putImage({
+    userId: userId === defaultUserId ? null : userId,
+    bucket: 'assets',
+    filename: `${assetId}.${extension}`,
+    body,
+    contentType: mimeType,
+  })
+  return { url: result.publicUrl, mime: mimeType, bytes: result.bytes }
 }
 
 /**
@@ -389,30 +406,57 @@ function extractDataUrlMime(dataUrl: string): string | null {
 }
 
 export async function createAsset(input: {
+  /** 内部派生资产可传稳定 id，以便重复请求安全复用。普通上传不要传。 */
+  assetId?: string
   fileName: string
   fileType: string
   width?: number
   height?: number
   fileUrl?: string
   dataUrl?: string
+  /** 服务端处理结果直接以字节流持久化，避免转 base64 放大内存。 */
+  body?: Buffer | Uint8Array
   /** PR4：归属用户 id。未传或为空时回退到 defaultUserId（local 兼容旧调用点）。 */
   userId?: string
   /** PR4：关联的 taskId（仅 generated 类资产）。upload 类一般不传。 */
   taskId?: string | null
 }) {
   await ensureStoreReady()
-  const assetId = createId('asset')
   const effectiveUserId =
     input.userId && input.userId.trim() ? input.userId : defaultUserId
+  if (input.dataUrl && input.body) {
+    throw new Error('createAsset 不能同时传入 dataUrl 和 body')
+  }
+
+  const assetId = input.assetId?.trim() || createId('asset')
+  if (!/^[A-Za-z0-9_-]+$/.test(assetId)) {
+    throw new Error('createAsset 的 assetId 格式无效')
+  }
+
+  const existingAsset = store.assets.get(assetId)
+  if (existingAsset) {
+    if (existingAsset.userId !== effectiveUserId) {
+      throw new Error('createAsset 的 assetId 已被其他用户占用')
+    }
+    return existingAsset
+  }
+
   // PR3：通过 storage-adapter 写图；local 模式落本地图片目录并返回稳定 URL，
   // cloud 模式落 R2。
   // PR4：把 effectiveUserId 透传给 adapter，cloud 模式下 R2 路径前缀
   // `users/{userId}/assets/...` 实现数据隔离。
   // G-fix：storeAssetFromDataUrl 失败时抛错，由上传接口 catch 返回 500。
   // 不再静默把 base64 留在 store.json（OOM 导火索）。
-  const persistedFile = input.dataUrl
-    ? await storeAssetFromDataUrl(input.dataUrl, assetId, input.fileType, effectiveUserId)
-    : null
+  const persistedFile = input.body
+    ? await storeAssetFromBuffer(input.body, assetId, input.fileType, effectiveUserId)
+    : input.dataUrl
+      ? await storeAssetFromDataUrl(
+          input.dataUrl,
+          assetId,
+          input.fileType,
+          effectiveUserId,
+        )
+      : null
 
   const asset: AssetRecord = {
     assetId,
@@ -433,7 +477,11 @@ export async function createAsset(input: {
   // cloud 模式会写入 D1 assets 表。失败不阻塞主流程，仅记录到 stderr。
   try {
     await taskRepo().insertAsset(
-      buildAssetRow(asset, { kind: 'upload', taskId: input.taskId ?? null }),
+      buildAssetRow(asset, {
+        kind: 'upload',
+        taskId: input.taskId ?? null,
+        bytes: persistedFile?.bytes ?? null,
+      }),
     )
   } catch (error) {
     console.error('[task-store] insertAsset 失败：', error)

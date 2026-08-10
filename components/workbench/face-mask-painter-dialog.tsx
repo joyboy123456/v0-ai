@@ -9,6 +9,10 @@ import {
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import {
+  ImageCanvasViewport,
+  type ImageCanvasLoadStatus,
+} from "./image-canvas-viewport";
 
 type PaintMode = "draw" | "erase" | "pan";
 
@@ -46,7 +50,8 @@ export function FaceMaskPainterDialog({
   const [brushSize, setBrushSize] = useState(42);
   const [mode, setMode] = useState<PaintMode>("draw");
   const [history, setHistory] = useState<string[]>([]);
-  const [imageStatus, setImageStatus] = useState<"loading" | "loaded" | "error">("loading");
+  const [imageStatus, setImageStatus] =
+    useState<ImageCanvasLoadStatus>("loading");
   const [isSpacePressed, setIsSpacePressed] = useState(false);
 
   const safeWidth = Math.max(1, Math.round(imageWidth || 1024));
@@ -399,51 +404,39 @@ export function FaceMaskPainterDialog({
           </div>
         </div>
 
-        <div
-          ref={scrollRef}
-          className="min-h-0 flex-1 overflow-auto bg-secondary/50 p-4"
+        <ImageCanvasViewport
+          scrollRef={scrollRef}
+          imageUrl={imageUrl}
+          imageAlt=""
+          displayWidth={displaySize.width}
+          displayHeight={displaySize.height}
+          imageStatus={imageStatus}
+          onImageStatusChange={setImageStatus}
           onWheel={handleWheel}
+          className="flex-1 bg-secondary/50"
+          loadingMessage="底图加载中..."
+          errorMessage="底图加载失败，请关闭后刷新任务再重试"
         >
-          <div
-            className="relative mx-auto bg-card shadow-sm"
-            style={{ width: displaySize.width, height: displaySize.height }}
-          >
-            <img
-              src={imageUrl}
-              alt=""
-              draggable={false}
-              onLoad={() => setImageStatus("loaded")}
-              onError={() => setImageStatus("error")}
-              className="absolute inset-0 h-full w-full select-none object-contain"
-            />
-            {imageStatus !== "loaded" && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-card/90 px-6 text-center text-sm text-muted-foreground">
-                {imageStatus === "error"
-                  ? "底图加载失败，请关闭后刷新任务再重试"
-                  : "底图加载中..."}
-              </div>
-            )}
-            <canvas
-              ref={canvasRef}
-              width={safeWidth}
-              height={safeHeight}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={stopDrawing}
-              onPointerCancel={stopDrawing}
-              onContextMenu={(e) => e.preventDefault()}
-              className={cn(
-                "absolute inset-0 h-full w-full touch-none",
-                imageStatus !== "loaded"
-                  ? "pointer-events-none"
-                  : isSpacePressed
+          <canvas
+            ref={canvasRef}
+            width={safeWidth}
+            height={safeHeight}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={stopDrawing}
+            onPointerCancel={stopDrawing}
+            onContextMenu={(e) => e.preventDefault()}
+            className={cn(
+              "absolute inset-0 h-full w-full touch-none",
+              imageStatus !== "loaded"
+                ? "pointer-events-none"
+                : isSpacePressed
                   ? "cursor-grab active:cursor-grabbing"
                   : "cursor-crosshair",
-              )}
-              style={{ opacity: 0.72 }}
-            />
-          </div>
-        </div>
+            )}
+            style={{ opacity: 0.72 }}
+          />
+        </ImageCanvasViewport>
       </DialogContent>
     </Dialog>
   );

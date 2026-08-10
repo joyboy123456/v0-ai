@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Upload, X } from "lucide-react";
+import { Eye, Loader2, Pencil, Trash2, Upload, X } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn, readJsonResponse } from "@/lib/utils";
 import type { UploadedImage } from "@/lib/types";
+import { ImageEditorDialog } from "./image-editor-dialog";
 
 interface UploadBoxProps {
   label: string;
@@ -109,6 +111,8 @@ export function UploadBox({
   const [isUploading, setIsUploading] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [error, setError] = useState("");
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
 
   // 兜底复位：拖拽以任何方式结束（放置/取消/拖出窗口）都关闭拖拽高亮，
   // 避免 dragenter/dragleave 计数失配导致「松开以上传」遮罩卡死
@@ -134,6 +138,14 @@ export function UploadBox({
     if (image?.preview.startsWith("blob:")) {
       URL.revokeObjectURL(image.preview);
     }
+  };
+
+  const handleRemoveImage = () => {
+    setIsPreviewOpen(false);
+    setIsEditorOpen(false);
+    setError("");
+    releaseCurrentPreview();
+    onRemove();
   };
 
   const uploadFile = async (file: File) => {
@@ -271,143 +283,122 @@ export function UploadBox({
       </div>
 
       {variant === "compact" ? (
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          className={cn(
-            "group relative w-full min-h-[120px] rounded-xl border border-dashed border-sky-200 bg-card/60",
-            "flex items-center gap-3 overflow-hidden p-3 text-left transition-all duration-300 cursor-pointer",
-            "hover:bg-accent/40 hover:border-sky-400 hover:shadow-soft",
-            image && "border-solid border-sky-300 bg-accent/20 shadow-card",
-            isDragOver && "border-primary bg-primary/5 ring-2 ring-primary/20",
-          )}
-        >
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-2">
-            {isUploading ? (
-              <Loader2 className="w-5 h-5 text-primary animate-spin" />
-            ) : (
-              <div className="w-8 h-8 rounded-md bg-surface-soft border border-border flex items-center justify-center text-muted-foreground transition-all group-hover:text-primary group-hover:bg-primary/10">
-                <Upload className="w-4 h-4" />
-              </div>
+        <div className="group relative">
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className={cn(
+              "relative min-h-[120px] w-full rounded-xl border border-dashed border-border-blue bg-card/60",
+              "flex cursor-pointer items-center gap-3 overflow-hidden p-3 text-left transition-all duration-300",
+              "hover:border-primary/60 hover:bg-accent/40 hover:shadow-soft",
+              image && "border-solid border-primary/30 bg-accent/20 shadow-card",
+              isDragOver && "border-primary bg-primary/5 ring-2 ring-primary/20",
             )}
-            <span className="max-w-[138px] text-center text-[12px] text-muted-foreground transition-colors group-hover:text-foreground">
-              {isUploading ? "上传中..." : helper}
-            </span>
-          </div>
+            aria-label={image ? "更换图片" : `上传${label}`}
+          >
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 px-2">
+              {isUploading ? (
+                <Loader2 className="h-5 w-5 animate-spin text-primary" />
+              ) : (
+                <div className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface-soft text-muted-foreground transition-all group-hover:bg-primary/10 group-hover:text-primary">
+                  <Upload className="h-4 w-4" />
+                </div>
+              )}
+              <span className="max-w-[138px] text-center text-[12px] text-muted-foreground transition-colors group-hover:text-foreground">
+                {isUploading ? "上传中..." : helper}
+              </span>
+            </div>
 
-          <div className="relative h-[96px] w-[72px] shrink-0 overflow-hidden rounded-sm border border-border bg-background transition-colors group-hover:border-muted-foreground">
-            {image ? (
-              <>
+            <div className="relative h-[96px] w-[72px] shrink-0 overflow-hidden rounded-sm border border-border bg-background transition-colors group-hover:border-muted-foreground">
+              {image ? (
                 <img
                   src={image.preview}
                   alt={image.name}
                   className="h-full w-full object-cover"
                 />
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    releaseCurrentPreview();
-                    onRemove();
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      releaseCurrentPreview();
-                      onRemove();
-                    }
-                  }}
-                  className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-destructive"
-                >
-                  <X className="h-3 w-3" />
+              ) : (
+                <div className="flex h-full w-full items-end justify-center bg-secondary p-1">
+                  <span className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    示例
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {isDragOver && (
+              <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-background/90 text-[12px] font-medium text-primary backdrop-blur-sm">
+                松开以上传图片
+              </div>
+            )}
+          </button>
+          {image && !isUploading && (
+            <UploadedImageActions
+              compact
+              onEdit={() => setIsEditorOpen(true)}
+              onPreview={() => setIsPreviewOpen(true)}
+              onRemove={handleRemoveImage}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="group relative">
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className={cn(
+              "relative min-h-[140px] w-full rounded-xl border border-dashed border-border-blue bg-card/60",
+              "flex cursor-pointer flex-col items-center justify-center gap-3 overflow-hidden transition-all duration-300",
+              "hover:border-primary/60 hover:bg-accent/40 hover:shadow-soft",
+              image && "border-solid border-primary/30 bg-accent/20 shadow-card",
+              isDragOver && "border-primary bg-primary/5 ring-2 ring-primary/20",
+            )}
+            aria-label={image ? "更换图片" : `上传${label}`}
+          >
+            {image ? (
+              <>
+                <img
+                  src={image.preview}
+                  alt={image.name}
+                  className="absolute inset-0 h-full w-full object-contain p-2"
+                />
+                <span className="absolute left-2 top-2 max-w-[70%] truncate rounded border border-border bg-background/90 px-2 py-1 text-[11px] text-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100 max-md:opacity-100">
+                  {image.name}
                 </span>
               </>
             ) : (
-              <div className="flex h-full w-full items-end justify-center bg-secondary p-1">
-                <span className="rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground border border-border">
-                  示例
-                </span>
+              <>
+                {isUploading ? (
+                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                ) : (
+                  <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-surface-soft text-muted-foreground transition-all group-hover:bg-primary/10 group-hover:text-primary">
+                    <Upload className="h-5 w-5" />
+                  </div>
+                )}
+                <div className="flex flex-col items-center gap-1 px-4">
+                  <span className="text-[13px] font-medium text-foreground">
+                    {isUploading ? "上传中..." : "点击或拖拽上传"}
+                  </span>
+                  <span className="max-w-[220px] text-center text-[11px] leading-relaxed text-muted-foreground">
+                    {helper}
+                  </span>
+                </div>
+              </>
+            )}
+
+            {isDragOver && (
+              <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-background/90 text-[13px] font-medium text-primary backdrop-blur-sm">
+                松开以上传图片
               </div>
             )}
-          </div>
-
-          {isDragOver && (
-            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-background/90 text-[12px] font-medium text-primary backdrop-blur-sm">
-              松开以上传图片
-            </div>
+          </button>
+          {image && !isUploading && (
+            <UploadedImageActions
+              onEdit={() => setIsEditorOpen(true)}
+              onPreview={() => setIsPreviewOpen(true)}
+              onRemove={handleRemoveImage}
+            />
           )}
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          className={cn(
-            "group relative w-full min-h-[140px] rounded-xl border border-dashed border-sky-200 bg-card/60",
-            "flex flex-col items-center justify-center gap-3 overflow-hidden transition-all duration-300 cursor-pointer",
-            "hover:border-sky-400 hover:bg-accent/40 hover:shadow-soft",
-            image && "border-solid border-sky-300 bg-accent/20 shadow-card",
-            isDragOver && "border-primary bg-primary/5 ring-2 ring-primary/20",
-          )}
-        >
-          {image ? (
-            <>
-              <img
-                src={image.preview}
-                alt={image.name}
-                className="absolute inset-0 w-full h-full object-contain p-2"
-              />
-              <span className="absolute bottom-2 left-2 max-w-[80%] truncate rounded bg-black/60 px-2 py-1 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-                {image.name}
-              </span>
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  releaseCurrentPreview();
-                  onRemove();
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    releaseCurrentPreview();
-                    onRemove();
-                  }
-                }}
-                className="absolute top-2 right-2 flex h-6 w-6 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100 hover:bg-destructive"
-              >
-                <X className="h-3.5 w-3.5" />
-              </span>
-            </>
-          ) : (
-            <>
-              {isUploading ? (
-                <Loader2 className="h-6 w-6 text-primary animate-spin" />
-              ) : (
-                <div className="flex h-10 w-10 items-center justify-center rounded-md border border-border bg-surface-soft text-muted-foreground transition-all group-hover:bg-primary/10 group-hover:text-primary">
-                  <Upload className="h-5 w-5" />
-                </div>
-              )}
-              <div className="flex flex-col items-center gap-1 px-4">
-                <span className="text-[13px] font-medium text-foreground">
-                  {isUploading ? "上传中..." : "点击或拖拽上传"}
-                </span>
-                <span className="max-w-[220px] text-center text-[11px] text-muted-foreground leading-relaxed">
-                  {helper}
-                </span>
-              </div>
-            </>
-          )}
-
-          {isDragOver && (
-            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-background/90 text-[13px] font-medium text-primary backdrop-blur-sm">
-              松开以上传图片
-            </div>
-          )}
-        </button>
+        </div>
       )}
 
       {error && (
@@ -423,6 +414,104 @@ export function UploadBox({
         className="hidden"
         onChange={handleChange}
       />
+      <Dialog open={isPreviewOpen && image !== null} onOpenChange={setIsPreviewOpen}>
+        <DialogContent
+          className="inset-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 items-center justify-center overflow-hidden border-0 bg-transparent p-0 shadow-none sm:max-w-none"
+          aria-describedby={undefined}
+          onClick={() => setIsPreviewOpen(false)}
+        >
+          <DialogTitle className="sr-only">
+            {image ? `预览${image.name}` : "图片预览"}
+          </DialogTitle>
+          {image && (
+            <img
+              src={image.preview}
+              alt={image.name}
+              className="max-h-[88dvh] w-auto max-w-[calc(100vw-2rem)] rounded-lg object-contain sm:max-w-[88vw]"
+              onClick={(event) => event.stopPropagation()}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+      <ImageEditorDialog
+        open={isEditorOpen && image !== null}
+        image={image}
+        onOpenChange={setIsEditorOpen}
+        onApply={(asset) => {
+          setError("");
+          releaseCurrentPreview();
+          onUploaded({
+            assetId: asset.assetId,
+            preview: asset.url,
+            name: asset.fileName,
+            width: asset.width,
+            height: asset.height,
+          });
+        }}
+      />
+    </div>
+  );
+}
+
+function UploadedImageActions({
+  compact = false,
+  onEdit,
+  onPreview,
+  onRemove,
+}: {
+  compact?: boolean;
+  onEdit: () => void;
+  onPreview: () => void;
+  onRemove: () => void;
+}) {
+  const actionClass = cn(
+    "pointer-events-auto absolute z-30 flex items-center justify-center rounded-full border border-border bg-background/90 text-foreground shadow-sm transition-all",
+    "opacity-0 hover:border-primary/60 hover:bg-secondary group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary max-md:opacity-100",
+    compact ? "h-6 w-6" : "h-7 w-7",
+  );
+  const iconClass = "h-3.5 w-3.5";
+
+  return (
+    <div
+      className={cn(
+        "pointer-events-none absolute z-30",
+        compact ? "right-3 top-3 h-[96px] w-[72px]" : "inset-0",
+      )}
+    >
+      <button
+        type="button"
+        onClick={onRemove}
+        className={cn(
+          actionClass,
+          compact ? "right-1 top-1" : "right-2 top-2",
+          "hover:border-destructive hover:bg-destructive hover:text-destructive-foreground",
+        )}
+        aria-label="删除图片"
+      >
+        <Trash2 className={iconClass} />
+      </button>
+      <button
+        type="button"
+        onClick={onEdit}
+        className={cn(
+          actionClass,
+          compact ? "bottom-1 left-1" : "bottom-2 left-2",
+        )}
+        aria-label="编辑图片"
+      >
+        <Pencil className={iconClass} />
+      </button>
+      <button
+        type="button"
+        onClick={onPreview}
+        className={cn(
+          actionClass,
+          compact ? "bottom-1 right-1" : "bottom-2 right-2",
+        )}
+        aria-label="查看图片"
+      >
+        <Eye className={iconClass} />
+      </button>
     </div>
   );
 }

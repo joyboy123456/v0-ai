@@ -446,22 +446,54 @@ export function Workbench() {
     })
   }, [])
 
+  const handleReplaceFashionReference = useCallback(
+    (sourceAssetId: string, reference: FashionReferenceImage) => {
+      setFashionReferences((currentReferences) =>
+        currentReferences.map((currentReference) => {
+          if (currentReference.assetId !== sourceAssetId) return currentReference
+          if (
+            currentReference.source === 'upload' &&
+            currentReference.preview !== reference.preview
+          ) {
+            releaseBlobPreview(currentReference.preview)
+          }
+          return reference
+        }),
+      )
+    },
+    [],
+  )
+
   const handleReorderFashionReferences = useCallback(
-    (sourceAssetId: string, targetAssetId: string) => {
+    (orderedAssetIds: string[]) => {
       setFashionReferences((currentReferences) => {
-        const sourceIndex = currentReferences.findIndex(
-          (reference) => reference.assetId === sourceAssetId,
+        const referencesById = new Map(
+          currentReferences.map((reference) => [reference.assetId, reference]),
         )
-        const targetIndex = currentReferences.findIndex(
-          (reference) => reference.assetId === targetAssetId,
-        )
-        if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
-          return currentReferences
+        const orderedReferences: FashionReferenceImage[] = []
+        const seenAssetIds = new Set<string>()
+
+        for (const assetId of orderedAssetIds) {
+          const reference = referencesById.get(assetId)
+          if (!reference || seenAssetIds.has(assetId)) continue
+          orderedReferences.push(reference)
+          seenAssetIds.add(assetId)
         }
 
-        const orderedReferences = [...currentReferences]
-        const [movedReference] = orderedReferences.splice(sourceIndex, 1)
-        orderedReferences.splice(targetIndex, 0, movedReference)
+        for (const reference of currentReferences) {
+          if (!seenAssetIds.has(reference.assetId)) {
+            orderedReferences.push(reference)
+          }
+        }
+
+        if (
+          orderedReferences.every(
+            (reference, index) =>
+              reference.assetId === currentReferences[index]?.assetId,
+          )
+        ) {
+          return currentReferences
+        }
         return orderedReferences
       })
     },
@@ -638,6 +670,7 @@ export function Workbench() {
       onChangeSelectedFaceIdModel={setSelectedFaceIdModel}
       onChangeSelectedPoses={setSelectedPoses}
       onAddFashionReference={handleAddFashionReference}
+      onReplaceFashionReference={handleReplaceFashionReference}
       onRemoveFashionReference={handleRemoveFashionReference}
       onReorderFashionReferences={handleReorderFashionReferences}
       onOpenCompanyModelLibrary={() => setCompanyModelLibraryRequestKey((currentKey) => currentKey + 1)}
