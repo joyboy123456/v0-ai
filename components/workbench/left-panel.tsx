@@ -1559,7 +1559,7 @@ const FashionReferenceCard = memo(function FashionReferenceCard({
   };
 
   const cardActionClass =
-    "absolute z-10 flex h-7 w-7 items-center justify-center rounded-full border border-border bg-background/90 text-foreground shadow-sm transition-colors hover:border-primary/60 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary";
+    "absolute z-10 flex h-7 w-7 items-center justify-center rounded-full border border-border bg-background/90 text-foreground shadow-sm transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:border-primary/60 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary max-md:opacity-100";
 
   return (
     <div
@@ -1667,11 +1667,11 @@ const FashionReferenceCard = memo(function FashionReferenceCard({
           }
         }}
         className={cn(
-          "absolute left-1/2 top-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 touch-none items-center justify-center rounded-full border border-border bg-background/90 text-foreground shadow-md transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+          "absolute left-1/2 top-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 touch-none items-center justify-center rounded-full border border-border bg-background/90 text-foreground shadow-md transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary max-md:opacity-100",
           isPinned
             ? "cursor-not-allowed opacity-60"
             : "cursor-grab hover:scale-105 hover:border-primary/60 active:cursor-grabbing",
-          isDragged && "scale-110 border-primary bg-primary text-primary-foreground",
+          isDragged && "scale-110 border-primary bg-primary text-primary-foreground opacity-100",
         )}
         aria-label={
           isPinned
