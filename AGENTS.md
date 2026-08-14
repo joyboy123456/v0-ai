@@ -57,4 +57,12 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 - **hover 才显示的操作必须补 `max-md:opacity-100`**（触屏无 hover）
 - 生产构建会改写 `next-env.d.ts` / `tsconfig.json` 的 distDir 引用；用非默认 distDir 验证构建后记得 `git checkout` 还原
 
+## 服饰智能分层（智能抠图编辑器）约定（2026-08-15）
+
+- **交互式抠图编辑器以新组件为准**：`components/workbench/cutout-editor-dialog.tsx`（双画布 + 交互式选区）+ `components/workbench/cutout-region-worker.ts`（Web Worker 连通区域拆分）；旧 `image-editor-dialog.tsx` 已删除
+- **后端会话服务** `lib/server/cutout-session-service.ts`：会话 60 分钟 TTL 内存态；prepare 一次 `SegmentCloth` 调 7 类（响应 `Data.Elements[].ClassUrl` 按类别返回 URL，别只取合并的 ImageURL）+ skin/hair/body/common 辅助；单类别失败降级跳过、全部失败才报 prepare_failed
+- **阿里交互式分割已下架**（InteractiveScribbleSegmentation / InteractiveFullSegmentation，2025-10-14，实测 InvalidAction.NotFound），不要再尝试接入；「点哪选哪」用「类别分割 + 前端连通区域」实现，涂抹/擦除/反选纯前端 Canvas，不吃 GPU
+- **sharp 灰度坑**：`raw()` 输出 1 通道灰度必须先 `toColourspace('b-w')`，否则会被转成 3 通道
+- 抠图/分层不扣费（credits 只在生成任务上）；埋点走 `POST /api/events`（14 个事件白名单，keepalive + 结构化日志）
+
 

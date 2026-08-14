@@ -13,9 +13,16 @@ import {
   buildSegmentCommonImageParameters,
   buildViapiTempObjectName,
   callAliyunRpc,
+  CLOTH_CLASSES,
+  maskPngToGrayscaleAlphaPng,
+  parseSegmentClothClassUrls,
   prepareAliyunCutoutInput,
   readSourceCanvasDimensions,
+  refineMask,
   restoreCutoutToOriginalCanvas,
+  segmentClothByClass,
+  segmentSkin,
+  type AliyunCutoutConfig,
 // @ts-expect-error Node 原生 TypeScript 测试运行器要求显式扩展名。
 } from './aliyun-cutout-adapter.ts'
 
@@ -209,4 +216,197 @@ test('抠图 alpha 回贴原始像素并恢复原图画布尺寸', async () => {
   assert.equal(rendered.data[0], 240)
   assert.equal(rendered.data[3], 255)
   assert.equal(rendered.data[(40 * 20 - 1) * 4 + 3], 0)
+})
+
+const TEST_CUTOUT_CONFIG: AliyunCutoutConfig = {
+  accessKeyId: 'test-id',
+  accessKeySecret: 'test-secret',
+  imagesegEndpoint: 'https://imageseg.cn-shanghai.aliyuncs.com',
+  viapiUtilsEndpoint: 'https://viapiutils.cn-shanghai.aliyuncs.com',
+  timeoutMs: 1_000,
+}
+
+test('服饰分层类别常量固定为 7 类，顺序稳定', () => {
+  assert.deepEqual([...CLOTH_CLASSES], [
+    'tops',
+    'coat',
+    'skirt',
+    'pants',
+    'bag',
+    'shoes',
+    'hat',
+  ])
+})
+
+test('segmentClothByClass 解析 ClassUrl 映射并按类别返回 URL', async () => {
+  const result = await segmentClothByClass(
+    'https://example.com/input.jpg',
+    TEST_CUTOUT_CONFIG,
+    CLOTH_CLASSES,
+    {
+      callRpc: async (input) => {
+        assert.equal(input.action, 'SegmentCloth')
+        assert.equal(input.parameters?.OutMode, '1')
+        assert.equal(input.parameters?.['ClothClass.1'], 'tops')
+        assert.equal(input.parameters?.['ClothClass.7'], 'hat')
+        return {
+          requestId: 'request-cloth',
+          payload: {
+            RequestId: 'request-cloth',
+            Data: {
+              Elements: [
+                {
+                  ClassUrl: {
+                    tops: 'https://example.com/tops.png',
+                    pants: 'https://example.com/pants.png',
+                  },
+                  ImageURL: 'https://example.com/merged.png',
+                },
+                {
+                  ClassUrl: { shoes: 'https://example.com/shoes.png' },
+                  ImageURL: 'https://example.com/merged.png',
+                },
+              ],
+            },
+          },
+        }
+      },
+    },
+  )
+
+  assert.equal(result.requestId, 'request-cloth')
+  assert.equal(result.classUrls.tops, 'https://example.com/tops.png')
+  assert.equal(result.classUrls.pants, 'https://example.com/pants.png')
+  assert.equal(result.classUrls.shoes, 'https://example.com/shoes.png')
+  assert.equal(result.fallback, undefined)
+})
+
+test('segmentClothByClass 在 ClassUrl 缺失时回退 Elements[].ImageURL 合并图', async () => {
+  const result = await segmentClothByClass(
+    'https://example.com/input.jpg',
+    TEST_CUTOUT_CONFIG,
+    CLOTH_CLASSES,
+    {
+      callRpc: async () => ({
+        requestId: 'request-fallback',
+        payload: {
+          Data: {
+            Elements: [{ ImageURL: 'https://example.com/merged.png' }],
+          },
+        },
+      }),
+    },
+  )
+
+  assert.equal(result.fallback, true)
+  assert.equal(result.requestId, 'request-fallback')
+  for (const clothClass of CLOTH_CLASSES) {
+    assert.equal(result.classUrls[clothClass], 'https://example.com/merged.png')
+  }
+})
+
+test('parseSegmentClothClassUrls 对空 Elements 返回空映射', () => {
+  assert.deepEqual(parseSegmentClothClassUrls({ Elements: [] }, 'request-1', [
+    ...CLOTH_CLASSES,
+  ]), { classUrls: {}, requestId: 'request-1' })
+})
+
+test('segmentSkin 使用 SegmentSkin Action 并解析 Data.ImageURL', async () => {
+  const result = await segmentSkin('https://example.com/input.jpg', TEST_CUTOUT_CONFIG, {
+    callRpc: async (input) => {
+      assert.equal(input.action, 'SegmentSkin')
+      assert.deepEqual(input.parameters, {
+        ImageURL: 'https://example.com/input.jpg',
+      })
+      return {
+        requestId: 'request-skin',
+        payload: { Data: { ImageURL: 'https://example.com/skin.png' } },
+      }
+    },
+  })
+
+  assert.deepEqual(result, {
+    imageUrl: 'https://example.com/skin.png',
+    requestId: 'request-skin',
+  })
+})
+
+test('refineMask 传 ImageURL + MaskImageURL 并解析 Data.ImageURL', async () => {
+  const result = await refineMask(
+    'https://example.com/img.jpg',
+    'https://example.com/mask.png',
+    TEST_CUTOUT_CONFIG,
+    {
+      callRpc: async (input) => {
+        assert.equal(input.action, 'RefineMask')
+        assert.deepEqual(input.parameters, {
+          ImageURL: 'https://example.com/img.jpg',
+          MaskImageURL: 'https://example.com/mask.png',
+        })
+        return {
+          requestId: 'request-refine',
+          payload: { Data: { ImageURL: 'https://example.com/refined.png' } },
+        }
+      },
+    },
+  )
+
+  assert.deepEqual(result, {
+    imageUrl: 'https://example.com/refined.png',
+    requestId: 'request-refine',
+  })
+})
+
+test('maskPngToGrayscaleAlphaPng 提取四通道 PNG 的 alpha 转黑白灰度', async () => {
+  const pixels = Buffer.alloc(20 * 10 * 4)
+  for (let pixel = 0; pixel < 20 * 10; pixel += 1) {
+    const offset = pixel * 4
+    pixels[offset] = 100
+    pixels[offset + 1] = 120
+    pixels[offset + 2] = 140
+    pixels[offset + 3] = pixel % 2 === 0 ? 255 : 0
+  }
+  const png = await sharp(pixels, {
+    raw: { width: 20, height: 10, channels: 4 },
+  })
+    .png()
+    .toBuffer()
+
+  const grayscale = await maskPngToGrayscaleAlphaPng(png)
+  const rendered = await sharp(grayscale)
+    .toColourspace('b-w')
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+
+  assert.equal(rendered.info.width, 20)
+  assert.equal(rendered.info.height, 10)
+  assert.equal(rendered.info.channels, 1)
+  assert.equal(rendered.data[0], 255)
+  assert.equal(rendered.data[1], 0)
+})
+
+test('maskPngToGrayscaleAlphaPng 对无 alpha 的灰度图取红色通道', async () => {
+  const pixels = Buffer.alloc(20 * 10 * 3)
+  for (let pixel = 0; pixel < 20 * 10; pixel += 1) {
+    const offset = pixel * 3
+    const value = pixel % 2 === 0 ? 255 : 0
+    pixels[offset] = value
+    pixels[offset + 1] = value
+    pixels[offset + 2] = value
+  }
+  const png = await sharp(pixels, {
+    raw: { width: 20, height: 10, channels: 3 },
+  })
+    .png()
+    .toBuffer()
+
+  const grayscale = await maskPngToGrayscaleAlphaPng(png)
+  const rendered = await sharp(grayscale)
+    .toColourspace('b-w')
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+
+  assert.equal(rendered.info.channels, 1)
+  assert.equal(rendered.data[0], 255)
+  assert.equal(rendered.data[1], 0)
 })

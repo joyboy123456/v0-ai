@@ -5,7 +5,7 @@ import { Eye, Loader2, Pencil, Trash2, Upload, X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn, readJsonResponse } from "@/lib/utils";
 import type { UploadedImage } from "@/lib/types";
-import { ImageEditorDialog } from "./image-editor-dialog";
+import { CutoutEditorDialog } from "./cutout-editor-dialog";
 
 interface UploadBoxProps {
   label: string;
@@ -433,7 +433,7 @@ export function UploadBox({
           )}
         </DialogContent>
       </Dialog>
-      <ImageEditorDialog
+      <CutoutEditorDialog
         open={isEditorOpen && image !== null}
         image={image}
         onOpenChange={setIsEditorOpen}

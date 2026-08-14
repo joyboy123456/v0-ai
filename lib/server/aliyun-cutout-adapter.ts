@@ -5,6 +5,33 @@ import sharp from 'sharp'
 
 import { proxyFetch } from '@/lib/server/proxy-fetch'
 import { downloadSafeRemoteImage } from '@/lib/server/safe-remote-image'
+import type { ClothCategory } from '@/lib/types'
+
+/**
+ * 服饰智能分层（SegmentCloth OutMode=1）的 7 个合法类别，
+ * 与 ClothClass.1..7 请求参数一一对应（顺序固定，便于测试与幂等）。
+ */
+export const CLOTH_CLASSES: readonly ClothCategory[] = [
+  'tops',
+  'coat',
+  'skirt',
+  'pants',
+  'bag',
+  'shoes',
+  'hat',
+]
+
+/**
+ * segmentClothByClass 的解析结果。
+ * classUrls：类别 → 分割结果图 URL（prepared 尺寸四通道 PNG）。
+ * fallback=true 表示 ClassUrl 缺失/为空，回退取 Elements[].ImageURL 合并图，
+ * 此时所有请求类别共用同一个 URL。
+ */
+export interface SegmentClothByClassResult {
+  classUrls: Record<string, string>
+  requestId: string
+  fallback?: boolean
+}
 
 export const ALIYUN_CUTOUT_MAX_INPUT_BYTES = 3_000_000
 export const ALIYUN_CUTOUT_MAX_EDGE = 1999
@@ -81,7 +108,7 @@ export interface AliyunCutoutResult {
   durationMs: number
 }
 
-interface AliyunCutoutConfig {
+export interface AliyunCutoutConfig {
   accessKeyId: string
   accessKeySecret: string
   imagesegEndpoint: string
@@ -117,6 +144,33 @@ interface AliyunCutoutDependencies {
     config: AliyunCutoutConfig,
   ) => Promise<{ imageUrl: string; requestId: string }>
   downloadResult?: (url: string, timeoutMs: number) => Promise<Buffer>
+  /** 服饰智能分层：一次 SegmentCloth 调用解析多类别 ClassUrl。 */
+  segmentClothByClass?: (
+    imageUrl: string,
+    config: AliyunCutoutConfig,
+    classes: readonly ClothCategory[],
+  ) => Promise<SegmentClothByClassResult>
+  /** 一次性分割的可选注入点（仿照 segmentImage 写法，供测试与上层服务复用）。 */
+  segmentSkinImage?: (
+    imageUrl: string,
+    config: AliyunCutoutConfig,
+  ) => Promise<{ imageUrl: string; requestId: string }>
+  segmentHairImage?: (
+    imageUrl: string,
+    config: AliyunCutoutConfig,
+  ) => Promise<{ imageUrl: string; requestId: string }>
+  segmentBodyImage?: (
+    imageUrl: string,
+    config: AliyunCutoutConfig,
+  ) => Promise<{ imageUrl: string; requestId: string }>
+  segmentCommodityImage?: (
+    imageUrl: string,
+    config: AliyunCutoutConfig,
+  ) => Promise<{ imageUrl: string; requestId: string }>
+  segmentHDCommonImage?: (
+    imageUrl: string,
+    config: AliyunCutoutConfig,
+  ) => Promise<{ imageUrl: string; requestId: string }>
 }
 
 /** 阿里云 POP 签名要求的 RFC3986 编码，encodeURIComponent 默认不会编码 !'()*。 */
@@ -499,7 +553,7 @@ export async function runAliyunCommonCutout(
   }
 }
 
-async function uploadViapiTemporaryInput(
+export async function uploadViapiTemporaryInput(
   input: PreparedAliyunCutoutInput,
   config: AliyunCutoutConfig,
 ): Promise<string> {
@@ -549,7 +603,7 @@ async function uploadViapiTemporaryInput(
   return `https://${VIAPI_TEMP_BUCKET}.oss-cn-shanghai.aliyuncs.com/${objectName}`
 }
 
-async function segmentCommonImage(
+export async function segmentCommonImage(
   imageUrl: string,
   config: AliyunCutoutConfig,
 ): Promise<{ imageUrl: string; requestId: string }> {
@@ -575,7 +629,232 @@ async function segmentCommonImage(
   return { imageUrl: resultUrl, requestId: response.requestId }
 }
 
-async function downloadCutoutResult(
+/** 解析 SegmentCloth 的 Data 载荷，把 ClassUrl 映射为 类别 → URL。 */
+export function parseSegmentClothClassUrls(
+  data: Record<string, unknown>,
+  requestId: string,
+  classes: readonly string[] = [],
+): SegmentClothByClassResult {
+  const elements = Array.isArray(data.Elements) ? data.Elements : []
+  const classUrls: Record<string, string> = {}
+  for (const rawElement of elements) {
+    const element = readObject(rawElement)
+    const classUrl = readObject(element?.ClassUrl)
+    if (!classUrl) continue
+    for (const [category, rawUrl] of Object.entries(classUrl)) {
+      const url = readString(rawUrl)
+      if (url && classUrls[category] === undefined) classUrls[category] = url
+    }
+  }
+  if (Object.keys(classUrls).length > 0) {
+    return { classUrls, requestId }
+  }
+
+  // ClassUrl 缺失或为空：回退取 Elements[].ImageURL（合并图），
+  // 此时所有请求类别共用同一个 URL，并在返回中标记 fallback。
+  const mergedUrl = elements
+    .map((element) => readString(readObject(element)?.ImageURL))
+    .find((url): url is string => Boolean(url))
+  if (!mergedUrl) return { classUrls, requestId }
+  const fallbackClassUrls: Record<string, string> = { ...classUrls }
+  for (const clothClass of classes) {
+    if (fallbackClassUrls[clothClass] === undefined) {
+      fallbackClassUrls[clothClass] = mergedUrl
+    }
+  }
+  return { classUrls: fallbackClassUrls, requestId, fallback: true }
+}
+
+function buildSegmentClothClassParameters(
+  imageUrl: string,
+  classes: readonly string[],
+): Record<string, string> {
+  // OutMode=1 表示按 ClothClass.N 指定的类别组合分割；ReturnForm 缺省返回四通道 PNG。
+  const parameters: Record<string, string> = {
+    ImageURL: imageUrl,
+    OutMode: '1',
+  }
+  classes.forEach((clothClass, index) => {
+    parameters[`ClothClass.${index + 1}`] = clothClass
+  })
+  return parameters
+}
+
+/**
+ * 服饰智能分层：一次 SegmentCloth（OutMode=1 + ClothClass.1..N）调用，
+ * 解析 Data.Elements[].ClassUrl 返回 类别 → 结果图 URL。
+ * dependencies.callRpc 仅用于测试注入；默认走真实 callAliyunRpc。
+ */
+export async function segmentClothByClass(
+  imageUrl: string,
+  config: AliyunCutoutConfig,
+  classes: readonly ClothCategory[],
+  dependencies: { callRpc?: typeof callAliyunRpc } = {},
+): Promise<SegmentClothByClassResult> {
+  const callRpc = dependencies.callRpc ?? callAliyunRpc
+  const response = await callRpc({
+    endpoint: config.imagesegEndpoint,
+    action: 'SegmentCloth',
+    version: ALIYUN_IMAGESEG_VERSION,
+    accessKeyId: config.accessKeyId,
+    accessKeySecret: config.accessKeySecret,
+    parameters: buildSegmentClothClassParameters(imageUrl, classes),
+    timeoutMs: config.timeoutMs,
+  })
+  const data = readObject(response.payload.Data)
+  if (!response.requestId) {
+    throw new AliyunCutoutProviderError({
+      category: 'invalid_result',
+      message: '阿里云抠图服务未返回有效结果，请重试',
+      retryable: true,
+    })
+  }
+  return parseSegmentClothClassUrls(data ?? {}, response.requestId, classes)
+}
+
+/** 一次性分割通用调用：Action + ImageURL 参数，解析 Data.ImageURL。 */
+async function callSingleImageSegmentation(
+  action: string,
+  imageUrl: string,
+  config: AliyunCutoutConfig,
+  dependencies: { callRpc?: typeof callAliyunRpc },
+): Promise<{ imageUrl: string; requestId: string }> {
+  const callRpc = dependencies.callRpc ?? callAliyunRpc
+  const response = await callRpc({
+    endpoint: config.imagesegEndpoint,
+    action,
+    version: ALIYUN_IMAGESEG_VERSION,
+    accessKeyId: config.accessKeyId,
+    accessKeySecret: config.accessKeySecret,
+    parameters: buildSegmentCommonImageParameters(imageUrl),
+    timeoutMs: config.timeoutMs,
+  })
+  const data = readObject(response.payload.Data)
+  const resultUrl = readString(data?.ImageURL)
+  if (!resultUrl || !response.requestId) {
+    throw new AliyunCutoutProviderError({
+      category: 'invalid_result',
+      message: '阿里云抠图服务未返回有效结果，请重试',
+      retryable: true,
+      requestId: response.requestId,
+    })
+  }
+  return { imageUrl: resultUrl, requestId: response.requestId }
+}
+
+export function segmentSkin(
+  imageUrl: string,
+  config: AliyunCutoutConfig,
+  dependencies: { callRpc?: typeof callAliyunRpc } = {},
+): Promise<{ imageUrl: string; requestId: string }> {
+  return callSingleImageSegmentation('SegmentSkin', imageUrl, config, dependencies)
+}
+
+export function segmentHair(
+  imageUrl: string,
+  config: AliyunCutoutConfig,
+  dependencies: { callRpc?: typeof callAliyunRpc } = {},
+): Promise<{ imageUrl: string; requestId: string }> {
+  return callSingleImageSegmentation('SegmentHair', imageUrl, config, dependencies)
+}
+
+export function segmentBody(
+  imageUrl: string,
+  config: AliyunCutoutConfig,
+  dependencies: { callRpc?: typeof callAliyunRpc } = {},
+): Promise<{ imageUrl: string; requestId: string }> {
+  return callSingleImageSegmentation('SegmentBody', imageUrl, config, dependencies)
+}
+
+export function segmentCommodity(
+  imageUrl: string,
+  config: AliyunCutoutConfig,
+  dependencies: { callRpc?: typeof callAliyunRpc } = {},
+): Promise<{ imageUrl: string; requestId: string }> {
+  return callSingleImageSegmentation(
+    'SegmentCommodity',
+    imageUrl,
+    config,
+    dependencies,
+  )
+}
+
+export function segmentHDCommonImage(
+  imageUrl: string,
+  config: AliyunCutoutConfig,
+  dependencies: { callRpc?: typeof callAliyunRpc } = {},
+): Promise<{ imageUrl: string; requestId: string }> {
+  return callSingleImageSegmentation(
+    'SegmentHDCommonImage',
+    imageUrl,
+    config,
+    dependencies,
+  )
+}
+
+/**
+ * RefineMask 边缘细化：ImageURL + MaskImageURL（Mask 必须是 URL，
+ * 调用方需先把蒙版临时上传 viapi 临时桶），返回细化后的 Mask 图 URL。
+ */
+export async function refineMask(
+  imageUrl: string,
+  maskImageUrl: string,
+  config: AliyunCutoutConfig,
+  dependencies: { callRpc?: typeof callAliyunRpc } = {},
+): Promise<{ imageUrl: string; requestId: string }> {
+  const callRpc = dependencies.callRpc ?? callAliyunRpc
+  const response = await callRpc({
+    endpoint: config.imagesegEndpoint,
+    action: 'RefineMask',
+    version: ALIYUN_IMAGESEG_VERSION,
+    accessKeyId: config.accessKeyId,
+    accessKeySecret: config.accessKeySecret,
+    parameters: { ImageURL: imageUrl, MaskImageURL: maskImageUrl },
+    timeoutMs: config.timeoutMs,
+  })
+  const data = readObject(response.payload.Data)
+  const resultUrl = readString(data?.ImageURL)
+  if (!resultUrl || !response.requestId) {
+    throw new AliyunCutoutProviderError({
+      category: 'invalid_result',
+      message: '阿里云抠图服务未返回有效结果，请重试',
+      retryable: true,
+      requestId: response.requestId,
+    })
+  }
+  return { imageUrl: resultUrl, requestId: response.requestId }
+}
+
+/**
+ * 把四通道 PNG 的 alpha 通道提取成黑白灰度 PNG（白=前景 alpha>0，黑=透明）。
+ * 对无 alpha 的灰度图（部分上游返回 RGB 黑白蒙版）取红色通道作为灰度。
+ */
+export async function maskPngToGrayscaleAlphaPng(
+  pngBuffer: Buffer,
+): Promise<Buffer> {
+  const metadata = await sharp(pngBuffer).metadata()
+  const width = metadata.width ?? 0
+  const height = metadata.height ?? 0
+  if (width <= 0 || height <= 0) {
+    throw new AliyunCutoutProviderError({
+      category: 'invalid_result',
+      message: '分割结果无法解析，请重试',
+      retryable: true,
+    })
+  }
+  const channel = metadata.hasAlpha ? 'alpha' : 'red'
+  const raw = await sharp(pngBuffer).extractChannel(channel).raw().toBuffer()
+  const grayscale = Buffer.alloc(raw.byteLength)
+  for (let index = 0; index < raw.byteLength; index += 1) {
+    grayscale[index] = raw[index] > 0 ? 255 : 0
+  }
+  return sharp(grayscale, { raw: { width, height, channels: 1 } })
+    .toColourspace('b-w')
+    .png()
+    .toBuffer()
+}
+
+export async function downloadCutoutResult(
   url: string,
   timeoutMs: number,
 ): Promise<Buffer> {
@@ -598,7 +877,7 @@ async function downloadCutoutResult(
   }
 }
 
-function readAliyunCutoutConfig(): AliyunCutoutConfig {
+export function readAliyunCutoutConfig(): AliyunCutoutConfig {
   const credentials = readAliyunCredentialPair()
   if (!credentials) {
     throw new AliyunCutoutProviderError({

@@ -24,9 +24,9 @@ import {
 } from "./upload-components";
 import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
 import {
-  ImageEditorDialog,
+  CutoutEditorDialog,
   type CutoutAsset,
-} from "./image-editor-dialog";
+} from "./cutout-editor-dialog";
 import { reorderUnpinnedFashionReferences } from "./fashion-reference-order";
 import {
   cn,
@@ -2349,7 +2349,7 @@ function FashionReferenceUploader({
           )}
         </DialogContent>
       </Dialog>
-      <ImageEditorDialog
+      <CutoutEditorDialog
         open={editingReference !== null}
         image={editingReference}
         onOpenChange={(open) => {

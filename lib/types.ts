@@ -7,6 +7,31 @@ export type FeatureType =
   | 'photo-fission'
   | 'pose-fission'
 
+/**
+ * 服饰智能分层（SegmentCloth）支持的 7 个合法 ClothClass 类别。
+ * 与阿里 imageseg SegmentCloth 的 ClothClass 合法值一一对应。
+ */
+export type ClothCategory =
+  | 'tops'
+  | 'coat'
+  | 'skirt'
+  | 'pants'
+  | 'bag'
+  | 'shoes'
+  | 'hat'
+
+/**
+ * 抠图会话中可准备的类别 Mask。
+ * 服饰 7 类来自 SegmentCloth；skin/hair/body 来自对应一次性分割；
+ * common 来自 SegmentCommonImage（通用主体）。
+ */
+export type CutoutCategory = ClothCategory | 'skin' | 'hair' | 'body' | 'common'
+
+/**
+ * 抠图业务场景。本期只实现 garment；person/product 结构预留（PRD §39.1）。
+ */
+export type CutoutScene = 'garment' | 'person' | 'product'
+
 export type TaskStatus =
   | 'pending'
   | 'running'
