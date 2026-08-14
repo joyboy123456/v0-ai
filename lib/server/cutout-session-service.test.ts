@@ -18,6 +18,7 @@ import {
   exportCutoutSession,
   getCategoryMask,
   getCutoutSession,
+  getSessionPreparedImage,
   type CutoutSessionDependencies,
   type CutoutSessionDto,
 // @ts-expect-error Node 原生 TypeScript 测试运行器要求显式扩展名。
@@ -362,6 +363,55 @@ test('getCategoryMask 返回 prepared 尺寸黑白灰度 PNG', async () => {
   assert.equal(rendered.data[0], 255)
   // (39,0) 在默认左半区掩码之外 → 黑
   assert.equal(rendered.data[PREPARED_WIDTH - 1], 0)
+})
+
+test('getSessionPreparedImage 返回 prepared 工作图字节与 image/jpeg', async () => {
+  // 固定源图 buffer：默认 prepareInput 原样透传 buffer，
+  // record.preparedBuffer 与 sourcePng 为同一引用。
+  const sourcePng = await makeSourcePng(ORIGINAL_WIDTH, ORIGINAL_HEIGHT)
+  const testDeps = makeDependencies({
+    readSourceAsset: async () => sourcePng,
+  })
+  const session = await createSession(testDeps)
+
+  const result = await getSessionPreparedImage(
+    session.sessionId,
+    testDeps.owner,
+    testDeps.deps,
+  )
+  assert.equal(result.contentType, 'image/jpeg')
+  assert.equal(result.buffer, sourcePng)
+  assert.equal(result.buffer.byteLength, sourcePng.byteLength)
+})
+
+test('getSessionPreparedImage 非归属用户拿不到', async () => {
+  const testDeps = makeDependencies()
+  const session = await createSession(testDeps)
+  await assert.rejects(
+    getSessionPreparedImage(session.sessionId, 'user-other', testDeps.deps),
+    (error: unknown) => {
+      assert.ok(error instanceof CutoutSessionError)
+      assert.equal(error.code, 'session_not_found')
+      assert.equal(error.status, 404)
+      return true
+    },
+  )
+})
+
+test('getSessionPreparedImage 过期会话抛 session_expired', async () => {
+  const testDeps = makeDependencies()
+  const session = await createSession(testDeps)
+  testDeps.clock.now += CUTOUT_SESSION_TTL_MS + 1
+
+  await assert.rejects(
+    getSessionPreparedImage(session.sessionId, testDeps.owner, testDeps.deps),
+    (error: unknown) => {
+      assert.ok(error instanceof CutoutSessionError)
+      assert.equal(error.code, 'session_expired')
+      assert.equal(error.status, 410)
+      return true
+    },
+  )
 })
 
 test('导出：透明 PNG 与黑白 Mask 放大回原图尺寸，RGB/alpha 与 bbox 正确', async () => {

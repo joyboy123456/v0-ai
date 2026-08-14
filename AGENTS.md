@@ -63,6 +63,7 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 - **后端会话服务** `lib/server/cutout-session-service.ts`：会话 60 分钟 TTL 内存态；prepare 一次 `SegmentCloth` 调 7 类（响应 `Data.Elements[].ClassUrl` 按类别返回 URL，别只取合并的 ImageURL）+ skin/hair/body/common 辅助；单类别失败降级跳过、全部失败才报 prepare_failed
 - **阿里交互式分割已下架**（InteractiveScribbleSegmentation / InteractiveFullSegmentation，2025-10-14，实测 InvalidAction.NotFound），不要再尝试接入；「点哪选哪」用「类别分割 + 前端连通区域」实现，涂抹/擦除/反选纯前端 Canvas，不吃 GPU
 - **sharp 灰度坑**：`raw()` 输出 1 通道灰度必须先 `toColourspace('b-w')`，否则会被转成 3 通道
+- **viapi 临时桶（viapi-customer-temp）对浏览器匿名访问 403**，prepared 图必须经 `/api/cutout-sessions/{id}/image` 同源输出，不要把 `preparedImageUrl` 直接给前端
 - 抠图/分层不扣费（credits 只在生成任务上）；埋点走 `POST /api/events`（14 个事件白名单，keepalive + 结构化日志）
 
 

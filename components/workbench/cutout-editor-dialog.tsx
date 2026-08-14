@@ -202,6 +202,14 @@ function toEditorError(error: unknown, fallback: string): EditorError {
   };
 }
 
+/**
+ * prepared 工作图经同源 API 输出：viapi 临时桶对浏览器匿名 GET 403，
+ * 禁止把 session.imageUrl（preparedImageUrl）直接交给 <img>/canvas。
+ */
+function sessionImageApiPath(sessionId: string): string {
+  return "/api/cutout-sessions/" + encodeURIComponent(sessionId) + "/image";
+}
+
 export function CutoutEditorDialog({
   open,
   image,
@@ -319,7 +327,9 @@ export function CutoutEditorDialog({
     1,
     Math.round(session?.imageHeight || image?.height || 1024),
   );
-  const leftImageUrl = session?.imageUrl || image?.preview || "";
+  const leftImageUrl = session
+    ? sessionImageApiPath(session.sessionId)
+    : image?.preview || "";
   const displaySize = useMemo(
     () => ({
       width: Math.max(1, Math.round(workWidth * zoom)),
@@ -1293,7 +1303,7 @@ export function CutoutEditorDialog({
           "智能抠图初始化失败",
         );
         if (requestSeqRef.current !== seq) return;
-        if (!data.session?.sessionId || !data.session.imageUrl) {
+        if (!data.session?.sessionId) {
           throw new Error("智能抠图初始化结果不完整，请重试");
         }
 
@@ -1308,7 +1318,7 @@ export function CutoutEditorDialog({
           originalHeight: data.session.originalHeight,
           categoryCount: data.session.categories.length,
         });
-        loadBaseImage(data.session.imageUrl, seq);
+        loadBaseImage(sessionImageApiPath(data.session.sessionId), seq);
         loadCategoryMasks(data.session, seq, controller.signal);
       } catch (error) {
         if (requestSeqRef.current !== seq) return;

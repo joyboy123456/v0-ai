@@ -94,8 +94,10 @@ export interface CutoutSessionRecord {
   sourceAssetId: string
   sourceFileName: string
   scene: CutoutScene
-  /** prepared 图 URL（viapi 临时桶），供前端画布与 RefineMask 使用。 */
+  /** prepared 图 URL（viapi 临时桶），仅供服务端 RefineMask 等使用，勿直接给前端。 */
   preparedImageUrl: string
+  /** prepared 图字节（JPEG），经同源 API 输出给浏览器，避免直连 viapi 临时桶 403。 */
+  preparedBuffer: Buffer
   preparedWidth: number
   preparedHeight: number
   originalWidth: number
@@ -462,6 +464,7 @@ async function executeGarmentPrepare(input: {
     sourceFileName: sourceAsset.fileName,
     scene: 'garment',
     preparedImageUrl: inputUrl,
+    preparedBuffer: prepared.buffer,
     preparedWidth: prepared.width,
     preparedHeight: prepared.height,
     originalWidth: prepared.originalWidth,
@@ -562,6 +565,20 @@ export async function getCategoryMask(
     })
   }
   return mask
+}
+
+/**
+ * 返回 prepared 工作图字节（JPEG），由同源 API 输出给浏览器；
+ * viapi 临时桶对匿名 GET 403，浏览器不得直连 preparedImageUrl。
+ * 归属/过期语义与 getCutoutSession/getCategoryMask 一致。
+ */
+export async function getSessionPreparedImage(
+  sessionId: string,
+  userId: string,
+  dependencies: CutoutSessionDependencies = defaultDependencies,
+): Promise<{ buffer: Buffer; contentType: string }> {
+  const record = requireSession(sessionId, userId, dependencies.now())
+  return { buffer: record.preparedBuffer, contentType: 'image/jpeg' }
 }
 
 /**
