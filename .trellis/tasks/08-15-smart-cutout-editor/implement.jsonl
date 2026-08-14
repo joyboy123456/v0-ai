@@ -1,0 +1,5 @@
+{"file": "AGENTS.md", "reason": "项目唯一编码规范来源：语义 token/暗色主题、移动端断点约定、错误处理与运维铁律"}
+{"file": ".trellis/tasks/08-15-smart-cutout-editor/prd.md", "reason": "产品需求与已确认决策（§37 需求确认、§38 上游调研结论、§39 方案一：服饰智能分层 P0 范围与能力边界）"}
+{"file": ".trellis/tasks/08-15-smart-cutout-editor/info.md", "reason": "技术设计 v2：三档分辨率体系、后端会话服务/路由/适配器扩展、前端 Worker 区域拆分与双画布交互、质量门禁"}
+{"file": ".trellis/tasks/08-15-smart-cutout-editor/research/aliyun-interactive-segmentation.md", "reason": "上游能力调研：交互式 API 已下架的实证、imageseg 现役能力与计费/QPS/限制、RefineMask 用法"}
+{"file": ".trellis/tasks/08-15-smart-cutout-editor/research/codebase-findings.md", "reason": "可复用基础设施清单：aliyun-cutout-adapter 各函数、asset-cutout-service、face-mask-painter-dialog 交互原语、入口点与资产/计费现状"}
