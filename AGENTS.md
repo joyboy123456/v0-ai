@@ -23,6 +23,7 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 ## 开发测试站（pm2 yibai-preview，2026-08-15 起）
 
 - **访问入口**：`http://121.40.34.214:3100`（需阿里云安全组放行 TCP 3100）；另有一条备用的 nginx 反代 `/etc/nginx/conf.d/yibai-preview.conf`（`preview.jjwlai.cn:80 → 127.0.0.1:3100`，DNS 就绪后可用）
+- **⚠️ 换公网 IP 必改** `next.config.mjs` 的 `allowedDevOrigins`：dev 服务器按 Origin 校验，白名单外的来源请求所有 JS chunk 都 403，页面永远停在「正在加载工作台」SSR 骨架（2026-08-15 实锤：121.40.34.214 未加白名单导致此故障）。改完要 `pm2 restart yibai-preview`
 - **进程管理**：`ecosystem.preview.config.cjs`（pm2 名 `yibai-preview`），`next dev` 热更新——代码保存即生效，无需 rebuild；开机自启已随 `pm2 save` 固化
 - **与生产完全隔离**：cwd 在 `.preview-runtime/`（data/、public/、logs/ 都在这里），不碰生产 `data/fashion-mvp-store.json`；`STORAGE_MODE=local` 强制测试上传不进 OSS；`NEXT_PREVIEW_DIST_DIR=.next-preview` 让 dev 构建与生产 `.next` 分离
 - **账号**：搭建时从生产 `data/users.json` + `invite-codes.json` 复制了一次，登录密码与生产一致；之后两边独立演进

@@ -14,7 +14,10 @@ const nextConfig = {
   // 既绕开 Turbopack 的 CJS→ESM 动态 interop bug，又保留 storage-adapter
   // 里"local 模式不加载 ali-oss"的延迟加载设计。
   serverExternalPackages: ['ali-oss'],
-  allowedDevOrigins: ['127.0.0.1', '100.71.171.11', '47.96.71.237', '192.168.0.107'],
+  // dev 服务器的 Origin 白名单：浏览器带非本机 Origin 请求 dev 资源（HMR、按需编译的
+  // JS chunk）时，不在白名单里的来源会被 403，导致页面拿不到 JS、永远停在 SSR 骨架。
+  // 测试站经公网 IP:3100 访问，必须把公网 IP 加进来；换 IP 时同步更新。
+  allowedDevOrigins: ['127.0.0.1', '100.71.171.11', '47.96.71.237', '192.168.0.107', '121.40.34.214'],
   turbopack: {
     root: projectRoot,
   },
