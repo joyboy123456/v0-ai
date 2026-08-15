@@ -45,3 +45,7 @@ logs/
 
 # Trellis 运行时会话数据
 .trellis/.runtime/
+
+# 测试站运行时目录（pm2 yibai-preview 独立数据/上传/distDir）
+.preview-runtime/
+.next-preview/
