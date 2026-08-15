@@ -534,6 +534,8 @@ If issues are found → fix → re-check, until green.
 
 [/codex-inline, Kilo, Antigravity, Windsurf]
 
+**本项目（yibai-fission）附加验收**：代码检查通过后，界面/流程/移动端/双主题的实际验收走开发测试站 `http://121.40.34.214:3100`（热更新，改完即看），流程与铁律见文末《测试站验收与生产发布流程》。
+
 #### 2.3 Rollback `[on demand]`
 
 - `check` reveals a prd defect → return to Phase 1, fix `prd.md`, then redo 2.1
@@ -627,6 +629,8 @@ The AI drives a batched commit of this task's code changes so `/finish-work` can
 
 After the above, remind the user they can run `/finish-work` to wrap up (archive the task, record the session).
 
+**本项目（yibai-fission）附加提醒**：发布生产（`pnpm build` + `pm2 restart yibai-fission`）之前必须先通过测试站验收；流程与铁律见文末《测试站验收与生产发布流程》。
+
 ---
 
 ## Customizing Trellis (for forks)
@@ -687,3 +691,43 @@ For the workflow state machine's runtime contract, the locations of all status w
 
 - `.trellis/spec/cli/backend/workflow-state-contract.md` — runtime contract + writer table + test invariants
 - `.trellis/scripts/inject-workflow-state.py` — actual parser (reads workflow.md only, no embedded text)
+
+---
+
+<!-- PROJECT-YIBAI:START -->
+## 测试站验收与生产发布流程（yibai-fission 项目专属）
+
+> 本机 4C/8G 同时跑三套服务：生产 `pm2 yibai-fission`（:3000）、开发测试站 `pm2 yibai-preview`（:3100，next dev 热更新）、DSH 宿主。测试站与生产同仓库同代码，但数据完全隔离。**之后所有新功能统一走：开发 → 测试站验收 → 生产发布**，禁止未经测试站验收直接发生产。
+
+### 1. 开发期间（Phase 1–2）
+
+- 按 Trellis 正常建任务、写代码；提交后测试站**无需任何操作**——next dev 热更新，代码保存即生效。
+- 后端未就绪的功能用「**前端 mock 先行**」模式：纯函数时间轴模拟任务生命周期 + `mock-gd-` 式 taskId 前缀 + 模型列表 mock 下发，范例 `lib/garment-detail-mock.ts`；界面验收通过后再另建任务接真后端。
+- 测试站是开发中间态：改到一半的代码用户可能会看到报错，属正常，验收以「当前状态说明」为准。
+
+### 2. 测试站验收（每个功能必做，代替"直接发生产"）
+
+- 入口：`http://121.40.34.214:3100`（安全组 TCP 3100；备选 nginx `preview.jjwlai.cn`），账号 user01 + 生产同款密码。
+- 验收清单：功能主流程、参数联动、任务进度/结果渲染、失败与重试路径、移动端（<768px 外壳，hover 操作 `max-md:opacity-100`）、双主题（暗/亮）。
+- **体验边界**：测试站已有功能（AI服装大片等）是真实出图、花真实供应商额度；验收时不要大批量生图（额度与服务器资源与生产共享）。
+- 验收结论记录到 task 的 `info.md`：通过 / 需修改项。
+
+### 3. 验收通过 → 生产发布（Phase 3.4 提交后）
+
+```bash
+pnpm typecheck && pnpm lint && pnpm build   # 必须全绿
+pm2 restart yibai-fission                  # 生产立即切到新构建
+```
+
+- 发布后验证：生产首页 200 + 页面引用的静态资源全部 200（`curl` 检查 buildId/chunk 一致性）。
+- **未通过验收不得发布生产**：build 只允许在准备发布时执行；验收不过就继续在测试站迭代，直到通过。
+- 收尾：任务归档、AGENTS.md 沉淀约定（新约定写入时给本流程留指针）。
+
+### 4. 铁律（血泪教训）
+
+1. `pnpm build` 会用当前工作区覆盖生产 `.next`——**只允许在准备发布时 build**。临时 build 后生产必须 `pm2 restart yibai-fission`，否则线上进程与磁盘构建不一致、静态资源 500。
+2. 数据隔离靠 cwd：测试站 cwd=`.preview-runtime/`（独立 data/、public/、日志）。绝不手动在生产与测试站之间拷贝 `data/` 下文件（搭建时的一次性账号复制除外）。
+3. 换公网 IP 必改 `next.config.mjs` 的 `allowedDevOrigins` 并 `pm2 restart yibai-preview`，否则测试站所有 JS chunk 403、页面永远停在「正在加载工作台」SSR 骨架。
+4. 改测试站 pm2 配置后 `pm2 delete yibai-preview && pm2 start ecosystem.preview.config.cjs`（restart 不更新 env/node_args）。
+5. dev 与生产共用源码，生产 `next-env.d.ts` / `tsconfig.json` 的 distDir 引用会被 dev 改写，提交前 `git checkout` 还原。
+<!-- PROJECT-YIBAI:END -->
