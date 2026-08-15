@@ -1,0 +1,3 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/tasks/08-15-hd-upscale-detail/prd.md", "reason": "本任务 PRD：第四功能界面范围、参数枚举与验收标准"}
+{"file": "AGENTS.md", "reason": "前端约定：双主题语义 token、移动端 768px 断点、hover 操作 max-md 可见"}

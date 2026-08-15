@@ -6,9 +6,11 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Columns2,
   Download,
   ImageIcon,
   Loader2,
+  Minus,
   Pencil,
   Plus,
   RefreshCw,
@@ -25,7 +27,9 @@ import {
   getOssThumbnailUrl,
   readJsonResponse,
 } from "@/lib/utils";
+import { isGarmentDetailMockTaskId } from "@/lib/garment-detail-mock";
 import { EnhancedImageTaskCard } from "./image-task-card";
+import { GarmentDetailCompareStage } from "./garment-detail-compare";
 import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
 import {
   AI_FASHION_DEMO_TASKS,
@@ -39,6 +43,7 @@ import {
   type FashionPromptMode,
   type FashionReferenceImage,
   type FeatureType,
+  type GarmentDetailParams,
   type GenerationTask,
   type PhotoFissionCase,
   type PhotoFissionParams,
@@ -132,6 +137,28 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
       .filter((result) => !result.shotId || !plannedIds.has(result.shotId))
       .map<ResultGridItem>((image) => ({ kind: "image", image }));
     return [...plannedItems, ...extraResults];
+  }
+
+  if (task.featureType === "garment-detail") {
+    // garment-detail（mock）：逐输出位展示进度卡，已完成的位直接出图
+    const params = task.params as Partial<GarmentDetailParams>;
+    if (Array.isArray(params.detailShots)) {
+      const plannedItems = params.detailShots.flatMap<ResultGridItem>((shot, index) => {
+        const shotId = shot.shotId ?? `detail_${index + 1}`;
+        const result = resultsByShotId.get(shotId);
+        const progress = task.shotProgress?.find((item) => item.shotId === shotId);
+        if (result) return [{ kind: "image", image: result, progress }];
+        if (progress) return [{ kind: "progress", progress }];
+        return [];
+      });
+      const plannedIds = new Set(
+        params.detailShots.map((shot, index) => shot.shotId ?? `detail_${index + 1}`),
+      );
+      const extraResults = task.results
+        .filter((result) => !result.shotId || !plannedIds.has(result.shotId))
+        .map<ResultGridItem>((image) => ({ kind: "image", image }));
+      return [...plannedItems, ...extraResults];
+    }
   }
 
   return task.results.map<ResultGridItem>((image) => ({ kind: "image", image }));
@@ -248,6 +275,8 @@ interface RightPanelProps {
   onRefreshTasks: () => void;
   onCancelTask: (taskId: string) => Promise<void>;
   onDeleteTaskResult: (taskId: string, assetId: string) => Promise<void>;
+  /** garment-detail mock 失败任务重试（前端界面先行阶段本地重置） */
+  onRetryGarmentDetailTask?: (task: GenerationTask) => void;
 }
 
 export function RightPanel({
@@ -279,6 +308,7 @@ export function RightPanel({
   onRefreshTasks,
   onCancelTask,
   onDeleteTaskResult,
+  onRetryGarmentDetailTask,
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<
     "current" | "history" | "cases" | "favorites" | "my-model-library" | "my-id-photo-library"
@@ -698,6 +728,20 @@ export function RightPanel({
 
   const handleBatchDownload = async () => {
     if (!visibleTask) return;
+    // garment-detail mock 任务没有服务端打包接口，直接逐张触发浏览器下载
+    if (isGarmentDetailMockTaskId(visibleTask.taskId)) {
+      visibleTask.results.forEach((result, index) => {
+        const anchor = document.createElement("a");
+        anchor.href = result.downloadUrl;
+        anchor.download = `${visibleTask.taskId}-${result.label ?? `detail-${index + 1}`}.jpg`;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      });
+      return;
+    }
     const response = await fetch(`/api/tasks/${visibleTask.taskId}/download`, {
       method: "POST",
     });
@@ -715,6 +759,11 @@ export function RightPanel({
     task: GenerationTask,
     shotIds: string[],
   ) => {
+    // garment-detail mock：失败任务整体重跑，由 workbench 本地重置时间轴
+    if (task.featureType === "garment-detail") {
+      onRetryGarmentDetailTask?.(task);
+      return;
+    }
     const isPoseFissionTask = task.featureType === "pose-fission";
     const endpoint = isPoseFissionTask
       ? `/api/pose-fission/tasks/${task.taskId}/retry`
@@ -1256,6 +1305,12 @@ export function RightPanel({
             batchSelectMode={batchSelectMode}
             selectedAssetIds={selectedAssets}
             sameStyleTaskId={sameStyleTaskId}
+            tasksLoading={tasksLoading}
+            tasksTotal={tasksTotal}
+            tasksHasMore={tasksHasMore}
+            tasksLoadingMore={tasksLoadingMore}
+            loadedTaskCount={tasks.length}
+            onLoadMoreTasks={onLoadMoreTasks}
             onBatchDownload={handleBatchDownload}
             onCancelTask={onCancelTask}
             onPreviewImage={(image, task) => setPreviewResult({ image, task })}
@@ -1523,6 +1578,75 @@ function ResultImageCard({
   );
 }
 
+/**
+ * ViewportLazyImage — 案例库图片视口级按需加载。
+ *
+ * 图片进入视口附近（上下各 600px 预载带）才真正挂载 <img> 发起请求，
+ * 之前只渲染 shimmer 骨架，长列表滚动时不会一次性把几百张 OSS 缩略图
+ * 全部打出去。挂载后不再卸载，回看已加载区域不会重复请求。
+ * IntersectionObserver 不可用时直接加载（老浏览器兜底）。
+ */
+function ViewportLazyImage({
+  src,
+  alt,
+  className,
+  containerClassName,
+  onError,
+}: {
+  src: string;
+  alt: string;
+  className?: string;
+  containerClassName?: string;
+  onError?: (event: React.SyntheticEvent<HTMLImageElement>) => void;
+}) {
+  const holderRef = useRef<HTMLDivElement | null>(null);
+  const [shouldLoad, setShouldLoad] = useState(false);
+
+  useEffect(() => {
+    const node = holderRef.current;
+    if (!node) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setShouldLoad(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setShouldLoad(true);
+            observer.disconnect();
+            break;
+          }
+        }
+      },
+      { rootMargin: "600px 0px 600px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div
+      ref={holderRef}
+      className={cn("relative h-full w-full overflow-hidden", containerClassName)}
+    >
+      {shouldLoad ? (
+        <ShimmerImage
+          src={src}
+          alt={alt}
+          loading="eager"
+          decoding="async"
+          onError={onError}
+          containerClassName="absolute inset-0"
+          className={className}
+        />
+      ) : (
+        <div aria-hidden="true" className="skeleton-shimmer absolute inset-0" />
+      )}
+    </div>
+  );
+}
+
 function AiFashionMasonryGallery({
   items,
   activeTask,
@@ -1530,6 +1654,12 @@ function AiFashionMasonryGallery({
   batchSelectMode,
   selectedAssetIds,
   sameStyleTaskId,
+  tasksLoading,
+  tasksTotal,
+  tasksHasMore,
+  tasksLoadingMore,
+  loadedTaskCount,
+  onLoadMoreTasks,
   onBatchDownload,
   onCancelTask,
   onPreviewImage,
@@ -1544,6 +1674,12 @@ function AiFashionMasonryGallery({
   batchSelectMode: boolean;
   selectedAssetIds: Map<string, { url: string; downloadUrl: string }>;
   sameStyleTaskId: string | null;
+  tasksLoading?: boolean;
+  tasksTotal?: number;
+  tasksHasMore?: boolean;
+  tasksLoadingMore?: boolean;
+  loadedTaskCount?: number;
+  onLoadMoreTasks?: () => void;
   onBatchDownload: () => void;
   onCancelTask: (taskId: string) => Promise<void>;
   onPreviewImage: (image: ResultAsset, task: GenerationTask) => void;
@@ -1552,8 +1688,43 @@ function AiFashionMasonryGallery({
   onToggleFavorite: (assetId: string) => void;
   onToggleImageSelection: (assetId: string, url: string, downloadUrl: string) => void;
 }) {
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreRafRef = useRef<number | null>(null);
+
+  // 底部哨兵进入视口（预载 400px）时自动翻页；加载完成后若仍可见
+  // （一页没填满视口）会再次触发，直到填满或没有更多为止。
+  // 滚动回调里用 rAF 合并检查，避免高频 scroll 事件中读取布局（INP 指南：
+  // 快速事件监听要节流、避免 layout thrashing）。
+  const loadMoreIfVisible = useCallback(() => {
+    if (!onLoadMoreTasks || !tasksHasMore || tasksLoadingMore) return;
+    if (loadMoreRafRef.current !== null) return;
+    loadMoreRafRef.current = requestAnimationFrame(() => {
+      loadMoreRafRef.current = null;
+      const sentinel = sentinelRef.current;
+      if (!sentinel) return;
+      const rect = sentinel.getBoundingClientRect();
+      if (rect.top <= window.innerHeight + 400) {
+        onLoadMoreTasks();
+      }
+    });
+  }, [onLoadMoreTasks, tasksHasMore, tasksLoadingMore]);
+
+  useEffect(() => {
+    loadMoreIfVisible();
+  }, [loadMoreIfVisible]);
+
+  // 卸载时取消未执行的 rAF
+  useEffect(() => {
+    return () => {
+      if (loadMoreRafRef.current !== null) {
+        cancelAnimationFrame(loadMoreRafRef.current);
+        loadMoreRafRef.current = null;
+      }
+    };
+  }, []);
+
   return (
-    <div className="flex-1 overflow-y-auto p-5">
+    <div className="flex-1 overflow-y-auto p-5" onScroll={loadMoreIfVisible}>
       <div className="space-y-5">
         {activeTask && (
           <TaskStatusCard
@@ -1564,8 +1735,9 @@ function AiFashionMasonryGallery({
         )}
 
         {items.length > 0 ? (
-          <div className="columns-2 lg:columns-3 xl:columns-4 gap-2">
-            {items.map(({ image, task }) => {
+          <>
+            <div className="columns-2 lg:columns-3 xl:columns-4 gap-2">
+            {items.map(({ image, task }, index) => {
               const isFavorite = favorites.has(image.assetId);
               const isSelected = selectedAssetIds.has(image.assetId);
               const isSameStyleDone = sameStyleTaskId === task.taskId;
@@ -1588,6 +1760,12 @@ function AiFashionMasonryGallery({
                   role="button"
                   tabIndex={0}
                   aria-pressed={batchSelectMode ? isSelected : undefined}
+                  // 卡片图片 alt=""，按钮本身必须有可访问名称（html 指南）
+                  aria-label={
+                    batchSelectMode
+                      ? `选择第 ${index + 1} 张生成图`
+                      : `查看第 ${index + 1} 张生成图`
+                  }
                   onClick={() => {
                     if (batchSelectMode) {
                       onToggleImageSelection(
@@ -1622,11 +1800,9 @@ function AiFashionMasonryGallery({
                       : "glass-card-hover",
                   )}
                 >
-                  <ShimmerImage
+                  <ViewportLazyImage
                     src={image.thumbnailUrl || getOssThumbnailUrl(image.url)}
                     alt=""
-                    loading="lazy"
-                    decoding="async"
                     containerClassName="absolute inset-0"
                     className="block h-full w-full object-cover"
                   />
@@ -1719,6 +1895,43 @@ function AiFashionMasonryGallery({
                 </div>
               );
             })}
+            </div>
+
+            {onLoadMoreTasks && (
+              <div
+                ref={sentinelRef}
+                className="flex flex-col items-center gap-2 py-4"
+              >
+                {tasksLoadingMore ? (
+                  <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                    <RefreshCw className="size-3.5 animate-spin" />
+                    正在加载更多案例…
+                  </span>
+                ) : tasksHasMore ? (
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      已加载 {loadedTaskCount ?? 0} / {tasksTotal ?? 0} 个任务
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onLoadMoreTasks}
+                      className="rounded-md border border-border px-3 py-1.5 text-[12px] text-muted-foreground transition-colors hover:border-primary/60 hover:text-foreground"
+                    >
+                      加载更多
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    已加载全部 {tasksTotal ?? 0} 个历史任务
+                  </span>
+                )}
+              </div>
+            )}
+          </>
+        ) : tasksLoading ? (
+          <div className="flex min-h-[420px] items-center justify-center text-muted-foreground">
+            <RefreshCw className="size-5 animate-spin" />
+            <span className="ml-2 text-sm">正在加载案例库…</span>
           </div>
         ) : (
           <div className="min-h-[520px] rounded-md border border-dashed border-border bg-transparent flex flex-col items-center justify-center text-center p-8 mx-4 my-8">
@@ -1763,8 +1976,17 @@ function GenerationDetailDialog({
 }) {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
   const [previewAsset, setPreviewAsset] = useState<AssetRecord | null>(null);
+  // garment-detail：原图 vs 细节图对比模式（PRD FR-18）
+  const [compareMode, setCompareMode] = useState(false);
   const { image, task } = preview;
   const isFavorite = favorites.has(image.assetId);
+  const isGarmentDetail = task.featureType === "garment-detail";
+  const garmentDetailOriginalUrl = isGarmentDetail
+    ? task.inputAssets?.[0]?.fileUrl
+    : undefined;
+  const garmentDetailModelName = isGarmentDetail
+    ? (task.params as Partial<GarmentDetailParams>).algorithmModelName
+    : undefined;
   const rawParams = task.params as {
     prompt?: string;
     userPrompt?: string;
@@ -1825,23 +2047,46 @@ function GenerationDetailDialog({
   return (
     <div className="grid h-[100dvh] min-h-0 grid-cols-1 grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_360px_72px] md:grid-rows-1 bg-background text-foreground">
       <div className="relative min-h-0 overflow-hidden bg-[#111315] max-md:order-1">
-        <div className="flex h-full items-center justify-center px-8 py-10">
-          <ShimmerImage
-            src={image.url}
-            alt=""
-            containerClassName="flex w-full min-h-[40vh] items-center justify-center rounded-sm"
-            containerStyle={{
-              "--skeleton-bg": "rgba(255, 255, 255, 0.05)",
-              "--skeleton-sweep": "rgba(255, 255, 255, 0.08)",
-            } as React.CSSProperties}
-            className="max-h-[55dvh] md:max-h-[calc(100dvh-104px)] max-w-full rounded-sm object-contain"
-          />
-        </div>
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center bg-gradient-to-t from-background/80 to-transparent px-6 py-5">
-          <span className="rounded-full bg-black/50 px-3 py-1 text-sm text-white/80">
-            {image.width} x{image.height}
-          </span>
-        </div>
+        {isGarmentDetail ? (
+          <>
+            <GarmentDetailCompareStage
+              key={image.assetId}
+              detailUrl={image.url}
+              originalUrl={garmentDetailOriginalUrl}
+              compare={compareMode}
+            />
+            {garmentDetailOriginalUrl && (
+              <button
+                type="button"
+                onClick={() => setCompareMode((current) => !current)}
+                className="absolute right-3 top-3 z-10 inline-flex h-8 items-center gap-1.5 rounded-full bg-black/55 px-3 text-[12px] font-medium text-white/85 transition-colors hover:bg-black/75"
+              >
+                <Columns2 className="h-3.5 w-3.5" />
+                {compareMode ? "退出对比" : "原图对比"}
+              </button>
+            )}
+          </>
+        ) : (
+          <div className="flex h-full items-center justify-center px-8 py-10">
+            <ShimmerImage
+              src={image.url}
+              alt=""
+              containerClassName="flex w-full min-h-[40vh] items-center justify-center rounded-sm"
+              containerStyle={{
+                "--skeleton-bg": "rgba(255, 255, 255, 0.05)",
+                "--skeleton-sweep": "rgba(255, 255, 255, 0.08)",
+              } as React.CSSProperties}
+              className="max-h-[55dvh] md:max-h-[calc(100dvh-104px)] max-w-full rounded-sm object-contain"
+            />
+          </div>
+        )}
+        {!isGarmentDetail && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center bg-gradient-to-t from-background/80 to-transparent px-6 py-5">
+            <span className="rounded-full bg-black/50 px-3 py-1 text-sm text-white/80">
+              {image.width} x{image.height}
+            </span>
+          </div>
+        )}
       </div>
 
       <aside className="flex min-h-0 flex-col border-l border-border bg-background max-md:order-2 max-md:max-h-[40dvh] max-md:overflow-y-auto max-md:border-l-0 max-md:border-t">
@@ -1954,6 +2199,11 @@ function GenerationDetailDialog({
                     {modelMeta.label}
                   </span>
                 )}
+                {garmentDetailModelName && (
+                  <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                    {garmentDetailModelName}
+                  </span>
+                )}
                 {promptModeMeta && (
                   <span
                     className={cn(
@@ -2007,7 +2257,9 @@ function GenerationDetailDialog({
             </div>
 
             <div className="space-y-3">
-              <p className="text-sm font-medium">本次参考图</p>
+              <p className="text-sm font-medium">
+                {isGarmentDetail ? "输入图片（原图 + 参考图）" : "本次参考图"}
+              </p>
               {task.inputAssets?.length ? (
                 <div className="grid grid-cols-4 gap-2">
                   {task.inputAssets.map((asset, index) => (
@@ -2823,14 +3075,24 @@ function TaskStatusCard({
   }, [isPhotoFission, isPoseFission, task.params, task.results]);
 
   const canRetryShots =
-    (isPhotoFission || isPoseFission) &&
-    onRetryShots &&
-    failedShotIds.length > 0 &&
-    (task.status === "partial" ||
-      (task.status === "failed" && task.results.length > 0));
+    ((isPhotoFission || isPoseFission) &&
+      onRetryShots &&
+      failedShotIds.length > 0 &&
+      (task.status === "partial" ||
+        (task.status === "failed" && task.results.length > 0))) ||
+    // garment-detail（mock）：整个任务失败时提供整体重跑入口（PRD FR-17）
+    (task.featureType === "garment-detail" &&
+      Boolean(onRetryShots) &&
+      task.status === "failed");
 
-  // photo-fission 用「镜头」措辞，pose-fission 用「姿势」措辞，沿用各 feature 既有产品文案。
+  // photo-fission 用「镜头」措辞，pose-fission 用「姿势」措辞，garment-detail 整体重跑，沿用各 feature 既有产品文案。
+  const isGarmentDetail = task.featureType === "garment-detail";
   const retryLabel = isPoseFission ? "失败姿势" : "失败镜头";
+  const retryButtonText = isGarmentDetail
+    ? "重新生成"
+    : retrying
+      ? "重跑中..."
+      : `重新生成${retryLabel} (${failedShotIds.length})`;
 
   const handleRetry = async () => {
     if (!onRetryShots || retrying) return;
@@ -2892,17 +3154,17 @@ function TaskStatusCard({
               disabled={retrying}
               className="px-3 py-2 rounded-md border border-primary/60 bg-primary/10 text-primary text-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary hover:text-primary-foreground transition-colors"
               title={
-                isPoseFission
-                  ? "只重跑当前未成功的姿势，已有图保留"
-                  : "只重跑当前未成功的镜头，已有图保留"
+                isGarmentDetail
+                  ? "重新发起整个生成任务"
+                  : isPoseFission
+                    ? "只重跑当前未成功的姿势，已有图保留"
+                    : "只重跑当前未成功的镜头，已有图保留"
               }
             >
               <RefreshCw
                 className={cn("w-4 h-4", retrying && "animate-spin")}
               />
-              {retrying
-                ? "重跑中..."
-                : `重新生成${retryLabel} (${failedShotIds.length})`}
+              {retryButtonText}
             </button>
           )}
           {onCancelTask && isCancellableTask(task) && (
@@ -2950,7 +3212,7 @@ function TaskStatusCard({
               ? "排队等待中"
               : "已暂停启动新的生成单元"}
         </span>
-        {!isPhotoFission && !isPoseFission && (
+        {!isPhotoFission && !isPoseFission && !isGarmentDetail && (
           <span>额度 -{task.creditsUsed}</span>
         )}
       </div>
@@ -3918,11 +4180,11 @@ function FavoriteCasesGallery({
                   : "border-border hover:border-primary/60",
               )}
             >
-              <img
+              <ViewportLazyImage
                 src={getOssThumbnailUrl(asset.fileUrl)}
                 alt={asset.fileName}
-                className="h-full w-full object-cover"
-                loading="lazy"
+                containerClassName="h-full w-full"
+                className="block h-full w-full object-cover"
                 onError={(event) => {
                   event.stopPropagation();
                   handleBrokenAsset(asset);

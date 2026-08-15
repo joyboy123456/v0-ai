@@ -13,6 +13,7 @@ import {
   Repeat2,
   Trash2,
   X,
+  ZoomIn,
 } from 'lucide-react'
 import { CleanupDialog } from './cleanup-dialog'
 import { InviteCodesDialog } from './invite-codes-dialog'
@@ -33,6 +34,7 @@ const featureIcons = {
   'ai-fashion-photo': Camera,
   'photo-fission': Repeat2,
   'pose-fission': PersonStanding,
+  'garment-detail': ZoomIn,
 } satisfies Record<FeatureType, typeof Camera>
 
 interface MobileShellProps {

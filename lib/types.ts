@@ -6,6 +6,7 @@ export type FeatureType =
   | 'ai-fashion-photo'
   | 'photo-fission'
   | 'pose-fission'
+  | 'garment-detail'
 
 /**
  * 服饰智能分层（SegmentCloth）支持的 7 个合法 ClothClass 类别。
@@ -377,6 +378,79 @@ export type TaskParams =
   | PhotoFissionParams
   | BackgroundReplaceParams
   | PoseFissionParams
+  | GarmentDetailParams
+
+// ---------------------------------------------------------------------------
+// 高清放大细节图（garment-detail，PRD v1.0《服装细节图生成功能》）
+// 当前为前端界面先行阶段：任务由 lib/garment-detail-mock.ts 在本地模拟，
+// 服务端接口（STS 直传 / 抠图分类 / 模型版本下发 / 计费）后续任务再接。
+// ---------------------------------------------------------------------------
+
+/** PRD FR-3 服装分类：抠图分类服务的输出类目，允许用户手动修正（FR-4）。 */
+export type GarmentDetailCategory =
+  | 'tops'
+  | 'bottoms'
+  | 'dress'
+  | 'accessory'
+  | 'shoes-bags'
+
+export const GARMENT_DETAIL_CATEGORIES = [
+  { id: 'tops', label: '上装' },
+  { id: 'bottoms', label: '下装' },
+  { id: 'dress', label: '连衣裙' },
+  { id: 'accessory', label: '配饰' },
+  { id: 'shoes-bags', label: '鞋包' },
+] satisfies { id: GarmentDetailCategory; label: string }[]
+
+/** PRD FR-5 模型档位：标准版（1K，默认）/ 专业版（2K、4K）。 */
+export type GarmentDetailTier = 'standard' | 'professional'
+export type GarmentDetailResolution = '1k' | '2k' | '4k'
+/** PRD FR-13 输出比例：默认 1:1，可选 3:4 / 4:3。 */
+export type GarmentDetailRatio = '1:1' | '3:4' | '4:3'
+
+export const GARMENT_DETAIL_RATIOS = [
+  { id: '1:1', label: '1:1' },
+  { id: '3:4', label: '3:4' },
+  { id: '4:3', label: '4:3' },
+] satisfies { id: GarmentDetailRatio; label: string }[]
+
+/** PRD FR-7：参考图最多 3 张，每张生成 1 张结果。 */
+export const GARMENT_DETAIL_MAX_REFERENCES = 3
+/** PRD FR-9：自定义提示词最多 103 字。 */
+export const GARMENT_DETAIL_PROMPT_MAX = 103
+
+/**
+ * 单个细节图输出位（对应 PRD §6.1 sceneLoraList 的一项）。
+ * 输出数量 = 参考图数量（无参考图时 1 张，FR-14）。
+ */
+export interface GarmentDetailShot {
+  shotId: string
+  /** 细节部位标签，如「领口细节」「面料纹理」 */
+  label: string
+  /** 关联的参考图 assetId；无参考图的默认输出为 null */
+  referenceAssetId: string | null
+}
+
+export interface GarmentDetailParams {
+  category: GarmentDetailCategory
+  /** 动态模型版本列表下发（FR-6），前端不硬编码 */
+  algorithmModelId: string
+  algorithmModelName: string
+  modelTier: GarmentDetailTier
+  resolution: GarmentDetailResolution
+  imageRatio: GarmentDetailRatio
+  /** 用户自定义提示词（可空，≤103 字；服务端合并进模板，FR-10） */
+  userPrompt: string
+  /** AI 追加描述开关（FR-11） */
+  aiAppendDescription: boolean
+  referenceImageCount: number
+  detailShots: GarmentDetailShot[]
+  resultCount: number
+  /** 前端 mock 阶段不计费 */
+  creditsCost: 0
+  /** 仅 mock 用：重试次数，>0 时模拟链路走成功路径 */
+  mockRetryCount?: number
+}
 
 export interface UploadedImage {
   assetId: string
@@ -449,6 +523,13 @@ export const FEATURES: Feature[] = [
     name: '姿势裂变',
     description: '选择姿势案例，保持服装细节生成同款多姿势素材',
     credits: 1,
+    status: 'available',
+  },
+  {
+    id: 'garment-detail',
+    name: '高清放大细节图',
+    description: '上传服装图，自动生成领口/袖口/面料等高清局部细节图',
+    credits: 0,
     status: 'available',
   },
 ]
@@ -790,12 +871,14 @@ export const FEATURE_WORKFLOWS: Record<FeatureType, string> = {
   'ai-fashion-photo': 'ai_fashion_photo_v1',
   'photo-fission': 'photo_fission_v1',
   'pose-fission': 'pose_fission_v1',
+  'garment-detail': 'garment_detail_mock_v1',
 }
 
 export const FEATURE_LABELS: Record<FeatureType, string> = {
   'ai-fashion-photo': 'AI服装大片',
   'photo-fission': '服装大片裂变',
   'pose-fission': '姿势裂变',
+  'garment-detail': '高清放大细节图',
 }
 
 /**

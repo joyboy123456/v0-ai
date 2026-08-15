@@ -19,6 +19,16 @@ import {
 import { MyPoseLibrary } from "./my-pose-library";
 import { OptionSelector } from "./option-selectors";
 import {
+  GarmentDetailForm,
+  type GarmentDetailRecognizePhase,
+} from "./garment-detail-form";
+import {
+  buildGarmentDetailShots,
+  createGarmentDetailMockTask,
+  fetchGarmentDetailModels,
+  type GarmentDetailModelOption,
+} from "@/lib/garment-detail-mock";
+import {
   prepareImageForGenerationUpload,
   UploadBox,
 } from "./upload-components";
@@ -78,6 +88,11 @@ import {
   type FashionRemixRequest,
   type FashionResolution,
   type FeatureType,
+  type GarmentDetailCategory,
+  type GarmentDetailParams,
+  type GarmentDetailRatio,
+  type GarmentDetailResolution,
+  type GenerationTask,
   type PhotoFissionChildrensCategory,
   type PhotoFissionCategory,
   type PhotoFissionCase,
@@ -141,6 +156,8 @@ interface LeftPanelProps {
   onRenamePose: (poseId: string, name: string) => void;
   onDeletePose: (poseId: string) => void;
   onTaskCreated: (taskId: string) => void;
+  /** garment-detail 前端 mock：提交后由 workbench 接管本地任务推进 */
+  onGarmentDetailMockTaskCreated?: (task: GenerationTask) => void;
 }
 
 interface PhotoFissionCaseRequest {
@@ -171,6 +188,7 @@ export function LeftPanel({
   onRenamePose,
   onDeletePose,
   onTaskCreated,
+  onGarmentDetailMockTaskCreated,
 }: LeftPanelProps) {
   const [fashionPrompt, setFashionPrompt] = useState("");
   const [fashionPromptMode, setFashionPromptMode] =
@@ -232,6 +250,87 @@ export function LeftPanel({
   const [poseResolution, setPoseResolution] = useState<PoseResolution>("4k");
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState("");
+
+  // ---- 高清放大细节图（garment-detail，前端 mock 阶段）----
+  const [garmentDetailMainImage, setGarmentDetailMainImage] =
+    useState<UploadedImage | null>(null);
+  const [garmentDetailRecognizePhase, setGarmentDetailRecognizePhase] =
+    useState<GarmentDetailRecognizePhase>("idle");
+  const [garmentDetailCategory, setGarmentDetailCategory] =
+    useState<GarmentDetailCategory>("tops");
+  const [garmentDetailModels, setGarmentDetailModels] = useState<
+    GarmentDetailModelOption[] | null
+  >(null);
+  const [garmentDetailModelId, setGarmentDetailModelId] = useState<
+    string | null
+  >(null);
+  const [garmentDetailReferences, setGarmentDetailReferences] = useState<
+    (UploadedImage | null)[]
+  >([null, null, null]);
+  const [garmentDetailPrompt, setGarmentDetailPrompt] = useState("");
+  const [garmentDetailAiAppend, setGarmentDetailAiAppend] = useState(false);
+  const [garmentDetailRatio, setGarmentDetailRatio] =
+    useState<GarmentDetailRatio>("1:1");
+  const [garmentDetailResolution, setGarmentDetailResolution] =
+    useState<GarmentDetailResolution>("1k");
+
+  // mock 模型版本列表动态下发（FR-6）；进入该功能时拉取一次
+  useEffect(() => {
+    if (feature !== "garment-detail" || garmentDetailModels !== null) return;
+    let cancelled = false;
+    void fetchGarmentDetailModels().then((models) => {
+      if (cancelled) return;
+      setGarmentDetailModels(models);
+      const defaultModel =
+        models.find((model) => model.defaultSelected) ?? models[0];
+      if (defaultModel) {
+        setGarmentDetailModelId((current) => current ?? defaultModel.algorithmModelId);
+        setGarmentDetailResolution((current) =>
+          defaultModel.resolutions.includes(current)
+            ? current
+            : defaultModel.resolutions[0],
+        );
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [feature, garmentDetailModels]);
+
+  // mock 抠图分类（FR-3/FR-4）：主图上传后模拟 1.2s 识别，按文件名做简单猜测
+  useEffect(() => {
+    if (!garmentDetailMainImage) {
+      setGarmentDetailRecognizePhase("idle");
+      return;
+    }
+    setGarmentDetailRecognizePhase("processing");
+    const name = garmentDetailMainImage.name;
+    const guessed: GarmentDetailCategory = /裤/.test(name)
+      ? "bottoms"
+      : /裙/.test(name)
+        ? "dress"
+        : /鞋|包/.test(name)
+          ? "shoes-bags"
+          : /配饰|帽|围巾/.test(name)
+            ? "accessory"
+            : "tops";
+    const timer = window.setTimeout(() => {
+      setGarmentDetailCategory(guessed);
+      setGarmentDetailRecognizePhase("done");
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [garmentDetailMainImage]);
+
+  const handleGarmentDetailModelChange = useCallback(
+    (model: GarmentDetailModelOption) => {
+      setGarmentDetailModelId(model.algorithmModelId);
+      // 分辨率随档位联动：当前分辨率不在新模型能力内时回退到该模型首档
+      setGarmentDetailResolution((current) =>
+        model.resolutions.includes(current) ? current : model.resolutions[0],
+      );
+    },
+    [],
+  );
 
   const activeImage =
     feature === "photo-fission"
@@ -383,6 +482,7 @@ export function LeftPanel({
   const helperText = useMemo(() => {
     if (feature === "ai-fashion-photo") return "上传服装、姿势或场景参考图";
     if (feature === "photo-fission") return "上传一张已满意的服装大片作为参考";
+    if (feature === "garment-detail") return "上传清晰的服装平拍图或上身图";
     return "请上传需要姿势裂变的清晰主图";
   }, [feature]);
 
@@ -408,7 +508,36 @@ export function LeftPanel({
   const getParams = ():
     | AiFashionPhotoParams
     | PhotoFissionParams
-    | PoseFissionParams => {
+    | PoseFissionParams
+    | GarmentDetailParams => {
+    if (feature === "garment-detail") {
+      const selectedModel =
+        garmentDetailModels?.find(
+          (model) => model.algorithmModelId === garmentDetailModelId,
+        ) ?? null;
+      const referenceAssetIds = garmentDetailReferences
+        .filter((image): image is UploadedImage => Boolean(image))
+        .map((image) => image.assetId);
+      const detailShots = buildGarmentDetailShots(
+        garmentDetailCategory,
+        referenceAssetIds,
+      );
+      return {
+        category: garmentDetailCategory,
+        algorithmModelId: selectedModel?.algorithmModelId ?? "std-v1",
+        algorithmModelName: selectedModel?.algorithmModelName ?? "标准版",
+        modelTier: selectedModel?.tier ?? "standard",
+        resolution: garmentDetailResolution,
+        imageRatio: garmentDetailRatio,
+        userPrompt: garmentDetailPrompt.trim(),
+        aiAppendDescription: garmentDetailAiAppend,
+        referenceImageCount: referenceAssetIds.length,
+        detailShots,
+        resultCount: detailShots.length,
+        creditsCost: 0,
+      };
+    }
+
     if (feature === "ai-fashion-photo") {
       const trimmedPrompt = fashionPrompt.trim();
       return {
@@ -488,6 +617,33 @@ export function LeftPanel({
   };
 
   const handleCreateTask = async () => {
+    // garment-detail 前端界面先行：不走后端 /api/tasks，本地创建 mock 任务
+    if (feature === "garment-detail") {
+      if (!garmentDetailMainImage) {
+        setError("请先上传服装原图");
+        return;
+      }
+      if (!garmentDetailModels || !garmentDetailModelId) {
+        setError("模型版本列表加载中，请稍候再提交");
+        return;
+      }
+      setError("");
+      setIsCreating(true);
+      try {
+        const task = createGarmentDetailMockTask({
+          params: getParams() as GarmentDetailParams,
+          mainImage: garmentDetailMainImage,
+          referenceImages: garmentDetailReferences.filter(
+            (image): image is UploadedImage => Boolean(image),
+          ),
+        });
+        onGarmentDetailMockTaskCreated?.(task);
+      } finally {
+        setIsCreating(false);
+      }
+      return;
+    }
+
     if (feature === "ai-fashion-photo") {
       if (!fashionReferences.length) {
         setError("请先上传参考图或在我的模特库选择模特");
@@ -911,6 +1067,41 @@ export function LeftPanel({
                 onPlannerReasoningEnabledChange={
                   setPhotoFissionPlannerReasoningEnabled
                 }
+              />
+            ) : feature === "garment-detail" ? (
+              <GarmentDetailForm
+                mainImage={garmentDetailMainImage}
+                recognizePhase={garmentDetailRecognizePhase}
+                category={garmentDetailCategory}
+                models={garmentDetailModels}
+                selectedModelId={garmentDetailModelId}
+                references={garmentDetailReferences}
+                prompt={garmentDetailPrompt}
+                aiAppendDescription={garmentDetailAiAppend}
+                imageRatio={garmentDetailRatio}
+                resolution={garmentDetailResolution}
+                onMainUploaded={setGarmentDetailMainImage}
+                onMainRemove={() => setGarmentDetailMainImage(null)}
+                onCategoryChange={setGarmentDetailCategory}
+                onModelChange={handleGarmentDetailModelChange}
+                onReferenceUploaded={(index, image) =>
+                  setGarmentDetailReferences((current) =>
+                    current.map((item, currentIndex) =>
+                      currentIndex === index ? image : item,
+                    ),
+                  )
+                }
+                onReferenceRemove={(index) =>
+                  setGarmentDetailReferences((current) =>
+                    current.map((item, currentIndex) =>
+                      currentIndex === index ? null : item,
+                    ),
+                  )
+                }
+                onPromptChange={setGarmentDetailPrompt}
+                onAiAppendDescriptionChange={setGarmentDetailAiAppend}
+                onImageRatioChange={setGarmentDetailRatio}
+                onResolutionChange={setGarmentDetailResolution}
               />
             ) : null}
           </>
