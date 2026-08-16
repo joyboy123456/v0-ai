@@ -1,0 +1,6 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": "AGENTS.md", "reason": "项目级约定：测试站流程、语义 token、node --test TS 坑、garment-detail mock 约定"}
+{"file": ".trellis/tasks/08-16-garment-detail-backend/research/frontend-mock-wiring.md", "reason": "前端 mock 接线点：workbench 分支、模型列表、提交路径、素材描述"}
+{"file": ".trellis/tasks/08-16-garment-detail-backend/info.md", "reason": "主会话勘察结论与技术设计备忘"}
+{"file": ".trellis/tasks/08-16-garment-detail-backend/research/backend-integration-points.md", "reason": "后端集成点勘察：task-store/retry/pool/billing/错误响应/测试约定"}
+{"file": ".trellis/tasks/08-16-garment-detail-backend/research/classify-and-shots.md", "reason": "SegmentCloth 分类调用方式与安全取图"}
