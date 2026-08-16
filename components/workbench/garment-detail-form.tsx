@@ -1,10 +1,10 @@
 "use client";
 
 /**
- * 高清放大细节图（garment-detail）创作表单 —— 前端界面先行。
+ * 高清放大细节图（garment-detail）创作表单。
  *
  * 对应《服装细节图生成功能 PRD v1.0》§3/§4：
- * 上传服装原图 → mock 抠图分类（可手动修正）→ 模型双档（动态下发 mock）
+ * 上传服装原图 → 服务端分类建议（可手动修正）→ 模型双档（后端动态下发）
  * → 参考图 ≤3 张 → 自定义提示词 ≤103 字 + AI 追加描述 → 分辨率/比例。
  *
  * 本组件为纯受控组件，状态与提交都由 LeftPanel 持有（与 PoseFissionForm 同模式）。
@@ -23,10 +23,10 @@ import {
   type GarmentDetailResolution,
   type UploadedImage,
 } from "@/lib/types";
-import type { GarmentDetailModelOption } from "@/lib/garment-detail-mock";
+import type { GarmentDetailModelOption } from "@/lib/garment-detail-api";
 import { UploadBox } from "./upload-components";
 
-/** mock 识别阶段：idle（未上传）→ processing（识别中）→ done（可确认/修正） */
+/** 识别阶段：idle（未上传）→ processing（识别中）→ done（可确认/修正） */
 export type GarmentDetailRecognizePhase = "idle" | "processing" | "done";
 
 const RESOLUTION_LABELS: Record<GarmentDetailResolution, string> = {
@@ -66,6 +66,7 @@ function getGarmentDetailRatioStyle(id: GarmentDetailRatio) {
 export function GarmentDetailForm({
   mainImage,
   recognizePhase,
+  recognizeNotice,
   category,
   models,
   selectedModelId,
@@ -87,8 +88,10 @@ export function GarmentDetailForm({
 }: {
   mainImage: UploadedImage | null;
   recognizePhase: GarmentDetailRecognizePhase;
+  /** 识别提示态：低置信度需确认 / 分类服务降级警告（done 阶段展示，不阻塞表单） */
+  recognizeNotice?: string | null;
   category: GarmentDetailCategory;
-  /** null 表示模型版本列表仍在加载（mock 动态下发） */
+  /** null 表示模型版本列表仍在加载；空数组表示模型暂不可用 */
   models: GarmentDetailModelOption[] | null;
   selectedModelId: string | null;
   /** 固定 3 个槽位，空槽为 null（FR-7：最多 3 张参考图） */
@@ -128,7 +131,7 @@ export function GarmentDetailForm({
         />
       </div>
 
-      {/* 2. 抠图分类结果确认（FR-3 / FR-4，当前为 mock 识别） */}
+      {/* 2. 分类结果确认（FR-3 / FR-4，服务端分类建议） */}
       {recognizePhase !== "idle" && (
         <div className="space-y-2 rounded-md border border-border bg-secondary/40 p-3">
           <div className="flex items-center gap-2 text-sm text-foreground">
@@ -150,6 +153,11 @@ export function GarmentDetailForm({
                 </span>
                 ，识别有误可手动修正
               </p>
+              {recognizeNotice && (
+                <p className="text-[12px] text-muted-foreground">
+                  {recognizeNotice}
+                </p>
+              )}
               <div className="flex flex-wrap gap-1.5">
                 {GARMENT_DETAIL_CATEGORIES.map((option) => (
                   <button
@@ -187,6 +195,10 @@ export function GarmentDetailForm({
               正在拉取模型版本列表…
             </p>
           </div>
+        ) : models.length === 0 ? (
+          <p className="rounded-md border border-border bg-secondary/40 px-3 py-2 text-[12px] text-muted-foreground">
+            模型暂不可用，请稍后刷新重试
+          </p>
         ) : (
           <div className="space-y-2">
             {models.map((model) => {
@@ -285,7 +297,7 @@ export function GarmentDetailForm({
           className="resize-none bg-secondary text-sm"
         />
         <p className="text-[11px] text-muted-foreground">
-          留空走系统默认模板；填写后将合并进服务端提示词模板（演示：输入「失败」可预览失败与重试流程）
+          留空走系统默认模板；填写后将合并进服务端提示词模板
         </p>
         <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-secondary/40 px-3 py-2">
           <div className="min-w-0">

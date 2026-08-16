@@ -27,7 +27,6 @@ import {
   getOssThumbnailUrl,
   readJsonResponse,
 } from "@/lib/utils";
-import { isGarmentDetailMockTaskId } from "@/lib/garment-detail-mock";
 import { EnhancedImageTaskCard } from "./image-task-card";
 import { GarmentDetailCompareStage } from "./garment-detail-compare";
 import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
@@ -140,7 +139,7 @@ function getTaskResultGridItems(task: GenerationTask): ResultGridItem[] {
   }
 
   if (task.featureType === "garment-detail") {
-    // garment-detail（mock）：逐输出位展示进度卡，已完成的位直接出图
+    // garment-detail：逐输出位展示进度卡，已完成的位直接出图
     const params = task.params as Partial<GarmentDetailParams>;
     if (Array.isArray(params.detailShots)) {
       const plannedItems = params.detailShots.flatMap<ResultGridItem>((shot, index) => {
@@ -275,8 +274,6 @@ interface RightPanelProps {
   onRefreshTasks: () => void;
   onCancelTask: (taskId: string) => Promise<void>;
   onDeleteTaskResult: (taskId: string, assetId: string) => Promise<void>;
-  /** garment-detail mock 失败任务重试（前端界面先行阶段本地重置） */
-  onRetryGarmentDetailTask?: (task: GenerationTask) => void;
 }
 
 export function RightPanel({
@@ -308,7 +305,6 @@ export function RightPanel({
   onRefreshTasks,
   onCancelTask,
   onDeleteTaskResult,
-  onRetryGarmentDetailTask,
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<
     "current" | "history" | "cases" | "favorites" | "my-model-library" | "my-id-photo-library"
@@ -728,20 +724,6 @@ export function RightPanel({
 
   const handleBatchDownload = async () => {
     if (!visibleTask) return;
-    // garment-detail mock 任务没有服务端打包接口，直接逐张触发浏览器下载
-    if (isGarmentDetailMockTaskId(visibleTask.taskId)) {
-      visibleTask.results.forEach((result, index) => {
-        const anchor = document.createElement("a");
-        anchor.href = result.downloadUrl;
-        anchor.download = `${visibleTask.taskId}-${result.label ?? `detail-${index + 1}`}.jpg`;
-        anchor.target = "_blank";
-        anchor.rel = "noopener noreferrer";
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-      });
-      return;
-    }
     const response = await fetch(`/api/tasks/${visibleTask.taskId}/download`, {
       method: "POST",
     });
@@ -752,18 +734,14 @@ export function RightPanel({
     if (data.downloadUrl) window.open(data.downloadUrl, "_blank");
   };
 
-  // R5：photo-fission 重跑失败镜头 / pose-fission 重跑失败姿势。
-  // 两个 feature 的 retry 路由前缀和 body 字段名不同（shotIds vs poseIds），
+  // R5：photo-fission 重跑失败镜头 / pose-fission 重跑失败姿势 / garment-detail 重跑失败输出位。
+  // pose-fission 的 retry 路由和 body 字段名不同（poseIds vs shotIds），
+  // garment-detail 与 photo-fission 同路 POST /api/tasks/:taskId/retry-shots（PRD §14），
   // 但 RightPanel 的按钮交互保持一致（沿用 photo-fission 视觉与 loading 模式）。
   const handleRetryShots = async (
     task: GenerationTask,
     shotIds: string[],
   ) => {
-    // garment-detail mock：失败任务整体重跑，由 workbench 本地重置时间轴
-    if (task.featureType === "garment-detail") {
-      onRetryGarmentDetailTask?.(task);
-      return;
-    }
     const isPoseFissionTask = task.featureType === "pose-fission";
     const endpoint = isPoseFissionTask
       ? `/api/pose-fission/tasks/${task.taskId}/retry`
@@ -3035,6 +3013,7 @@ function TaskStatusCard({
   const isRunning = task.status === "pending" || task.status === "running";
   const isPhotoFission = task.featureType === "photo-fission";
   const isPoseFission = task.featureType === "pose-fission";
+  const isGarmentDetail = task.featureType === "garment-detail";
   const schedulerMessage = getSchedulerMessage(task);
   const estimatedStartLabel =
     task.schedulerState === "queued"
@@ -3049,7 +3028,8 @@ function TaskStatusCard({
 
   // photo-fission：shotPlan 中存在但 results 中没有对应 shotId 的项。
   // pose-fission：poses 中存在但 results 中没有对应 shotId 的项。
-  // 仅在 partial 或 (failed && 已有部分结果) 时展示按钮。
+  // garment-detail：detailShots 中存在但 results 中没有对应成功 shotId 的项（PRD §14）。
+  // 仅在 partial 或 (failed && 已有部分结果) 时展示按钮；garment-detail 整任务 failed 时也按全部失败 shot 重试。
   const failedShotIds = useMemo(() => {
     const succeeded = new Set(
       task.results
@@ -3071,8 +3051,16 @@ function TaskStatusCard({
       return params.poses.map((pose, index) => pose.id ?? `pose_${index + 1}`).filter((id) => !succeeded.has(id));
     }
 
+    if (isGarmentDetail) {
+      const params = task.params as Partial<GarmentDetailParams>;
+      if (!Array.isArray(params.detailShots)) return [];
+      return params.detailShots
+        .map((shot, index) => shot.shotId ?? `detail_${index + 1}`)
+        .filter((id) => !succeeded.has(id));
+    }
+
     return [] as string[];
-  }, [isPhotoFission, isPoseFission, task.params, task.results]);
+  }, [isPhotoFission, isPoseFission, isGarmentDetail, task.params, task.results]);
 
   const canRetryShots =
     ((isPhotoFission || isPoseFission) &&
@@ -3080,18 +3068,18 @@ function TaskStatusCard({
       failedShotIds.length > 0 &&
       (task.status === "partial" ||
         (task.status === "failed" && task.results.length > 0))) ||
-    // garment-detail（mock）：整个任务失败时提供整体重跑入口（PRD FR-17）
-    (task.featureType === "garment-detail" &&
+    // garment-detail：partial / failed 时提交全部失败 shotId 重试（PRD §14）
+    (isGarmentDetail &&
       Boolean(onRetryShots) &&
-      task.status === "failed");
+      failedShotIds.length > 0 &&
+      (task.status === "partial" || task.status === "failed"));
 
-  // photo-fission 用「镜头」措辞，pose-fission 用「姿势」措辞，garment-detail 整体重跑，沿用各 feature 既有产品文案。
-  const isGarmentDetail = task.featureType === "garment-detail";
+  // photo-fission 用「镜头」措辞，pose-fission 用「姿势」措辞，garment-detail 按失败输出位重跑，沿用各 feature 既有产品文案。
   const retryLabel = isPoseFission ? "失败姿势" : "失败镜头";
-  const retryButtonText = isGarmentDetail
-    ? "重新生成"
-    : retrying
-      ? "重跑中..."
+  const retryButtonText = retrying
+    ? "重跑中..."
+    : isGarmentDetail
+      ? `重新生成 (${failedShotIds.length})`
       : `重新生成${retryLabel} (${failedShotIds.length})`;
 
   const handleRetry = async () => {

@@ -10,12 +10,6 @@ import { BrandLoader } from '@/components/ui/brand-loader'
 import { useAuth } from '@/hooks/use-auth'
 import { useIsMobile } from '@/hooks/use-mobile'
 import {
-  advanceGarmentDetailMockTask,
-  cancelGarmentDetailMockTask,
-  isGarmentDetailMockTaskId,
-  retryGarmentDetailMockTask,
-} from '@/lib/garment-detail-mock'
-import {
   type CompanyModel,
   type FashionReferenceImage,
   type FashionRemixRequest,
@@ -162,11 +156,6 @@ export function Workbench() {
         })
 
         for (const task of currentTasks) {
-          // garment-detail 前端 mock 任务不存在于服务端，刷新列表时必须保留
-          if (isGarmentDetailMockTaskId(task.taskId)) {
-            nextTasks.push(task)
-            continue
-          }
           if (
             !serverTaskIds.has(task.taskId) &&
             (latestTaskResponseRef.current.get(task.taskId) ?? 0) > requestSequence
@@ -215,35 +204,6 @@ export function Workbench() {
   // 前端这里只需做乐观更新 + 兜底 reload。
   const handleDeleteTaskResult = useCallback(
     async (taskId: string, assetId: string) => {
-      // garment-detail mock 任务：纯本地删除，逻辑与服务端保持一致（删空 → 整 task 移除）
-      if (isGarmentDetailMockTaskId(taskId)) {
-        const currentTask = tasksRef.current.find((task) => task.taskId === taskId)
-        const willRemoveTask = currentTask
-          ? currentTask.results.filter((item) => item.assetId !== assetId).length === 0 &&
-            currentTask.resultAssetIds.filter((id) => id !== assetId).length === 0
-          : false
-        setTasks((currentTasks) => {
-          const next: GenerationTask[] = []
-          for (const task of currentTasks) {
-            if (task.taskId !== taskId) {
-              next.push(task)
-              continue
-            }
-            const filteredResults = task.results.filter(
-              (item) => item.assetId !== assetId,
-            )
-            const filteredIds = task.resultAssetIds.filter((id) => id !== assetId)
-            if (filteredResults.length === 0 && filteredIds.length === 0) continue
-            next.push({ ...task, results: filteredResults, resultAssetIds: filteredIds })
-          }
-          return next
-        })
-        if (willRemoveTask) {
-          setActiveTaskId((current) => (current === taskId ? null : current))
-        }
-        return
-      }
-
       const response = await fetch(
         `/api/tasks/${taskId}/results/${assetId}`,
         { method: 'DELETE' },
@@ -295,16 +255,6 @@ export function Workbench() {
 
   const handleCancelTask = useCallback(
     async (taskId: string) => {
-      // garment-detail mock 任务：本地取消，保留已生成结果
-      if (isGarmentDetailMockTaskId(taskId)) {
-        setTasks((currentTasks) =>
-          currentTasks.map((item) =>
-            item.taskId === taskId ? cancelGarmentDetailMockTask(item) : item,
-          ),
-        )
-        return
-      }
-
       const response = await fetch(`/api/tasks/${taskId}/cancel`, {
         method: 'POST',
       })
@@ -327,8 +277,6 @@ export function Workbench() {
   )
 
   const loadTask = useCallback(async (taskId: string) => {
-    // garment-detail mock 任务只存在于本地，轮询直接跳过
-    if (isGarmentDetailMockTaskId(taskId)) return
     const requestSequence = ++taskRequestSequenceRef.current
     const response = await fetch(`/api/tasks/${taskId}`, { cache: 'no-store' })
     if (response.status === 401) {
@@ -465,45 +413,6 @@ export function Workbench() {
   }, [activeTaskId, loadTask, user])
 
   const activeTask = tasks.find((task) => task.taskId === activeTaskId) ?? null
-
-  // ---- garment-detail 前端 mock：创建 / 定时推进 / 失败重试 ----
-  const handleGarmentDetailMockTaskCreated = useCallback((task: GenerationTask) => {
-    setTasks((currentTasks) => [task, ...currentTasks])
-    setActiveTaskId(task.taskId)
-    setMobileFormOpen(false)
-  }, [])
-
-  const handleRetryGarmentDetailMockTask = useCallback((task: GenerationTask) => {
-    const retried = retryGarmentDetailMockTask(task)
-    latestTaskResponseRef.current.set(task.taskId, ++taskRequestSequenceRef.current)
-    setTasks((currentTasks) =>
-      currentTasks.map((item) => (item.taskId === task.taskId ? retried : item)),
-    )
-    setActiveTaskId(task.taskId)
-  }, [])
-
-  // 本地定时器推进 mock 任务（排队 → 识别分类 → 逐张生成 → 成功/失败）。
-  // advance 是纯函数，按 createdAt 推导当前阶段，600ms Tick 足够平滑。
-  useEffect(() => {
-    const tick = () => {
-      setTasks((currentTasks) => {
-        const hasLiveMock = currentTasks.some(
-          (task) =>
-            isGarmentDetailMockTaskId(task.taskId) &&
-            (task.status === 'pending' || task.status === 'running'),
-        )
-        if (!hasLiveMock) return currentTasks
-        const now = Date.now()
-        return currentTasks.map((task) =>
-          isGarmentDetailMockTaskId(task.taskId)
-            ? advanceGarmentDetailMockTask(task, now)
-            : task,
-        )
-      })
-    }
-    const intervalId = window.setInterval(tick, 600)
-    return () => window.clearInterval(intervalId)
-  }, [])
 
   const handleAddFashionReference = useCallback((reference: FashionReferenceImage) => {
     setFashionReferences((currentReferences) => {
@@ -774,7 +683,6 @@ export function Workbench() {
         setMobileFormOpen(false)
         void loadTask(taskId)
       }}
-      onGarmentDetailMockTaskCreated={handleGarmentDetailMockTaskCreated}
     />
   )
 
@@ -840,7 +748,6 @@ export function Workbench() {
       onRefreshTasks={loadTasks}
       onCancelTask={handleCancelTask}
       onDeleteTaskResult={handleDeleteTaskResult}
-      onRetryGarmentDetailTask={handleRetryGarmentDetailMockTask}
     />
   )
 

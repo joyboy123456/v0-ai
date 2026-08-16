@@ -24,10 +24,10 @@ import {
 } from "./garment-detail-form";
 import {
   buildGarmentDetailShots,
-  createGarmentDetailMockTask,
+  classifyGarmentDetail,
   fetchGarmentDetailModels,
   type GarmentDetailModelOption,
-} from "@/lib/garment-detail-mock";
+} from "@/lib/garment-detail-api";
 import {
   prepareImageForGenerationUpload,
   UploadBox,
@@ -92,7 +92,6 @@ import {
   type GarmentDetailParams,
   type GarmentDetailRatio,
   type GarmentDetailResolution,
-  type GenerationTask,
   type PhotoFissionChildrensCategory,
   type PhotoFissionCategory,
   type PhotoFissionCase,
@@ -156,8 +155,6 @@ interface LeftPanelProps {
   onRenamePose: (poseId: string, name: string) => void;
   onDeletePose: (poseId: string) => void;
   onTaskCreated: (taskId: string) => void;
-  /** garment-detail 前端 mock：提交后由 workbench 接管本地任务推进 */
-  onGarmentDetailMockTaskCreated?: (task: GenerationTask) => void;
 }
 
 interface PhotoFissionCaseRequest {
@@ -188,7 +185,6 @@ export function LeftPanel({
   onRenamePose,
   onDeletePose,
   onTaskCreated,
-  onGarmentDetailMockTaskCreated,
 }: LeftPanelProps) {
   const [fashionPrompt, setFashionPrompt] = useState("");
   const [fashionPromptMode, setFashionPromptMode] =
@@ -251,11 +247,14 @@ export function LeftPanel({
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState("");
 
-  // ---- 高清放大细节图（garment-detail，前端 mock 阶段）----
+  // ---- 高清放大细节图（garment-detail）----
   const [garmentDetailMainImage, setGarmentDetailMainImage] =
     useState<UploadedImage | null>(null);
   const [garmentDetailRecognizePhase, setGarmentDetailRecognizePhase] =
     useState<GarmentDetailRecognizePhase>("idle");
+  // 分类建议的提示态：低置信度需确认 / 分类服务降级警告（不阻塞提交）
+  const [garmentDetailRecognizeNotice, setGarmentDetailRecognizeNotice] =
+    useState<string | null>(null);
   const [garmentDetailCategory, setGarmentDetailCategory] =
     useState<GarmentDetailCategory>("tops");
   const [garmentDetailModels, setGarmentDetailModels] = useState<
@@ -274,51 +273,70 @@ export function LeftPanel({
   const [garmentDetailResolution, setGarmentDetailResolution] =
     useState<GarmentDetailResolution>("1k");
 
-  // mock 模型版本列表动态下发（FR-6）；进入该功能时拉取一次
+  // 模型版本列表由后端动态下发（PRD §7.1，前端不硬编码）；进入该功能时拉取一次。
+  // 失败 / 空列表 / 503 MODEL_UNAVAILABLE → 空数组，表单展示「模型暂不可用」并禁用提交。
   useEffect(() => {
     if (feature !== "garment-detail" || garmentDetailModels !== null) return;
     let cancelled = false;
-    void fetchGarmentDetailModels().then((models) => {
-      if (cancelled) return;
-      setGarmentDetailModels(models);
-      const defaultModel =
-        models.find((model) => model.defaultSelected) ?? models[0];
-      if (defaultModel) {
-        setGarmentDetailModelId((current) => current ?? defaultModel.algorithmModelId);
-        setGarmentDetailResolution((current) =>
-          defaultModel.resolutions.includes(current)
-            ? current
-            : defaultModel.resolutions[0],
-        );
-      }
-    });
+    void fetchGarmentDetailModels()
+      .then((models) => {
+        if (cancelled) return;
+        setGarmentDetailModels(models);
+        const defaultModel =
+          models.find((model) => model.defaultSelected) ?? models[0];
+        if (defaultModel) {
+          setGarmentDetailModelId((current) => current ?? defaultModel.algorithmModelId);
+          setGarmentDetailResolution((current) =>
+            defaultModel.resolutions.includes(current)
+              ? current
+              : defaultModel.resolutions[0],
+          );
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setGarmentDetailModels([]);
+      });
     return () => {
       cancelled = true;
     };
   }, [feature, garmentDetailModels]);
 
-  // mock 抠图分类（FR-3/FR-4）：主图上传后模拟 1.2s 识别，按文件名做简单猜测
+  // 商品分类建议（PRD §7.2）：主图上传成功后调用 classify 接口。
+  // 失败 / fallback 降级不阻塞提交，仅提示用户手动确认分类（PRD §21.2）。
   useEffect(() => {
     if (!garmentDetailMainImage) {
       setGarmentDetailRecognizePhase("idle");
+      setGarmentDetailRecognizeNotice(null);
       return;
     }
+    let cancelled = false;
     setGarmentDetailRecognizePhase("processing");
-    const name = garmentDetailMainImage.name;
-    const guessed: GarmentDetailCategory = /裤/.test(name)
-      ? "bottoms"
-      : /裙/.test(name)
-        ? "dress"
-        : /鞋|包/.test(name)
-          ? "shoes-bags"
-          : /配饰|帽|围巾/.test(name)
-            ? "accessory"
-            : "tops";
-    const timer = window.setTimeout(() => {
-      setGarmentDetailCategory(guessed);
-      setGarmentDetailRecognizePhase("done");
-    }, 1200);
-    return () => window.clearTimeout(timer);
+    setGarmentDetailRecognizeNotice(null);
+    void (async () => {
+      try {
+        const result = await classifyGarmentDetail(garmentDetailMainImage.assetId);
+        if (cancelled) return;
+        setGarmentDetailCategory(result.category);
+        if (result.status === "ok") {
+          setGarmentDetailRecognizeNotice(
+            result.needsConfirmation ? "识别置信度较低，请确认商品分类" : null,
+          );
+        } else {
+          setGarmentDetailRecognizeNotice(
+            result.warning ?? "智能识别暂不可用，请手动确认商品分类",
+          );
+        }
+      } catch {
+        if (cancelled) return;
+        setGarmentDetailRecognizeNotice("智能识别暂不可用，请手动确认商品分类");
+      } finally {
+        if (!cancelled) setGarmentDetailRecognizePhase("done");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [garmentDetailMainImage]);
 
   const handleGarmentDetailModelChange = useCallback(
@@ -617,34 +635,20 @@ export function LeftPanel({
   };
 
   const handleCreateTask = async () => {
-    // garment-detail 前端界面先行：不走后端 /api/tasks，本地创建 mock 任务
     if (feature === "garment-detail") {
       if (!garmentDetailMainImage) {
         setError("请先上传服装原图");
         return;
       }
-      if (!garmentDetailModels || !garmentDetailModelId) {
-        setError("模型版本列表加载中，请稍候再提交");
+      if (
+        !garmentDetailModels ||
+        garmentDetailModels.length === 0 ||
+        !garmentDetailModelId
+      ) {
+        setError("模型版本暂不可用，请稍后重试");
         return;
       }
-      setError("");
-      setIsCreating(true);
-      try {
-        const task = createGarmentDetailMockTask({
-          params: getParams() as GarmentDetailParams,
-          mainImage: garmentDetailMainImage,
-          referenceImages: garmentDetailReferences.filter(
-            (image): image is UploadedImage => Boolean(image),
-          ),
-        });
-        onGarmentDetailMockTaskCreated?.(task);
-      } finally {
-        setIsCreating(false);
-      }
-      return;
-    }
-
-    if (feature === "ai-fashion-photo") {
+    } else if (feature === "ai-fashion-photo") {
       if (!fashionReferences.length) {
         setError("请先上传参考图或在我的模特库选择模特");
         return;
@@ -865,6 +869,27 @@ export function LeftPanel({
       return assets;
     }
 
+    // garment-detail：主图 + 非空参考图按序（PRD §7.3：inputAssetIds[0]=主图，[1...]=参考图最多 3 张）
+    if (feature === "garment-detail") {
+      if (!garmentDetailMainImage) return [];
+      const assets: AssetDescriptor[] = [
+        {
+          assetId: garmentDetailMainImage.assetId,
+          name: garmentDetailMainImage.name,
+          role: "主图",
+        },
+      ];
+      garmentDetailReferences.forEach((image, index) => {
+        if (!image) return;
+        assets.push({
+          assetId: image.assetId,
+          name: image.name,
+          role: `参考图 ${index + 1}`,
+        });
+      });
+      return assets;
+    }
+
     if (!activeImage) return [];
 
     return [{
@@ -874,7 +899,15 @@ export function LeftPanel({
     }];
   };
 
-  const submitDisabled = isCreating || isUploadingFaceMask;
+  // garment-detail：主图必传 + 模型列表就绪（空列表 = 暂不可用）才可提交
+  const garmentDetailSubmitBlocked =
+    feature === "garment-detail" &&
+    (!garmentDetailMainImage ||
+      !garmentDetailModels ||
+      garmentDetailModels.length === 0 ||
+      !garmentDetailModelId);
+  const submitDisabled =
+    isCreating || isUploadingFaceMask || garmentDetailSubmitBlocked;
   const submitLabel = isCreating
     ? "创建任务中..."
     : isUploadingFaceMask
@@ -1072,6 +1105,7 @@ export function LeftPanel({
               <GarmentDetailForm
                 mainImage={garmentDetailMainImage}
                 recognizePhase={garmentDetailRecognizePhase}
+                recognizeNotice={garmentDetailRecognizeNotice}
                 category={garmentDetailCategory}
                 models={garmentDetailModels}
                 selectedModelId={garmentDetailModelId}
