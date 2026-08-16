@@ -78,11 +78,13 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 
 
-## 高清放大细节图（garment-detail）约定（2026-08-15，前端界面先行）
+## 高清放大细节图（garment-detail）约定（2026-08-16 后端真实链路接入）
 
-- 第四功能 feature id `garment-detail`，当前为**纯前端 mock**：不接 `/api/tasks`，任务由 `lib/garment-detail-mock.ts` 的纯函数时间轴（`createGarmentDetailMockTask` / `advanceGarmentDetailMockTask` / `retryGarmentDetailMockTask` / `cancelGarmentDetailMockTask`）本地推进，workbench 600ms tick 驱动
-- **mock 任务 taskId 前缀 `mock-gd-`**：workbench 的 loadTask 轮询、取消、单张删除都要按此前缀走本地分支；loadTasks 合并时 mock 任务必须保留（服务端没有）
-- 模型版本列表走 `fetchGarmentDetailModels()` mock 下发（FR-6 形态），前端不硬编码档位；后端就绪后整体替换为 PRD §6 接口并删除 mock 模块
-- 演示失败路径：提示词含「失败」→ 审核拒绝（AUDIT_REJECTED）；重试后走成功路径（params.mockRetryCount）
-- 结果预览用 `garment-detail-compare.tsx`：滚轮/按钮缩放 + 拖拽平移 + 原图对比双窗格；局部定位框留待后端接入
-- **node --test 原生跑 TS 的坑**：被测模块对 `./types` 只能 `import type`（运行时 import 必须带 `.ts` 扩展名，否则 ERR_MODULE_NOT_FOUND）；类型/常量的运行时副本在 mock 模块内本地维护并注释同步来源
+- 第四功能 feature id `garment-detail`，**已接真实后端**（`lib/garment-detail-mock.ts` 及 `mock-gd-*` 前缀逻辑已全部删除）。前端 API 客户端在 `lib/garment-detail-api.ts`（models/classify/buildGarmentDetailShots）
+- **后端三件套**：`lib/server/garment-detail-model-registry.ts`（std-v1/pro-v1 档位 → env 候选模型链，取第一个有可用渠道者并固定 `resolvedModelId` 到任务快照，同任务初次/重试/恢复不跨模型切换）、`garment-detail-classifier.ts`（SegmentCloth 7 类 → 5 业务分类）、`garment-detail-service.ts`（normalize/prompt/worker-pool 管线）
+- **SegmentCloth 分类置信度是推导的**：上游只返回 1 通道灰度 mask PNG（无 alpha），按前景像素面积占比归一化为 0~1 score；**绝不能 ensureAlpha 读 alpha（恒 255）**，且 sharp raw() 前必须 `toColourspace('b-w')`；tops+skirt 同命中且 skirt≥tops×0.4 才建议 dress（近似「区域连续」）
+- **分类故障不阻塞生成**：超时（`GARMENT_DETAIL_CLASSIFY_TIMEOUT_MS`）/异常/fallback 合并图统一返回 `status:'fallback'` 200，前端提示手动确认
+- **shot 规划契约**（前后端逐字一致）：labels 五类表、`detail_${i+1}` 命名、每 shot 只绑自己那张参考图、0 参考图出 1 张；服务端 normalize 重建，不信任客户端
+- 任务链路复用现有体系：useStreamingPersist + persistOneResult、retry-shots 按 featureType 分流（`retryGarmentDetailShots`）、task-recovery 认 `detailShots[].shotId`；`GARMENT_DETAIL_BACKEND_ENABLED=0` 时 /api/tasks 拒绝该 feature
+- 结果预览用 `garment-detail-compare.tsx`：滚轮/按钮缩放 + 拖拽平移 + 原图对比双窗格（读 `task.inputAssets[0].fileUrl`）
+- **node --test 原生跑 TS 的坑**：被测模块对 `./types` 只能 `import type`（运行时 import 必须带 `.ts` 扩展名，否则 ERR_MODULE_NOT_FOUND）；含 `@/lib` 运行时 import 的模块在裸 node --test 下不可跑，新服务端模块应保持「import type + 依赖注入 + 懒加载动态 import」
