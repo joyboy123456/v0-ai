@@ -27,6 +27,20 @@ function estimateTaskUnits(featureType: FeatureType, params: TaskParams): number
     if (Array.isArray(poses) && poses.length > 0) return poses.length
   }
 
+  if (featureType === 'garment-detail') {
+    // 估算发生在 createTask 归一化之前，客户端可能伪造超大 resultCount；
+    // garment-detail 单任务上限 3 个输出位，这里上限 4 防御（1 主图 + 3 参考图）。
+    const detailShots = (params as { detailShots?: unknown }).detailShots
+    const resultCount = (params as { resultCount?: unknown }).resultCount
+    const raw =
+      Array.isArray(detailShots) && detailShots.length > 0
+        ? detailShots.length
+        : typeof resultCount === 'number' && resultCount > 0
+          ? Math.floor(resultCount)
+          : 1
+    return Math.min(raw, 4)
+  }
+
   const count =
     'resultCount' in params
       ? params.resultCount
@@ -122,8 +136,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const structured = error as (Error & { code?: string; retryable?: boolean }) | null
+    // PRD §16：garment-detail 归一化错误携带业务 code/retryable，透传给前端；
+    // 其余错误保持原有 { error } 形态不变。
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : '创建任务失败' },
+      {
+        error: structured instanceof Error ? structured.message : '创建任务失败',
+        ...(typeof structured?.code === 'string' ? { code: structured.code } : {}),
+        ...(typeof structured?.retryable === 'boolean'
+          ? { retryable: structured.retryable }
+          : {}),
+      },
       { status: 400 },
     )
   }

@@ -112,6 +112,14 @@ export async function runThirdPartyWorkflow(
     )
   }
 
+  // garment-detail 同样直连 task-store 内的 runGarmentDetailPipeline（PRD §20.3），
+  // 不得落入下方 BackgroundReplace 通用分支；demo 模式也在 pipeline 内处理。
+  if (input.featureType === 'garment-detail') {
+    throw new Error(
+      'garment-detail 已迁移至 task-store 内的 runGarmentDetailPipeline 直连路径，不应进入 runThirdPartyWorkflow',
+    )
+  }
+
   if (demoMode) {
     return runDemoWorkflow(input)
   }

@@ -1,7 +1,11 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { requireUser } from '@/lib/server/auth/require-user'
 import { jsonErrorResponse } from '@/lib/server/api-error-response'
-import { retryPhotoFissionShots } from '@/lib/server/task-store'
+import {
+  getTask,
+  retryGarmentDetailShots,
+  retryPhotoFissionShots,
+} from '@/lib/server/task-store'
 
 interface RouteContext {
   params: Promise<{
@@ -15,10 +19,13 @@ export const runtime = 'nodejs'
  * POST /api/tasks/:taskId/retry-shots
  * Body: { shotIds: string[] }
  *
- * 重跑 photo-fission 任务中失败的镜头。仅 partial/failed 状态可用，
- * 复用原 inputAssetIds 与 shotPlan，流式持久化合并回原 task。
+ * 重跑 photo-fission 任务中失败的镜头 / garment-detail 任务中失败的细节图。
+ * 仅 partial/failed 状态可用，复用原 inputAssetIds 与 shotPlan/detailShots，
+ * 流式持久化合并回原 task（PRD §14）。
  *
  * PR4：加 userId 鉴权 + ownership 校验（task-store 内部按「任务不存在」处理越权）。
+ * garment-detail：按 task.featureType 分流到 retryGarmentDetailShots，
+ * 越权/不存在仍统一 404 语义（getTask 按 userId 过滤后返回 undefined）。
  */
 export async function POST(request: NextRequest, context: RouteContext) {
   const userResult = await requireUser(request)
@@ -50,8 +57,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
     return NextResponse.json({ error: 'shotIds 不能为空' }, { status: 400 })
   }
 
+  // 分流前先取 featureType；getTask 带 userId 过滤，越权返回 undefined → 404。
+  const existing = await getTask(taskId, { userId })
+  if (!existing) {
+    return NextResponse.json({ error: '任务不存在' }, { status: 404 })
+  }
+
   try {
-    const task = await retryPhotoFissionShots(taskId, shotIds, userId)
+    const task =
+      existing.featureType === 'garment-detail'
+        ? await retryGarmentDetailShots(taskId, shotIds, userId)
+        : await retryPhotoFissionShots(taskId, shotIds, userId)
     return NextResponse.json(task)
   } catch (error) {
     const message = error instanceof Error ? error.message : '未知错误'

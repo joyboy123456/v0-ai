@@ -11,6 +11,14 @@ import {
   runPhotoFissionFaceRefine,
   runPhotoFissionPipeline,
 } from '@/lib/server/photo-fission-service'
+import {
+  isGarmentDetailBackendEnabled,
+  resolveGarmentDetailModel,
+} from '@/lib/server/garment-detail-model-registry'
+import {
+  normalizeGarmentDetailParams,
+  runGarmentDetailPipeline,
+} from '@/lib/server/garment-detail-service'
 import { isLocalSuperAdminEnabled } from '@/lib/server/auth/local-auth-mode'
 import { cancelScheduledTask } from '@/lib/server/image-work-scheduler'
 import {
@@ -35,6 +43,7 @@ import {
   type AiFashionPhotoParams,
   type AssetRecord,
   type FeatureType,
+  type GarmentDetailParams,
   type GenerationTask,
   type PhotoFissionParams,
   type PoseFissionParams,
@@ -597,7 +606,7 @@ export async function createTask(input: {
     throw new Error('不支持的功能类型')
   }
 
-  const normalizedParams = normalizeTaskParams(
+  const normalizedParams = await normalizeTaskParams(
     input.featureType,
     input.params,
     input.inputAssetIds.length,
@@ -679,12 +688,12 @@ export async function createTask(input: {
   return task
 }
 
-function normalizeTaskParams(
+async function normalizeTaskParams(
   featureType: FeatureType,
   params: TaskParams,
   inputAssetCount: number,
   inputAssetIds: string[],
-): TaskParams {
+): Promise<TaskParams> {
   if (featureType === 'pose-fission') {
     return normalizePoseFissionParams(params, inputAssetCount)
   }
@@ -695,6 +704,17 @@ function normalizeTaskParams(
 
   if (featureType === 'photo-fission') {
     return normalizePhotoFissionParams(params, inputAssetCount, inputAssetIds)
+  }
+
+  if (featureType === 'garment-detail') {
+    // 阶段开关（PRD §24）：后端未开放时拒绝创建，防止客户端绕过前端直调。
+    if (!isGarmentDetailBackendEnabled()) {
+      throw new Error('高清放大细节图功能未开放')
+    }
+    // 显式注入注册表解析函数，避免 garment-detail-service 走动态 import 默认路径。
+    return normalizeGarmentDetailParams(params, inputAssetIds, {
+      resolveModel: resolveGarmentDetailModel,
+    })
   }
 
   return params
@@ -735,6 +755,18 @@ function buildInitialShotProgress(
     const photoParams = params as PhotoFissionParams
     if (photoParams.childrensCategory !== 'pants') return []
     return buildPhotoFissionShotProgress(photoParams)
+  }
+
+  // garment-detail：按服务端重建后的 detailShots 初始化进度卡（PRD §12.1）。
+  if (featureType === 'garment-detail') {
+    const garmentParams = params as GarmentDetailParams
+    if (!Array.isArray(garmentParams.detailShots)) return []
+    return garmentParams.detailShots.map((shot) => ({
+      shotId: shot.shotId,
+      label: shot.label,
+      status: 'prompting' as const,
+      message: '正在准备细节图',
+    }))
   }
 
   return []
@@ -944,23 +976,41 @@ async function runTask(taskId: string, options: RunTaskOptions = {}) {
     )
 
     const preferUrlPassthrough = taskTargetsGeminiFamily(task)
-    const inputImages = (
-      await Promise.all(
-        task.inputAssetIds.map(async (assetId) => {
-          const asset = store.assets.get(assetId)
-          if (!asset) return null
-          if (asset.dataUrl) return asset.dataUrl
-          return resolveAssetToDataUrl(asset, { preferUrlPassthrough })
-        }),
-      )
-    ).filter((image): image is string => Boolean(image))
-
     const isPhotoFission = task.featureType === 'photo-fission'
     const isPoseFission = task.featureType === 'pose-fission'
-    // photo-fission / pose-fission 都走流式持久化：每个 shot/pose 成功立即写盘 + 更新 store，
-    // 即使后续 shot 卡死整个 pipeline，已成功的图也不会丢。
+    const isGarmentDetail = task.featureType === 'garment-detail'
+
+    // garment-detail 按 assetId 逐个解析输入（inputAssetIds[0]=主图，[1..]=参考图），
+    // 不使用过滤后的通用数组——resolveAssetToDataUrl 可能返回 null 被 filter 掉，
+    // 导致参考图与 assetId 错位（PRD §7.3 输入图片顺序契约）。
+    let garmentMainImage: string | null = null
+    let garmentReferenceImages: Record<string, string> = {}
+    if (isGarmentDetail) {
+      const resolved = await resolveGarmentDetailInputImages(
+        task,
+        preferUrlPassthrough,
+      )
+      garmentMainImage = resolved.mainImage
+      garmentReferenceImages = resolved.referenceImages
+    }
+
+    const inputImages = isGarmentDetail
+      ? []
+      : (
+          await Promise.all(
+            task.inputAssetIds.map(async (assetId) => {
+              const asset = store.assets.get(assetId)
+              if (!asset) return null
+              if (asset.dataUrl) return asset.dataUrl
+              return resolveAssetToDataUrl(asset, { preferUrlPassthrough })
+            }),
+          )
+        ).filter((image): image is string => Boolean(image))
+
+    // photo-fission / pose-fission / garment-detail 都走流式持久化：每个 shot/pose
+    // 成功立即写盘 + 更新 store，即使后续 shot 卡死整个 pipeline，已成功的图也不会丢。
     // 其他 feature 保持原 saveResults(results) 批量持久化路径不变。
-    const useStreamingPersist = isPhotoFission || isPoseFission
+    const useStreamingPersist = isPhotoFission || isPoseFission || isGarmentDetail
 
     const persistedResults: ResultAsset[] = []
     const onShotResult = useStreamingPersist
@@ -991,6 +1041,29 @@ async function runTask(taskId: string, options: RunTaskOptions = {}) {
         onShotResult,
         targetPoseIds: targetUnitIds,
       })
+    } else if (isGarmentDetail) {
+      // garment-detail 直连 runGarmentDetailPipeline（仿 pose-fission 直连模式），
+      // 不经过 runThirdPartyWorkflow 的 BackgroundReplace 通用路径（PRD §20.3）。
+      if (!garmentMainImage) {
+        throw new Error('服装主图已丢失，无法生成细节图')
+      }
+      results = await runGarmentDetailPipeline({
+        userId: ownerUserId,
+        taskId,
+        mainAssetId: task.inputAssetIds[0],
+        mainImage: garmentMainImage,
+        referenceImages: garmentReferenceImages,
+        params: task.params as GarmentDetailParams,
+        signal: controller.signal,
+        targetShotIds: targetUnitIds,
+        onShotProgress: (shotId, message) => {
+          updateShotProgress(taskId, shotId, {
+            status: 'generating',
+            message,
+          })
+        },
+        onShotResult,
+      })
     } else {
       const faceMaskImage = isPhotoFission
         ? await resolvePhotoFissionFaceMaskDataUrl(task.params as PhotoFissionParams)
@@ -1017,7 +1090,7 @@ async function runTask(taskId: string, options: RunTaskOptions = {}) {
     }
     assertTaskNotCancelled(taskId, controller.signal)
 
-    // photo-fission / pose-fission：results 已在 onShotResult 内全部持久化，禁止再走 saveResults 重复写盘。
+    // photo-fission / pose-fission / garment-detail：results 已在 onShotResult 内全部持久化，禁止再走 saveResults 重复写盘。
     // 其他 feature：批量持久化生成 resultAssetIds。
     const finalResults = useStreamingPersist
       ? mergeResultsByAssetId(
@@ -1089,7 +1162,8 @@ async function runTask(taskId: string, options: RunTaskOptions = {}) {
  * - 在 store.assets 中登记对应 AssetRecord
  * - 增量更新 task 的 results / resultAssetIds / progress / message
  *
- * 仅供 photo-fission onShotResult 回调使用。runTask 最终会用 persistedResults 替代
+ * 供 photo-fission / pose-fission / garment-detail 的 onShotResult 流式回调与
+ * retryGarmentDetailShots 重试路径使用。runTask 最终会用 persistedResults 替代
  * pipeline 返回值并跳过 saveResults，避免重复写盘。
  */
 async function persistOneResult(
@@ -1202,8 +1276,8 @@ function updateTask(taskId: string, patch: Partial<GenerationTask>) {
 }
 
 /**
- * 部分 feature（如 photo-fission / pose-fission）允许 per-shot 失败容忍。
- * 这里根据 shotPlan / poses 计划数量与实际成功结果数量决定 status / message。
+ * 部分 feature（photo-fission / pose-fission / garment-detail）允许 per-shot 失败容忍。
+ * 这里根据 shotPlan / poses / detailShots 计划数量与实际成功结果数量决定 status / message。
  */
 function resolveTaskCompletion(task: GenerationTask, results: ResultAsset[]) {
   if (task.featureType === 'photo-fission') {
@@ -1225,6 +1299,21 @@ function resolveTaskCompletion(task: GenerationTask, results: ResultAsset[]) {
       return {
         status: 'partial' as const,
         message: `已生成 ${results.length}/${planned} 张，部分姿势失败`,
+      }
+    }
+  }
+
+  // garment-detail：planned = detailShots.length（PRD §12.4）。
+  if (task.featureType === 'garment-detail') {
+    const params = task.params as GarmentDetailParams
+    const planned =
+      (Array.isArray(params.detailShots) && params.detailShots.length) ||
+      params.resultCount ||
+      results.length
+    if (planned > 0 && results.length < planned) {
+      return {
+        status: 'partial' as const,
+        message: `已生成 ${results.length}/${planned} 张，部分细节图失败`,
       }
     }
   }
@@ -1587,6 +1676,13 @@ function taskTargetsGeminiFamily(task: GenerationTask): boolean {
     const model = (task.params as AiFashionPhotoParams).model ?? DEFAULT_FASHION_MODEL
     return model.startsWith('gemini-')
   }
+  // garment-detail：按任务快照 resolvedModelId 判断（PRD §11.3）。
+  // nano-banana- / gemini- 系支持 OSS URL 透传；gpt-image- 需 base64。
+  if (task.featureType === 'garment-detail') {
+    const model =
+      (task.params as GarmentDetailParams).resolvedModelId?.trim() ?? ''
+    return model.startsWith('gemini-') || model.startsWith('nano-banana-')
+  }
   return false
 }
 
@@ -1673,6 +1769,37 @@ async function resolveAssetToDataUrl(
 
   console.warn('[task-store] 未知的图片 URL 格式，跳过：', fileUrl)
   return null
+}
+
+/**
+ * garment-detail 输入解析：inputAssetIds[0]=主图，[1..]=参考图（PRD §7.3）。
+ * 按 assetId 逐个解析成 assetId → dataURL/URL 映射，避免 resolveAssetToDataUrl
+ * 返回 null 被 filter 掉之后参考图与 assetId 错位。
+ * 主图解析失败返回 mainImage=null（由调用方决定报错）；参考图缺失只跳过该条目
+ * （pipeline 内对应 shot 会以「参考图已丢失」失败，不影响其他 shot）。
+ */
+async function resolveGarmentDetailInputImages(
+  task: GenerationTask,
+  preferUrlPassthrough: boolean,
+): Promise<{ mainImage: string | null; referenceImages: Record<string, string> }> {
+  const [mainAssetId, ...referenceAssetIds] = task.inputAssetIds
+
+  const resolveOne = async (assetId: string): Promise<string | null> => {
+    const asset = store.assets.get(assetId)
+    if (!asset) return null
+    if (asset.dataUrl) return asset.dataUrl
+    return resolveAssetToDataUrl(asset, { preferUrlPassthrough })
+  }
+
+  const mainImage = mainAssetId ? await resolveOne(mainAssetId) : null
+  const referenceEntries = await Promise.all(
+    referenceAssetIds.map(async (assetId) => [assetId, await resolveOne(assetId)] as const),
+  )
+  const referenceImages: Record<string, string> = {}
+  for (const [assetId, image] of referenceEntries) {
+    if (image) referenceImages[assetId] = image
+  }
+  return { mainImage, referenceImages }
 }
 
 /**
@@ -2202,6 +2329,159 @@ export async function retryPoseFissionShots(
       })
     }
     throw error
+  }
+
+  const finalTask = store.tasks.get(taskId)
+  if (!finalTask) {
+    throw new Error('任务在重跑后丢失')
+  }
+
+  const { status, message } = resolveTaskCompletion(finalTask, finalTask.results)
+  updateTask(taskId, {
+    status,
+    progress: 100,
+    message,
+    errorMessage: status === 'success' ? undefined : finalTask.errorMessage,
+    finishedAt: new Date().toISOString(),
+  })
+
+  const refreshed = store.tasks.get(taskId)
+  return hydrateTaskInputAssets(refreshed ?? finalTask)
+}
+
+/**
+ * 重跑 garment-detail 失败细节图（PRD §14）。
+ *
+ * 与 retryPhotoFissionShots / retryPoseFissionShots 同构，差异点：
+ * 1. planned 集合 = params.detailShots[].shotId（detail_1 ~ detail_3）；
+ * 2. 输入按角色区分：inputAssetIds[0]=主图 + 每个 shot 的 referenceAssetId
+ *    绑定对应参考图（resolveGarmentDetailInputImages 按 assetId 逐个解析）；
+ * 3. 模型固定任务快照 params.resolvedModelId（PRD §6.3.6，不允许重试时换模型）；
+ * 4. 自建 AbortController 登记 runningTaskControllers，cancelTask 可中断 retry
+ *    （现有两个 retry 函数没有做到这一点，这里补上）；
+ * 5. 不另起新 task；creditsCost=0 不涉及重复扣费。
+ */
+export async function retryGarmentDetailShots(
+  taskId: string,
+  shotIds: string[],
+  userId?: string,
+): Promise<GenerationTask> {
+  await ensureStoreReady()
+
+  const task = store.tasks.get(taskId)
+  if (!task) {
+    throw new Error('任务不存在')
+  }
+  const ownerUserId = task.userId ?? defaultUserId
+  if (
+    userId &&
+    userId.trim() &&
+    !shouldBypassOwnership(userId) &&
+    ownerUserId !== userId.trim()
+  ) {
+    // 与「任务不存在」语义对齐，避免暴露任务存在性给非授权用户
+    throw new Error('任务不存在')
+  }
+  if (task.featureType !== 'garment-detail') {
+    throw new Error('仅高清放大细节图支持重跑失败细节图')
+  }
+  if (task.status !== 'partial' && task.status !== 'failed') {
+    throw new Error('当前任务状态不允许重跑（仅 partial / failed 可重跑）')
+  }
+
+  const params = task.params as GarmentDetailParams
+  if (!Array.isArray(params.detailShots) || !params.detailShots.length) {
+    throw new Error('任务缺少 detailShots 快照，无法重跑')
+  }
+
+  const plannedShotIds = new Set(params.detailShots.map((shot) => shot.shotId))
+  const alreadySucceededShotIds = new Set(
+    task.results
+      .map((result) => result.shotId)
+      .filter((id): id is string => Boolean(id)),
+  )
+
+  const uniqueShotIds = Array.from(new Set(shotIds))
+  if (!uniqueShotIds.length) {
+    throw new Error('请至少选择一个失败细节图')
+  }
+
+  for (const shotId of uniqueShotIds) {
+    if (!plannedShotIds.has(shotId)) {
+      throw new Error(`细节图 ${shotId} 不在原任务计划中`)
+    }
+    if (alreadySucceededShotIds.has(shotId)) {
+      throw new Error(`细节图 ${shotId} 已成功，无需重跑`)
+    }
+  }
+
+  // 标记为 running，避免前端轮询误判
+  updateTask(taskId, {
+    status: 'running',
+    progress: 72,
+    message: `正在重跑 ${uniqueShotIds.length} 个失败细节图`,
+  })
+
+  // 自建 AbortController 并登记，使 cancelTask 能中断 retry 中的上游请求。
+  const controller = new AbortController()
+  runningTaskControllers.set(taskId, controller)
+
+  try {
+    const preferUrlPassthrough = taskTargetsGeminiFamily(task)
+    const { mainImage, referenceImages } = await resolveGarmentDetailInputImages(
+      task,
+      preferUrlPassthrough,
+    )
+    if (!mainImage) {
+      throw new Error('原任务服装主图已丢失，无法重跑')
+    }
+
+    await runGarmentDetailPipeline({
+      userId: ownerUserId,
+      taskId,
+      mainAssetId: task.inputAssetIds[0],
+      mainImage,
+      referenceImages,
+      params,
+      signal: controller.signal,
+      targetShotIds: uniqueShotIds,
+      onShotProgress: (shotId, message) => {
+        updateShotProgress(taskId, shotId, { status: 'retrying', message })
+      },
+      onShotResult: async (result) => {
+        await persistOneResult(taskId, result, ownerUserId)
+        updateShotProgress(taskId, result.shotId ?? result.assetId, {
+          status: 'success',
+          message: '已生成',
+        })
+      },
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '未知错误'
+    const currentTask = store.tasks.get(taskId)
+    if (currentTask) {
+      // 用户取消优先：cancelTask 已把状态与 shotProgress 写好，不覆盖。
+      if (currentTask.status === 'cancelled') {
+        throw error
+      }
+      const { status, message: resolveMessage } = resolveTaskCompletion(
+        currentTask,
+        currentTask.results,
+      )
+      updateTask(taskId, {
+        status: currentTask.results.length === 0 ? 'failed' : status,
+        progress: 100,
+        message:
+          currentTask.results.length === 0
+            ? '重跑失败细节图全部失败'
+            : resolveMessage,
+        errorMessage: message,
+        finishedAt: new Date().toISOString(),
+      })
+    }
+    throw error
+  } finally {
+    runningTaskControllers.delete(taskId)
   }
 
   const finalTask = store.tasks.get(taskId)

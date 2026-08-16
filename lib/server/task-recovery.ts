@@ -1,4 +1,5 @@
 import type {
+  GarmentDetailParams,
   GenerationTask,
   PhotoFissionParams,
   PoseFissionParams,
@@ -45,6 +46,15 @@ function getPlannedUnitIds(task: GenerationTask): string[] | null {
     return params.poses.map((pose) => pose.id?.trim()).filter(Boolean)
   }
 
+  // garment-detail：最小生成单元 = detailShots[].shotId（detail_1 ~ detail_3，PRD §15）。
+  if (task.featureType === 'garment-detail') {
+    const params = task.params as GarmentDetailParams
+    if (!Array.isArray(params.detailShots) || params.detailShots.length === 0) {
+      return null
+    }
+    return params.detailShots.map((shot) => shot.shotId?.trim()).filter(Boolean)
+  }
+
   return null
 }
 
@@ -60,7 +70,11 @@ export function decideInterruptedTaskRecovery(
     return { kind: 'ignore' }
   }
 
-  if (task.featureType !== 'photo-fission' && task.featureType !== 'pose-fission') {
+  if (
+    task.featureType !== 'photo-fission' &&
+    task.featureType !== 'pose-fission' &&
+    task.featureType !== 'garment-detail'
+  ) {
     return {
       kind: 'fail',
       reason: '服务重启时无法安全判断单张任务是否已在上游生成，为避免重复扣费已停止自动恢复，请重新生成',

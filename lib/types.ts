@@ -382,8 +382,9 @@ export type TaskParams =
 
 // ---------------------------------------------------------------------------
 // 高清放大细节图（garment-detail，PRD v1.0《服装细节图生成功能》）
-// 当前为前端界面先行阶段：任务由 lib/garment-detail-mock.ts 在本地模拟，
-// 服务端接口（STS 直传 / 抠图分类 / 模型版本下发 / 计费）后续任务再接。
+// 后端真实链路已接入（08-16-garment-detail-backend）：
+// 参数归一化 / 模型注册表 / 分类建议 / 生成管线均在 lib/server/garment-detail-*，
+// 前端 mock（lib/garment-detail-mock.ts）已随去 mock 改造删除。
 // ---------------------------------------------------------------------------
 
 /** PRD FR-3 服装分类：抠图分类服务的输出类目，允许用户手动修正（FR-4）。 */
@@ -446,10 +447,17 @@ export interface GarmentDetailParams {
   referenceImageCount: number
   detailShots: GarmentDetailShot[]
   resultCount: number
-  /** 前端 mock 阶段不计费 */
+  /** 本期不计费（PRD §17.1），服务端 normalize 固定覆盖为 0 */
   creditsCost: 0
-  /** 仅 mock 用：重试次数，>0 时模拟链路走成功路径 */
-  mockRetryCount?: number
+  /**
+   * 服务端归一化时固定写入的真实上游模型 ID（PRD §6.3/§9）。
+   * 同一任务的初次生成、失败重试、服务恢复必须继续使用它，不允许中途切换。
+   */
+  resolvedModelId?: string
+  /** 服务端归一化时写入的 Prompt 模板版本（PRD §9，默认 garment-detail-v1） */
+  promptTemplateVersion?: string
+  // mockRetryCount 已随前端 mock（lib/garment-detail-mock.ts）一起删除；
+  // 服务端 normalize 不复制任何客户端伪造字段。
 }
 
 export interface UploadedImage {
@@ -871,7 +879,7 @@ export const FEATURE_WORKFLOWS: Record<FeatureType, string> = {
   'ai-fashion-photo': 'ai_fashion_photo_v1',
   'photo-fission': 'photo_fission_v1',
   'pose-fission': 'pose_fission_v1',
-  'garment-detail': 'garment_detail_mock_v1',
+  'garment-detail': 'garment_detail_v1',
 }
 
 export const FEATURE_LABELS: Record<FeatureType, string> = {
