@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import type { PoseFissionParams } from '../types.ts'
 // @ts-expect-error Node 的原生 TypeScript 测试运行器要求显式扩展名。
-import { buildPoseFissionInputImageLabels, buildPoseFissionPrompt } from './pose-fission-prompt.ts'
+import { buildPoseFissionPrompt, buildPoseFissionProviderInputs } from './pose-fission-prompt.ts'
 
 function params(patch: Partial<PoseFissionParams> = {}): PoseFissionParams {
   return {
@@ -27,10 +27,12 @@ function prompt(bodyPart: 'full' | 'upper' | 'lower', visible = false): string {
   )
 }
 
-test('四种姿势分支都以局部编辑 Image 1 开头', () => {
+test('四种姿势分支都明确只编辑 Image 1 的姿势', () => {
   const prompts = [prompt('full'), prompt('upper'), prompt('lower'), prompt('lower', true)]
   for (const value of prompts) {
-    assert.match(value, /^Edit Image 1\./)
+    assert.match(value, /^TASK: POSE-ONLY IMAGE EDIT/)
+    assert.match(value, /EDIT INSTRUCTION — THE ONLY ALLOWED CHANGE\nEdit Image 1\./)
+    assert.match(value, /Image 1 supplies every non-edited attribute, including pose outside the editable body region/)
     assert.doesNotMatch(value, /儿童|童装/)
   }
   assert.match(prompts[1], /Keep the lower-body stance/)
@@ -42,33 +44,99 @@ test('裤型、裤脚刺绣和主图鞋子属于高优先级硬锁定', () => {
   const value = prompt('lower')
   assert.match(value, /same silhouette, fit, looseness, length, leg width/)
   assert.match(value, /cuffs, folded hems, embroidery/)
-  assert.match(value, /Preserve exactly the same shoes and socks from Image 1/)
-  assert.match(value, /Footwear visible in the pose reference is not pose information/)
-  assert.match(value, /Natural folds and occlusion.*are allowed/)
-  assert.match(value, /product design, dimensions, silhouette, and construction must not change/)
+  assert.match(value, /Preserve exactly the same shoes, socks, jewelry, bags, and ordinary accessories from Image 1/)
+  assert.match(value, /Every non-pose attribute in Image 2 must be ignored/)
+  assert.match(value, /natural garment folds, tension, occlusion, hair movement, contact shadows/)
+  assert.match(value, /must not redesign the person, product, or scene/)
 })
 
-test('允许必要动作道具，但服装鞋子和普通配饰永远不是动作道具', () => {
+test('只允许姿势不可分割的支撑物，服装鞋子和普通配饰不能从姿势图迁移', () => {
   const value = prompt('full')
-  assert.match(value, /chair, stool, step, railing, or hand-held action prop/)
-  assert.match(value, /Clothing, footwear, socks, jewelry, bags worn as styling, and ordinary accessories are never action props/)
+  assert.match(value, /chair, stool, step, or railing/)
+  assert.match(value, /Treat it only as pose-contact geometry/)
+  assert.match(value, /Clothing, footwear, socks, jewelry, bags, and ordinary styling accessories are never action supports/)
 })
 
-test('正背细节图组合与姿势图编号严格匹配输入顺序', () => {
+test('禁止混合原姿势或镜像目标姿势', () => {
+  const value = prompt('full')
+  assert.match(value, /Do not average, blend, or compromise between the original pose in Image 1 and the target pose in Image 2/)
+  assert.match(value, /Do not mirror, reverse, or swap the target pose/)
+})
+
+test('锁定图1环境光影，同时允许新姿势必需的接触阴影', () => {
+  const value = prompt('full')
+  assert.match(value, /lighting direction and color, existing environment shadows/)
+  assert.match(value, /contact shadows.*physically required by the new pose/)
+  assert.doesNotMatch(value, /exact same shadows/)
+})
+
+test('四种素材组合的 Provider 图片、标签和 Prompt 角色逐项一致', () => {
   const combinations = [
-    { front: false, back: false, poseIndex: 2 },
-    { front: true, back: false, poseIndex: 3 },
-    { front: false, back: true, poseIndex: 3 },
-    { front: true, back: true, poseIndex: 4 },
+    {
+      front: false,
+      back: false,
+      taskImages: ['main'],
+      providerImages: ['main', 'pose'],
+      evidenceRoles: [],
+    },
+    {
+      front: true,
+      back: false,
+      taskImages: ['main', 'front'],
+      providerImages: ['main', 'pose', 'front'],
+      evidenceRoles: ['FRONT GARMENT EVIDENCE ONLY'],
+    },
+    {
+      front: false,
+      back: true,
+      taskImages: ['main', 'back'],
+      providerImages: ['main', 'pose', 'back'],
+      evidenceRoles: ['BACK GARMENT EVIDENCE ONLY'],
+    },
+    {
+      front: true,
+      back: true,
+      taskImages: ['main', 'front', 'back'],
+      providerImages: ['main', 'pose', 'front', 'back'],
+      evidenceRoles: ['FRONT GARMENT EVIDENCE ONLY', 'BACK GARMENT EVIDENCE ONLY'],
+    },
   ]
   for (const item of combinations) {
     const input = params({ hasFrontDetail: item.front, hasBackDetail: item.back })
     const value = buildPoseFissionPrompt(input, {
       id: 'pose_1', url: '/pose.jpg', name: 'test pose', bodyPart: 'lower',
     })
-    const labels = buildPoseFissionInputImageLabels(input)
-    assert.equal(labels.length, item.poseIndex)
-    assert.match(value, new RegExp(`Image ${item.poseIndex} — POSE GEOMETRY ONLY`))
-    assert.match(labels.at(-1) ?? '', /POSE GEOMETRY ONLY — IGNORE ALL CLOTHING, FOOTWEAR/)
+    const providerRequest = buildPoseFissionProviderInputs(input, item.taskImages, 'pose')
+    const labels = providerRequest.inputImageLabels
+
+    assert.deepEqual(providerRequest.inputImages, item.providerImages)
+    assert.equal(labels.length, providerRequest.inputImages.length)
+    assert.match(labels[0], /^IMAGE 1 — BASE MASTER IMAGE/)
+    assert.match(labels[1], /^IMAGE 2 — TARGET POSE ONLY/)
+    assert.deepEqual(
+      labels.slice(2).map((label) => label.match(/— ([A-Z ]+):/)?.[1]),
+      item.evidenceRoles,
+    )
+    labels.forEach((label) => assert.ok(value.includes(`- ${label}`)))
   }
+})
+
+test('输入图片与细节标记不一致时拒绝发送错位的 Provider 请求', () => {
+  assert.throws(
+    () => buildPoseFissionProviderInputs(
+      params({ hasFrontDetail: true, hasBackDetail: true }),
+      ['main', 'front'],
+      'pose',
+    ),
+    /输入图片与服装细节标记不一致/,
+  )
+})
+
+test('下半身隐藏手臂分支不迁移手部支撑物，其他分支保留必要支撑物规则', () => {
+  const hiddenLower = prompt('lower')
+  const visibleLower = prompt('lower', true)
+
+  assert.match(hiddenLower, /Only lower-body support geometry/)
+  assert.match(hiddenLower, /Ignore every hand-held or hand-dependent support/)
+  assert.match(visibleLower, /chair, stool, step, or railing/)
 })

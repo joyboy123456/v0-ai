@@ -22,7 +22,7 @@ import {
 import { GoogleImageError } from './google-image-retry'
 import { logImageEvent } from './log'
 import {
-  buildPoseFissionInputImageLabels,
+  buildPoseFissionProviderInputs,
   buildPoseFissionPrompt,
 } from './pose-fission-prompt'
 import { runImageEditViaProvider } from './provider-image-router'
@@ -189,7 +189,7 @@ function readTrimmedString(value: unknown): string | null {
 export interface RunPoseFissionPipelineOptions {
   userId: string
   taskId: string
-  /** 顺序：[主图]。姿势图会在内部按 pose.url 逐个解析。 */
+  /** 顺序：[主图, 可选正面细节, 可选背面细节]。姿势图会在内部插入主图之后。 */
   inputImages: string[]
   params: PoseFissionParams
   apiKey: string
@@ -211,7 +211,7 @@ interface PoseRunResult {
 
 /**
  * 逐姿势调度 provider adapter。每个 pose 单独调用一次 runImageEditViaProvider，
- * inputImages（主图 + 姿势图）按顺序传给底层。
+ * Provider inputImages 固定按主图、姿势图、可选正面细节、可选背面细节传给底层。
  */
 export async function runPoseFissionPipeline(
   options: RunPoseFissionPipelineOptions,
@@ -438,10 +438,14 @@ async function runPoseGroup(options: RunPoseGroupOptions): Promise<void> {
       if (globalIndex === undefined) continue
 
       const prompt = buildPoseFissionPrompt(params, pose)
-      const inputImageLabels = buildPoseFissionInputImageLabels(params)
 
       try {
         const poseReferenceImage = await resolvePoseReferenceToDataUrl(pose.url)
+        const providerInputs = buildPoseFissionProviderInputs(
+          params,
+          inputImages,
+          poseReferenceImage,
+        )
         const single = await runImageEditViaProvider({
           userId,
           taskId,
@@ -449,8 +453,8 @@ async function runPoseGroup(options: RunPoseGroupOptions): Promise<void> {
           fallbackApiKey: apiKey,
           model: params.model,
           prompt,
-          inputImages: [...inputImages, poseReferenceImage],
-          inputImageLabels,
+          inputImages: providerInputs.inputImages,
+          inputImageLabels: providerInputs.inputImageLabels,
           count: 1,
           aspectRatio,
           imageSize,
