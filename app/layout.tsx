@@ -12,6 +12,10 @@ export const viewport: Viewport = {
   initialScale: 1,
   // 让 env(safe-area-inset-*) 生效（iPhone 刘海/Home 指示条区域可绘制）
   viewportFit: 'cover',
+  // 输出 <meta name="color-scheme" content="light dark">：
+  // 首帧渲染前就告知浏览器支持双主题，减少暗色用户的白闪（FOUC）。
+  // 参考 Google modern-web-guidance dark-mode 指南。
+  colorScheme: 'light dark',
 }
 
 export const metadata: Metadata = {
@@ -45,6 +49,13 @@ export default function RootLayout({
   return (
     <html lang="zh-CN" className="bg-background" suppressHydrationWarning>
       <body className="font-sans antialiased bg-background text-foreground">
+        {/* 图床预连接：提前完成 DNS + TLS 握手，案例图/结果图都在这个 OSS 域名上
+            （performance 指南 resource hints：preconnect for domains）。
+            React 19 会把 <link> 自动提升到 <head>。若未来换桶，改这里即可。 */}
+        <link
+          rel="preconnect"
+          href="https://heinimumu.oss-cn-hangzhou.aliyuncs.com"
+        />
         <ThemeProvider
           attribute="class"
           defaultTheme="system"

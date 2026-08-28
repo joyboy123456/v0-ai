@@ -193,6 +193,7 @@ function RegisterForm() {
                         type="text"
                         autoComplete="off"
                         spellCheck={false}
+                        enterKeyHint="next"
                         value={inviteCode}
                         onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
                         disabled={submitting}
@@ -210,6 +211,7 @@ function RegisterForm() {
                       name="username"
                       type="text"
                       autoComplete="username"
+                      enterKeyHint="next"
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       disabled={submitting}
@@ -225,6 +227,7 @@ function RegisterForm() {
                       name="password"
                       type="password"
                       autoComplete="new-password"
+                      enterKeyHint="next"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       disabled={submitting}
@@ -240,6 +243,7 @@ function RegisterForm() {
                       name="confirm-password"
                       type="password"
                       autoComplete="new-password"
+                      enterKeyHint="done"
                       value={confirmPassword}
                       onChange={(e) => setConfirmPassword(e.target.value)}
                       disabled={submitting}

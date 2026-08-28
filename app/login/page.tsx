@@ -23,6 +23,8 @@ import {
 import {
   Aperture,
   ArrowRight,
+  Eye,
+  EyeOff,
   Images,
   LayoutGrid,
   LockKeyhole,
@@ -122,6 +124,10 @@ function MarqueeColumn({
           alt=""
           aria-hidden
           loading="lazy"
+          decoding="async"
+          // 装饰性背景图：低网络优先级，不与首屏关键资源争抢带宽
+          // （optimize-image-priority 指南：首屏内的装饰图用 fetchpriority=low）
+          fetchPriority="low"
           draggable={false}
           className="mb-4 aspect-[3/4] w-full select-none rounded-xl object-cover"
         />
@@ -166,6 +172,7 @@ function LoginForm() {
 
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [redirecting, setRedirecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -378,6 +385,8 @@ function LoginForm() {
                     name="username"
                     type="text"
                     autoComplete="username"
+                    // 移动端键盘回车键提示（sign-in-form 指南）
+                    enterKeyHint="next"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     disabled={submitting}
@@ -385,17 +394,38 @@ function LoginForm() {
                   />
                 </div>
                 <div className="flex flex-col gap-2">
-                  <Label htmlFor="password">密码</Label>
-                  <Input
-                    id="password"
-                    name="password"
-                    type="password"
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    disabled={submitting}
-                    required
-                  />
+                  <Label htmlFor="current-password">密码</Label>
+                  <div className="relative">
+                    <Input
+                      // MANDATORY：登录密码框使用 id="current-password"
+                      // + autocomplete="current-password"，密码管理器才能正确识别
+                      // 当前密码并自动填充（sign-in-form 指南）
+                      id="current-password"
+                      name="password"
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="current-password"
+                      enterKeyHint="go"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      disabled={submitting}
+                      required
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      disabled={submitting}
+                      aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                      aria-pressed={showPassword}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                    >
+                      {showPassword ? (
+                        <EyeOff className="size-4" />
+                      ) : (
+                        <Eye className="size-4" />
+                      )}
+                    </button>
+                  </div>
                 </div>
                 {error ? (
                   <p

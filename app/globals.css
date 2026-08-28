@@ -4,6 +4,11 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /* Google modern-web-guidance dark-mode 指南（MANDATORY）：
+     声明支持浅/深两套配色，让原生控件（滚动条、表单控件、canvas 底色）
+     跟随系统主题，并减少首帧白闪（FOUC）。class 策略下由 .dark 收窄为 dark。 */
+  color-scheme: light dark;
+
   /* Ice Blue Theme Design Tokens */
   --color-bg-main: #F8FCFF;
   --color-bg-gradient-start: #F8FCFF;
@@ -89,6 +94,9 @@
    工具类经 @theme inline 自动跟随，组件层无需改动。
    ============================================================ */
 .dark {
+  /* .dark 类存在时收窄为 dark，避免 class 主题与系统偏好不一致 */
+  color-scheme: dark;
+
   --color-bg-main: #0B1220;
   --color-bg-gradient-start: #0B1220;
   --color-bg-gradient-mid: #0D1A2E;
@@ -125,8 +133,15 @@
 }
 
 @theme inline {
-  --font-sans: "Geist", "Geist Fallback";
-  --font-mono: "Geist Mono", "Geist Mono Fallback";
+  /* Geist 字体已于 2026-08 移除（部署机无法访问 fonts.googleapis.com），
+     但此处仍残留 "Geist" 引用导致全站字体栈悬空、回退到浏览器默认字体。
+     改用系统字体栈 + 中文友好回退 + 通用 family 兜底（无 webfont 也意味着
+     无字体交换导致的 CLS，符合 visually-stable-font-fallbacks 指南）。 */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", "Courier New", monospace;
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
