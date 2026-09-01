@@ -26,23 +26,24 @@ export function buildPoseFissionPrompt(params: PoseFissionParams, pose: PoseProm
     '',
     'PRESERVATION BOUNDARY — EVERYTHING OUTSIDE THE EDITABLE POSE REGION COMES FROM IMAGE 1',
     'Preserve the person from Image 1: the exact same identity, face, expression, hairstyle, skin tone, body build, and body proportions.',
-    'Preserve the scene and photography from Image 1: the exact same background and background objects, lighting direction and color, existing environment shadows, color tone, camera viewpoint, lens perspective, framing, aspect ratio, and photographic style, except for inseparable pose-contact geometry explicitly allowed below.',
+    'Preserve the scene and photography from Image 1: the same environment, lighting direction and color, existing environment shadows, color tone, camera viewpoint, lens perspective, framing, aspect ratio, and photographic style. If the target pose physically requires a missing support or contacting surface, restore that support into Image 1\'s scene instead of leaving the person floating.',
     'Preserve exactly the same garment from Image 1: the same silhouette, fit, looseness, length, leg width, waistband, seams, cuffs, folded hems, embroidery, patterns, logos, colors, fabric, texture, and construction.',
     'Preserve exactly the same shoes, socks, jewelry, bags, and ordinary accessories from Image 1, including their type, shape, color, material, and visible details.',
-    'Allow only the natural garment folds, tension, occlusion, hair movement, contact shadows, and minimum subject repositioning or canvas extension physically required by the new pose. These necessary physical effects must not redesign the person, product, or scene.',
+    'Allow only the natural garment folds, tension, occlusion, hair movement, contact shadows, and minimum subject repositioning or canvas extension physically required by the new pose. These necessary physical effects must not redesign the person or the garment.',
     '',
     'ATTRIBUTE SOURCES AND CONFLICT RULES',
-    '- Appearance, identity, body proportions, garment, footwear, accessories, scene, camera, lighting, framing, and style: Image 1 always wins. The only scene exception is inseparable pose-contact geometry allowed below.',
+    '- Appearance, identity, body proportions, garment, footwear, accessories, camera, lighting, framing, and style: Image 1 always wins.',
     '- Pose geometry inside the editable body region: Image 2 always wins.',
+    '- Supporting objects and contacting surfaces required to perform that pose: restore them from Image 2\'s pose, then light and style them to belong in Image 1.',
     '- Garment details hidden or unclear in Image 1: the optional garment evidence images may clarify the same product only; Image 1 wins if they conflict.',
-    '- Every non-pose attribute in Image 2 must be ignored. Clothing, footwear, socks, ordinary accessories, person identity, body proportions, background, camera, lighting, color, and style from Image 2 must not appear in the output.',
+    '- Clothing, footwear, socks, ordinary accessories, person identity, body proportions, camera, lighting, color, and style from Image 2 must not appear in the output. Pose supports are the exception and must be restored as specified below.',
     '',
     'ACTION SUPPORTS',
     getActionSupportRule(pose.bodyPart, armVisibility),
     '',
     'OUTPUT',
-    'Return one seamless photorealistic ecommerce image containing only the person from Image 1, not a collage, comparison, split screen, text explanation, or newly designed scene. The target pose must be anatomically natural with realistic balance.',
-    'FINAL RULE: Image 1 supplies every non-edited attribute, including pose outside the editable body region. Image 2 supplies only the target pose inside the editable body region and its inseparable pose-contact geometry.',
+    'Return one seamless photorealistic ecommerce image of the person from Image 1, not a collage, comparison, split screen, or text explanation. Do not replace Image 1\'s environment with Image 2\'s room. The target pose must be anatomically natural with realistic balance, including any restored supports.',
+    'FINAL RULE: Image 1 supplies the person, garment, camera, lighting, and environment. Image 2 supplies the target pose and any support that pose needs. Restore those supports so the pose is physically complete.',
     `Target pose name: ${pose.name}.`,
   ].join('\n')
 }
@@ -50,7 +51,7 @@ export function buildPoseFissionPrompt(params: PoseFissionParams, pose: PoseProm
 export function buildPoseFissionInputImageLabels(params: PoseFissionParams): string[] {
   const labels = [
     'IMAGE 1 — BASE MASTER IMAGE / PRIMARY SOURCE OF TRUTH FOR EVERYTHING EXCEPT THE EDITABLE POSE REGION: person identity, face, expression, hairstyle, body proportions, garment, footwear, socks, accessories, background, lighting, camera, framing, photographic style, and pose outside the editable body region.',
-    'IMAGE 2 — TARGET POSE ONLY: within the editable body region defined below, use only its body orientation, joint positions, limb placement, hand and foot actions, weight distribution, balance, and inseparable pose-contact geometry. Ignore every non-pose attribute.',
+    'IMAGE 2 — TARGET POSE ONLY: within the editable body region defined below, use its body orientation, joint positions, limb placement, hand and foot actions, weight distribution, balance, and any supporting object or contacting surface the pose physically requires. Ignore clothing, identity, and scene styling.',
   ]
 
   if (params.hasFrontDetail) {
@@ -119,7 +120,18 @@ function getPoseScope(bodyPart: PoseBodyPart, arms: PoseMainArmVisibility): stri
 
 function getActionSupportRule(bodyPart: PoseBodyPart, arms: PoseMainArmVisibility): string {
   if (bodyPart === 'lower' && arms === 'hidden') {
-    return 'Only lower-body support geometry inseparable from performing the target pose may be recreated, such as a chair, stool, or step contacted by the hips, legs, or feet. Ignore every hand-held or hand-dependent support from Image 2 and do not extend the upper crop to include it. Treat any allowed support only as pose-contact geometry; do not copy its visual style or surrounding scene from Image 2. Clothing, footwear, socks, jewelry, bags, and ordinary styling accessories are never action supports.'
+    return [
+      'KEEP from Image 1: the person, garment, footwear, ordinary accessories, camera, lighting, environment, and the existing upper crop with no arms or hands.',
+      'CHANGE only what the lower-body pose physically requires. If that pose cannot sit, lean, rest, or stay balanced without a support contacted by the hips, legs, or feet, restore that support so the pose is complete. A seated pose needs a seat. A lean needs the wall, pillar, or surface the body rests against.',
+      'Do not restore handheld objects; arms are out of frame. Render any restored support to match Image 1 lighting, color, and photographic style so it belongs in Image 1\'s scene. Use Image 2 only to know which support exists and where it contacts the body.',
+      'Keep clothing, footwear, socks, jewelry, bags, and ordinary accessories from Image 1. Those are not pose supports.',
+    ].join(' ')
   }
-  return 'Only a physical support inseparable from performing the target pose may be recreated, such as a chair, stool, step, or railing. Treat it only as pose-contact geometry; do not copy its visual style or surrounding scene from Image 2. Clothing, footwear, socks, jewelry, bags, and ordinary styling accessories are never action supports.'
+
+  return [
+    'KEEP from Image 1: the person, garment, footwear, ordinary accessories, camera, lighting, and the existing environment.',
+    'CHANGE only what the target pose physically requires. If Image 2\'s pose cannot stand, sit, lean, rest, hold, or stay balanced without a supporting object or contacting surface, restore that support so the pose is complete and anatomically natural. A seated pose needs a seat. A lean needs the wall, pillar, or surface the body rests against. A hold or brace needs the object the hands or body use.',
+    'Render restored supports to match Image 1 lighting, color, and photographic style so they belong in Image 1\'s scene. Use Image 2 only to know which support exists and where it contacts the body, not to replace Image 1\'s room or set dressing.',
+    'Keep clothing, footwear, socks, jewelry, bags, and ordinary accessories from Image 1. Those are not pose supports.',
+  ].join(' ')
 }

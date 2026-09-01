@@ -31,6 +31,14 @@ import { EnhancedImageTaskCard } from "./image-task-card";
 import { GarmentDetailCompareStage } from "./garment-detail-compare";
 import { FaceMaskPainterDialog } from "./face-mask-painter-dialog";
 import {
+  getPoseFissionInputAssetLabel,
+  isCurrentPoseFissionPose,
+  POSE_BODY_PART_LABELS,
+  readPoseFissionDetailPoses,
+  resolvePoseFissionAssetSlotIndex,
+  type PoseFissionDetailPose,
+} from "./pose-fission-detail";
+import {
   AI_FASHION_DEMO_TASKS,
   FASHION_MODELS,
   FASHION_PROMPT_MODES,
@@ -57,6 +65,11 @@ const favoritesStorageKey = "fashion_favorites";
 interface ResultPreview {
   image: ResultAsset;
   task: GenerationTask;
+}
+
+interface PreviewableImage {
+  fileUrl: string;
+  fileName: string;
 }
 
 interface FavoriteCaseAsset {
@@ -1953,7 +1966,9 @@ function GenerationDetailDialog({
   onClose: () => void;
 }) {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
-  const [previewAsset, setPreviewAsset] = useState<AssetRecord | null>(null);
+  const [previewImage, setPreviewImage] = useState<PreviewableImage | null>(
+    null,
+  );
   // garment-detail：原图 vs 细节图对比模式（PRD FR-18）
   const [compareMode, setCompareMode] = useState(false);
   const { image, task } = preview;
@@ -1973,6 +1988,13 @@ function GenerationDetailDialog({
     model?: FashionModelId;
   };
   const isPhotoFission = task.featureType === "photo-fission";
+  const isPoseFission = task.featureType === "pose-fission";
+  const poseFissionParams = isPoseFission
+    ? (task.params as Partial<PoseFissionParams>)
+    : null;
+  const poseFissionPoses = isPoseFission
+    ? readPoseFissionDetailPoses(task.params)
+    : [];
   const photoFissionPromptBundle = isPhotoFission
     ? buildPhotoFissionPromptBundle(task)
     : null;
@@ -1987,7 +2009,9 @@ function GenerationDetailDialog({
     ? (image.finalPrompt ??
       photoFissionPromptBundle ??
       photoFissionLegacyUserPrompt)
-    : (rawParams.userPrompt ?? rawParams.prompt ?? "");
+    : isPoseFission
+      ? (image.finalPrompt ?? "")
+      : (rawParams.userPrompt ?? rawParams.prompt ?? "");
   const finalPromptText = rawParams.finalPrompt ?? "";
   const hasFinalPromptDiff =
     task.featureType === "ai-fashion-photo" &&
@@ -1995,6 +2019,7 @@ function GenerationDetailDialog({
     finalPromptText !== displayPrompt;
   const promptToShow =
     showFullPrompt && hasFinalPromptDiff ? finalPromptText : displayPrompt;
+  const showPromptSection = !isPoseFission || Boolean(promptToShow);
   const modelMeta = rawParams.model
     ? FASHION_MODELS.find((option) => option.id === rawParams.model)
     : undefined;
@@ -2021,6 +2046,41 @@ function GenerationDetailDialog({
       // ignore clipboard permission failures
     }
   };
+
+  const promptSection = showPromptSection ? (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-medium">提示词</p>
+        {copyContent && (
+          <button
+            type="button"
+            onClick={copyPrompt}
+            className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary/60 hover:text-foreground"
+          >
+            {copyLabel}
+          </button>
+        )}
+      </div>
+      {promptToShow ? (
+        <p className="max-h-44 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-card p-3 text-sm leading-relaxed text-muted-foreground">
+          {promptToShow}
+        </p>
+      ) : (
+        <p className="rounded-md bg-card p-3 text-sm text-muted-foreground">
+          无提示词记录
+        </p>
+      )}
+      {hasFinalPromptDiff && (
+        <button
+          type="button"
+          onClick={() => setShowFullPrompt((current) => !current)}
+          className="text-xs font-medium text-primary hover:underline"
+        >
+          {showFullPrompt ? "显示用户提示词" : "查看实际发送 Prompt"}
+        </button>
+      )}
+    </div>
+  ) : null;
 
   return (
     <div className="grid h-[100dvh] min-h-0 grid-cols-1 grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_360px_72px] md:grid-rows-1 bg-background text-foreground">
@@ -2198,41 +2258,38 @@ function GenerationDetailDialog({
               <p className="text-xs text-muted-foreground">
                 {new Date(task.createdAt).toLocaleString("zh-CN")} ·{" "}
                 {task.inputAssetIds.length} 张参考图
+                {isPoseFission
+                  ? ` · ${poseFissionPoses.length} 个姿势`
+                  : ""}
               </p>
             </div>
 
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-sm font-medium">提示词</p>
-                {copyContent && (
-                  <button
-                    type="button"
-                    onClick={copyPrompt}
-                    className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary/60 hover:text-foreground"
-                  >
-                    {copyLabel}
-                  </button>
+            {!isPoseFission && promptSection}
+
+            {isPoseFission && (
+              <div className="space-y-3">
+                <p className="text-sm font-medium">本次参考姿势</p>
+                {poseFissionPoses.length ? (
+                  <div className="grid grid-cols-4 gap-2">
+                    {poseFissionPoses.map((pose) => (
+                      <PoseReferenceThumb
+                        key={pose.id}
+                        pose={pose}
+                        isCurrent={isCurrentPoseFissionPose(
+                          pose.id,
+                          image.shotId,
+                        )}
+                        onPreview={setPreviewImage}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">
+                    旧任务没有姿势详情记录
+                  </p>
                 )}
               </div>
-              {promptToShow ? (
-                <p className="max-h-44 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-                  {promptToShow}
-                </p>
-              ) : (
-                <p className="rounded-md bg-card p-3 text-sm text-muted-foreground">
-                  无提示词记录
-                </p>
-              )}
-              {hasFinalPromptDiff && (
-                <button
-                  type="button"
-                  onClick={() => setShowFullPrompt((current) => !current)}
-                  className="text-xs font-medium text-primary hover:underline"
-                >
-                  {showFullPrompt ? "显示用户提示词" : "查看实际发送 Prompt"}
-                </button>
-              )}
-            </div>
+            )}
 
             <div className="space-y-3">
               <p className="text-sm font-medium">
@@ -2240,14 +2297,40 @@ function GenerationDetailDialog({
               </p>
               {task.inputAssets?.length ? (
                 <div className="grid grid-cols-4 gap-2">
-                  {task.inputAssets.map((asset, index) => (
-                    <ReferenceAssetThumb
-                      key={asset.assetId}
-                      asset={asset}
-                      index={index}
-                      onPreview={setPreviewAsset}
-                    />
-                  ))}
+                  {task.inputAssets.map((asset, displayIndex) => {
+                    const poseSlotIndex = isPoseFission
+                      ? resolvePoseFissionAssetSlotIndex(
+                          asset.assetId,
+                          task.inputAssetIds,
+                          displayIndex,
+                        )
+                      : displayIndex;
+                    return (
+                      <ReferenceAssetThumb
+                        key={asset.assetId}
+                        asset={asset}
+                        index={displayIndex}
+                        label={
+                          isPoseFission
+                            ? getPoseFissionInputAssetLabel({
+                                index: poseSlotIndex,
+                                assetCount: task.inputAssetIds.length,
+                                hasFrontDetail:
+                                  poseFissionParams?.hasFrontDetail,
+                                hasBackDetail:
+                                  poseFissionParams?.hasBackDetail,
+                              })
+                            : undefined
+                        }
+                        onPreview={(item) =>
+                          setPreviewImage({
+                            fileUrl: item.fileUrl,
+                            fileName: item.fileName,
+                          })
+                        }
+                      />
+                    );
+                  })}
                 </div>
               ) : (
                 <p className="rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">
@@ -2255,6 +2338,8 @@ function GenerationDetailDialog({
                 </p>
               )}
             </div>
+
+            {isPoseFission && promptSection}
           </div>
         </div>
       </aside>
@@ -2275,7 +2360,11 @@ function GenerationDetailDialog({
                     ? "border-primary shadow-[0_0_0_1px_var(--primary)]"
                     : "border-border hover:border-primary/60",
                 )}
-                aria-label="查看这张结果图"
+                aria-label={
+                  resultImage.label
+                    ? `查看结果：${resultImage.label}`
+                    : "查看这张结果图"
+                }
               >
                 <img
                   src={getOssThumbnailUrl(resultImage.url)}
@@ -2291,9 +2380,9 @@ function GenerationDetailDialog({
       </aside>
 
       <Dialog
-        open={previewAsset !== null}
+        open={previewImage !== null}
         onOpenChange={(open) => {
-          if (!open) setPreviewAsset(null);
+          if (!open) setPreviewImage(null);
         }}
       >
         <DialogContent
@@ -2301,12 +2390,12 @@ function GenerationDetailDialog({
           aria-describedby={undefined}
         >
           <DialogTitle className="sr-only">
-            {previewAsset ? `预览${previewAsset.fileName}` : "参考图预览"}
+            {previewImage ? `预览${previewImage.fileName}` : "参考图预览"}
           </DialogTitle>
-          {previewAsset && (
+          {previewImage && (
             <img
-              src={previewAsset.fileUrl}
-              alt={previewAsset.fileName}
+              src={previewImage.fileUrl}
+              alt={previewImage.fileName}
               className="max-h-[88dvh] w-auto max-w-full rounded-lg object-contain"
             />
           )}
@@ -2319,18 +2408,22 @@ function GenerationDetailDialog({
 function ReferenceAssetThumb({
   asset,
   index,
+  label,
   onPreview,
 }: {
   asset: AssetRecord;
   index: number;
+  label?: string;
   onPreview: (asset: AssetRecord) => void;
 }) {
+  const caption = label ?? `图${index + 1}`;
   return (
     <div className="space-y-1">
       <button
         type="button"
         onClick={() => onPreview(asset)}
         title="点击查看大图"
+        aria-label={`预览${caption}：${asset.fileName}`}
         className="block aspect-square w-full cursor-zoom-in overflow-hidden rounded border border-border bg-card transition-colors hover:border-primary/60"
       >
         <img
@@ -2343,7 +2436,64 @@ function ReferenceAssetThumb({
         className="truncate text-[10px] text-muted-foreground"
         title={asset.fileName}
       >
-        图{index + 1}
+        {caption}
+      </p>
+    </div>
+  );
+}
+
+function PoseReferenceThumb({
+  pose,
+  isCurrent,
+  onPreview,
+}: {
+  pose: PoseFissionDetailPose;
+  isCurrent: boolean;
+  onPreview: (image: PreviewableImage) => void;
+}) {
+  const bodyPartLabel = POSE_BODY_PART_LABELS[pose.bodyPart];
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() =>
+          onPreview({
+            fileUrl: pose.url,
+            fileName: pose.name,
+          })
+        }
+        title="点击查看姿势大图"
+        aria-current={isCurrent ? "true" : undefined}
+        aria-label={
+          isCurrent
+            ? `当前结果所用姿势：${pose.name}，点击查看大图`
+            : `参考姿势：${pose.name}，点击查看大图`
+        }
+        className={cn(
+          "relative block aspect-square w-full cursor-zoom-in overflow-hidden rounded border bg-card transition-colors",
+          isCurrent
+            ? "border-primary shadow-[0_0_0_1px_var(--primary)]"
+            : "border-border hover:border-primary/60",
+        )}
+      >
+        <img
+          src={getOssThumbnailUrl(pose.url)}
+          alt={pose.name}
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-cover"
+        />
+        {isCurrent && (
+          <span className="absolute left-1 top-1 rounded bg-primary px-1 py-0.5 text-[9px] font-medium text-primary-foreground">
+            当前
+          </span>
+        )}
+      </button>
+      <p
+        className="truncate text-[10px] text-muted-foreground"
+        title={`${pose.name} · ${bodyPartLabel}`}
+      >
+        {pose.name}
       </p>
     </div>
   );

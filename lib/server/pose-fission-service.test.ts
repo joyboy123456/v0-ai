@@ -32,7 +32,7 @@ test('四种姿势分支都明确只编辑 Image 1 的姿势', () => {
   for (const value of prompts) {
     assert.match(value, /^TASK: POSE-ONLY IMAGE EDIT/)
     assert.match(value, /EDIT INSTRUCTION — THE ONLY ALLOWED CHANGE\nEdit Image 1\./)
-    assert.match(value, /Image 1 supplies every non-edited attribute, including pose outside the editable body region/)
+    assert.match(value, /Image 1 supplies the person, garment, camera, lighting, and environment/)
     assert.doesNotMatch(value, /儿童|童装/)
   }
   assert.match(prompts[1], /Keep the lower-body stance/)
@@ -45,16 +45,19 @@ test('裤型、裤脚刺绣和主图鞋子属于高优先级硬锁定', () => {
   assert.match(value, /same silhouette, fit, looseness, length, leg width/)
   assert.match(value, /cuffs, folded hems, embroidery/)
   assert.match(value, /Preserve exactly the same shoes, socks, jewelry, bags, and ordinary accessories from Image 1/)
-  assert.match(value, /Every non-pose attribute in Image 2 must be ignored/)
+  assert.match(value, /Pose supports are the exception and must be restored/)
   assert.match(value, /natural garment folds, tension, occlusion, hair movement, contact shadows/)
-  assert.match(value, /must not redesign the person, product, or scene/)
+  assert.match(value, /must not redesign the person or the garment/)
 })
 
-test('只允许姿势不可分割的支撑物，服装鞋子和普通配饰不能从姿势图迁移', () => {
+test('姿势需要支撑时还原道具，服装鞋子和普通配饰仍跟主图', () => {
   const value = prompt('full')
-  assert.match(value, /chair, stool, step, or railing/)
-  assert.match(value, /Treat it only as pose-contact geometry/)
-  assert.match(value, /Clothing, footwear, socks, jewelry, bags, and ordinary styling accessories are never action supports/)
+  assert.match(value, /restore that support so the pose is complete/)
+  assert.match(value, /A seated pose needs a seat/)
+  assert.match(value, /A lean needs the wall, pillar, or surface/)
+  assert.doesNotMatch(value, /chair, stool, step, or railing/)
+  assert.match(value, /Keep clothing, footwear, socks, jewelry, bags, and ordinary accessories from Image 1/)
+  assert.match(value, /Those are not pose supports/)
 })
 
 test('禁止混合原姿势或镜像目标姿势', () => {
@@ -113,6 +116,7 @@ test('四种素材组合的 Provider 图片、标签和 Prompt 角色逐项一�
     assert.equal(labels.length, providerRequest.inputImages.length)
     assert.match(labels[0], /^IMAGE 1 — BASE MASTER IMAGE/)
     assert.match(labels[1], /^IMAGE 2 — TARGET POSE ONLY/)
+    assert.match(labels[1], /supporting object or contacting surface/)
     assert.deepEqual(
       labels.slice(2).map((label) => label.match(/— ([A-Z ]+):/)?.[1]),
       item.evidenceRoles,
@@ -132,11 +136,13 @@ test('输入图片与细节标记不一致时拒绝发送错位的 Provider 请�
   )
 })
 
-test('下半身隐藏手臂分支不迁移手部支撑物，其他分支保留必要支撑物规则', () => {
+test('下半身隐藏手臂分支还原腿部接触支撑、不还原手持物', () => {
   const hiddenLower = prompt('lower')
   const visibleLower = prompt('lower', true)
 
-  assert.match(hiddenLower, /Only lower-body support geometry/)
-  assert.match(hiddenLower, /Ignore every hand-held or hand-dependent support/)
-  assert.match(visibleLower, /chair, stool, step, or railing/)
+  assert.match(hiddenLower, /Do not restore handheld objects/)
+  assert.match(hiddenLower, /A seated pose needs a seat/)
+  assert.match(hiddenLower, /A lean needs the wall, pillar, or surface/)
+  assert.match(visibleLower, /A hold or brace needs the object the hands or body use/)
+  assert.doesNotMatch(visibleLower, /Do not restore handheld objects/)
 })
