@@ -8,8 +8,8 @@
  * 计费口径：积分制，1 元 = 10000 积分 → 剩余 ￥ = credits / 10000（CNY）
  * 接口仅返回剩余积分，无"已用额度/累计请求次数"。
  *
- * 调研：.trellis/tasks/07-08-billing-system（实测 grsai 旧版 getCredits，
- *   /api/user/self 与 /api/usage/balance 均 404，grsai 不走 one-api 余额体系）
+ * 实测 grsai 旧版 getCredits，/api/user/self 与 /api/usage/balance 均 404，
+ * grsai 不走 one-api 余额体系。
  */
 
 /** 积分 → CNY 换算系数（1 元 = 10000 积分）。 */

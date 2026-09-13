@@ -1,2 +1,0 @@
-{"file": "AGENTS.md", "reason": "项目级约定（本仓库无 .trellis/spec 分层，唯一编码规范来源）"}
-{"file": ".trellis/tasks/08-03-billing-observatory-portal/prd.md", "reason": "根因分析与修复方案：fixed 定位被 aside 的 backdrop-blur 约束，需 createPortal 到 body + SSR mounted 守卫"}

@@ -3,7 +3,6 @@
  *
  * 设计来源（v4）：
  * - 衣百 AIGC 提示词库 3,977 条 gemini3pro 案例的「场景叙事」公式
- *   （参考 `.trellis/tasks/05-18-pose-fission/research/yibaiaigc-prompt-engineering.md`）
  * - 用户提供的女装范例（海堤回头侧身 + 双手插袋 + 望远方）作为叙事写法样本
  * - 客户「连衣裙.rtf」标准答案 + 3 张参考图灵感
  *

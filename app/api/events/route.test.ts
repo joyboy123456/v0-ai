@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import {
   createEventsPostHandler,
 // @ts-expect-error Node 原生 TypeScript 测试运行器要求显式扩展名。
-} from './route.ts'
+} from './handler.ts'
 
 function request(body: unknown) {
   return new NextRequest('http://localhost/api/events', {

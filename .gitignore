@@ -29,8 +29,6 @@ public/generated/
 .probe/
 .probe-*.json
 
-# 研究参考资料（121M 浅克隆，仅供 implement 参考，不入版本控制）
-.trellis/tasks/*/research/yibaiaigc/
 # Runtime logs
 logs/
 
@@ -42,6 +40,3 @@ logs/
 
 # 临时测试/调试产物（脚本、contact sheet、日志等）
 .tmp/
-
-# Trellis 运行时会话数据
-.trellis/.runtime/

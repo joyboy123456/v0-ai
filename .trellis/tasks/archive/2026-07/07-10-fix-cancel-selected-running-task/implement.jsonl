@@ -1,1 +1,0 @@
-{"file":".trellis/tasks/07-10-fix-cancel-selected-running-task/research/cancel-selection-root-cause.md","reason":"实现时必须保持后端取消逻辑不变，只修复历史页 visibleTask 的选择规则"}

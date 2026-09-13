@@ -1,2 +1,0 @@
-{"file": "AGENTS.md", "reason": "项目级约定（本仓库无 .trellis/spec 分层，唯一编码规范来源）"}
-{"file": ".trellis/tasks/08-03-billing-observatory-portal/prd.md", "reason": "验收标准：全屏渲染、Esc/关闭正常、lint 与 type-check 通过、接口不变"}

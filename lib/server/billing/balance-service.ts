@@ -6,7 +6,6 @@
  * 换算：500,000 额度 = 1 USD
  *
  * 带进程内缓存（默认 30s），避免频繁打老张管理接口。
- * 调研文档：.trellis/tasks/07-08-billing-system/research/laozhang-balance-api.md
  */
 
 /** 额度 → USD 换算系数。 */
