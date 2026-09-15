@@ -32,6 +32,8 @@ module.exports = {
         IMAGE_QUEUE_MAX_PENDING: '200',
         PHOTO_FISSION_CONCURRENCY: '4',
         POSE_FISSION_CONCURRENCY: '4',
+        // Agent Beta 画布：生产开放总闸（BETA_AGENT_USERNAMES 不配 = 全体登录用户可用）
+        BETA_AGENT_ENABLED: 'true',
       },
       autorestart: true,
       max_restarts: 20,

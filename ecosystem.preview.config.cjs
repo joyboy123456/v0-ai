@@ -35,6 +35,8 @@ module.exports = {
         // 测试站收紧生图并发，避免与生产抢供应商配额
         IMAGE_GLOBAL_CONCURRENCY: '2',
         IMAGE_PER_USER_CONCURRENCY: '1',
+        // Agent Beta 画布入口在测试站同步开放（与生产一致）
+        BETA_AGENT_ENABLED: 'true',
       },
       autorestart: true,
       max_restarts: 20,
