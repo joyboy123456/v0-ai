@@ -6,6 +6,7 @@ import {
   Camera,
   DollarSign,
   KeyRound,
+  LayoutDashboard,
   LogOut,
   PersonStanding,
   Repeat2,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react";
 import { CleanupDialog } from "./cleanup-dialog";
 import { InviteCodesDialog } from "./invite-codes-dialog";
+import { useAgentBetaAccess } from "@/components/agent-beta/use-agent-beta-access";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -46,6 +48,7 @@ export function FeatureSidebar({
   onRefreshTasks,
 }: FeatureSidebarProps) {
   const router = useRouter();
+  const agentBetaEnabled = useAgentBetaAccess();
   const [loggingOut, setLoggingOut] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -135,6 +138,31 @@ export function FeatureSidebar({
               </li>
             );
           })}
+          {agentBetaEnabled ? (
+            <li>
+              <button
+                onClick={() => router.push("/beta/agent")}
+                className="w-full p-2 flex items-start gap-3 rounded-xl transition-all text-left group relative text-muted-foreground hover:bg-secondary hover:text-foreground"
+              >
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 bg-transparent text-muted-foreground group-hover:text-primary">
+                  <LayoutDashboard className="w-4 h-4" />
+                </div>
+                <div className="flex-1 min-w-0 pt-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] font-semibold text-foreground group-hover:text-foreground">
+                      Agent画布
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded bg-primary/10 text-[9px] font-semibold text-primary uppercase tracking-wider">
+                      Beta
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed">
+                    和创作助手对话，在画布上生成并迭代服装视觉方案
+                  </p>
+                </div>
+              </button>
+            </li>
+          ) : null}
         </ul>
       </nav>
 

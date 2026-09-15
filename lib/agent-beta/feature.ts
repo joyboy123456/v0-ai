@@ -6,9 +6,9 @@ type BetaEnvironment = {
   BETA_AGENT_USERNAMES?: string
 }
 
-/** 未获商业授权的实验版本仅可在本地开发模式使用。生产模式始终关闭。 */
+/** Beta 开关：配置 BETA_AGENT_ENABLED=true 即启用（生产/开发一致），可用作紧急总闸。 */
 export function isAgentBetaEnabled(environment: BetaEnvironment = process.env): boolean {
-  return environment.NODE_ENV !== 'production' && environment.BETA_AGENT_ENABLED === 'true'
+  return environment.BETA_AGENT_ENABLED === 'true'
 }
 
 export function getAgentBetaAccess(
@@ -19,5 +19,8 @@ export function getAgentBetaAccess(
   const usernames = new Set(
     (environment.BETA_AGENT_USERNAMES ?? '').split(',').map((name) => name.trim().toLowerCase()).filter(Boolean),
   )
-  return { enabled, allowed: enabled && Boolean(user && usernames.has(user.username.toLowerCase())), localOnly: true }
+  // 白名单留空 = 全体登录用户可用；配置白名单则回到定向灰度模式
+  const allowed = enabled && Boolean(user)
+    && (usernames.size === 0 || usernames.has((user?.username ?? '').toLowerCase()))
+  return { enabled, allowed, localOnly: false }
 }

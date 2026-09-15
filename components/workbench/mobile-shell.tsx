@@ -6,6 +6,7 @@ import {
   Camera,
   DollarSign,
   KeyRound,
+  LayoutDashboard,
   LogOut,
   Menu,
   PersonStanding,
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react'
 import { CleanupDialog } from './cleanup-dialog'
 import { InviteCodesDialog } from './invite-codes-dialog'
+import { useAgentBetaAccess } from '@/components/agent-beta/use-agent-beta-access'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -73,6 +75,7 @@ export function MobileShell({
   children,
 }: MobileShellProps) {
   const router = useRouter()
+  const agentBetaEnabled = useAgentBetaAccess()
   const [menuOpen, setMenuOpen] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [cleanupOpen, setCleanupOpen] = useState(false)
@@ -137,6 +140,17 @@ export function MobileShell({
             </button>
           )
         })}
+        {agentBetaEnabled ? (
+          <button
+            type="button"
+            onClick={() => router.push('/beta/agent')}
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-[13px] font-medium text-muted-foreground"
+          >
+            <LayoutDashboard className="h-3.5 w-3.5" />
+            Agent画布
+            <span className="rounded bg-primary/10 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-primary">Beta</span>
+          </button>
+        ) : null}
       </div>
 
       {/* 主内容区：RightPanel 全宽独占 */}

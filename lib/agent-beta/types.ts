@@ -64,5 +64,5 @@ export interface AgentBetaMessageInput {
 export interface AgentBetaAccess {
   allowed: boolean
   enabled: boolean
-  localOnly: true
+  localOnly: boolean
 }

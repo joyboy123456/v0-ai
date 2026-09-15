@@ -47,7 +47,7 @@ export function AgentBetaWorkbench() {
         </div>
       </header>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-secondary/40 px-5 py-2 text-[10px] text-muted-foreground">
-        <span>本地试用 · 先从服饰生图开始</span><Link href="/" className="flex items-center gap-1 hover:text-foreground">原工作台<ArrowLeft className="size-3 rotate-180" /></Link>
+        <span>实验功能 · 先从服饰生图开始</span><Link href="/" className="flex items-center gap-1 hover:text-foreground">原工作台<ArrowLeft className="size-3 rotate-180" /></Link>
       </div>
       {(state.error || authError) && <div role="alert" className="flex shrink-0 items-start gap-2 border-b border-destructive/20 bg-destructive/5 px-5 py-3 text-xs text-destructive"><p className="flex-1 break-words leading-5">{state.error ?? authError}</p>{authError && <Button variant="ghost" size="sm" onClick={() => void refresh()}>重试登录</Button>}<Button variant="ghost" size="icon-sm" onClick={() => state.setError(null)} aria-label="关闭错误提示"><X className="size-3.5" /></Button></div>}
       {!authLoading && !user && !authError ? <div className="flex flex-1 flex-col items-center justify-center gap-4"><p className="text-sm text-muted-foreground">请先登录后使用 Agent Beta。</p><AgentActionButton asChild><Link href="/login">前往登录</Link></AgentActionButton></div> : <>
