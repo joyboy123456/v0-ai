@@ -24,11 +24,14 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: '3000',
         IMAGE_GLOBAL_CONCURRENCY: '12',
-        IMAGE_PER_USER_CONCURRENCY: '3',
-        IMAGE_PER_PROVIDER_CONCURRENCY: '2',
+        // 2026-09-02 按本机 4C8G 实测容量调参（4核/7.3G内存/node RSS 458M/余量约2.5G）：
+        // provider 级并发 2→4、单用户并发 3→6、姿势裂变并发 2→4；
+        // .env.local 中 provider 级 maxIpm 令牌桶仍是真实节流闸，并发不会打爆上游。
+        IMAGE_PER_USER_CONCURRENCY: '6',
+        IMAGE_PER_PROVIDER_CONCURRENCY: '4',
         IMAGE_QUEUE_MAX_PENDING: '200',
         PHOTO_FISSION_CONCURRENCY: '4',
-        POSE_FISSION_CONCURRENCY: '2',
+        POSE_FISSION_CONCURRENCY: '4',
       },
       autorestart: true,
       max_restarts: 20,
