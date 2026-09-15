@@ -55,6 +55,7 @@ import {
 import { mkdir, readFile, writeFile, rename, readdir, copyFile, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import sharp from 'sharp'
 import { logImageEvent, type LogContext } from '@/lib/server/log'
 
@@ -66,6 +67,7 @@ const globalStore = globalThis as typeof globalThis & {
   fashionMvpTaskControllers?: Map<string, AbortController>
   fashionMvpRecoveryExecutionKeys?: Set<string>
   fashionMvpRecoveryStarted?: boolean
+  fashionMvpIdempotentCreations?: Map<string, Promise<GenerationTask>>
 }
 
 const store = globalStore.fashionMvpStore ?? {
@@ -80,6 +82,8 @@ globalStore.fashionMvpTaskControllers = runningTaskControllers
 const activeRecoveryExecutionKeys =
   globalStore.fashionMvpRecoveryExecutionKeys ?? new Set<string>()
 globalStore.fashionMvpRecoveryExecutionKeys = activeRecoveryExecutionKeys
+const idempotentCreations = globalStore.fashionMvpIdempotentCreations ?? new Map<string, Promise<GenerationTask>>()
+globalStore.fashionMvpIdempotentCreations = idempotentCreations
 
 const defaultUserId = 'demo_user'
 const defaultProjectId = 'demo_project'
@@ -594,12 +598,24 @@ export async function cancelTask(taskId: string, userId?: string) {
   return hydrateTaskInputAssets(refreshed ?? task)
 }
 
+/** 仅供服务端编排使用；相同用户和确认键始终绑定同一个任务。 */
+export function getIdempotentTaskId(userId: string, key: string): string {
+  return `task_idem_${createHash('sha256').update(JSON.stringify([userId, key])).digest('hex')}`
+}
+
+/** 取消状态不代表上游 HTTP 已结束；Beta 用它等待真实执行释放。 */
+export function isTaskExecutionActive(taskId: string): boolean {
+  return runningTaskControllers.has(taskId)
+}
+
 export async function createTask(input: {
   featureType: FeatureType
   inputAssetIds: string[]
   params: TaskParams
   /** PR4：任务归属用户 id。未传则回退到 defaultUserId（local 兼容旧调用点）。 */
   userId?: string
+  /** 可选：持久化完成后才启动；旧调用不受影响。不得直接接受客户端自定义键。 */
+  idempotencyKey?: string
 }) {
   await ensureStoreReady()
   if (!FEATURE_WORKFLOWS[input.featureType]) {
@@ -632,7 +648,23 @@ export async function createTask(input: {
     effectiveUserId,
   )
 
-  const taskId = createId('task')
+  const taskId = input.idempotencyKey
+    ? getIdempotentTaskId(effectiveUserId, input.idempotencyKey)
+    : createId('task')
+  if (input.idempotencyKey) {
+    const existing = store.tasks.get(taskId)
+    if (existing) {
+      if (
+        existing.userId !== effectiveUserId ||
+        existing.featureType !== input.featureType ||
+        JSON.stringify(existing.inputAssetIds) !== JSON.stringify(input.inputAssetIds) ||
+        JSON.stringify(existing.params) !== JSON.stringify(normalizedParams)
+      ) {
+        throw new Error('幂等确认参数冲突')
+      }
+      return idempotentCreations.get(taskId) ?? hydrateTaskInputAssets(existing)
+    }
+  }
   const task: GenerationTask = {
     taskId,
     userId: effectiveUserId,
@@ -673,6 +705,31 @@ export async function createTask(input: {
     )
   } catch {
     // 日志失败忽略
+  }
+
+  if (input.idempotencyKey) {
+    const creation = (async () => {
+      try {
+        // Beta 必须先落盘，避免刷新/崩溃后再次确认产生重复消费。
+        await persistStore()
+      } catch (error) {
+        store.tasks.delete(taskId)
+        throw error
+      }
+      setTimeout(() => {
+        void taskRepo().insertTask(buildTaskRow(task)).catch((error) => {
+          console.error('[task-store] insertTask 失败：', error)
+        })
+        void runTask(taskId)
+      }, 0)
+      return task
+    })()
+    idempotentCreations.set(taskId, creation)
+    try {
+      return await creation
+    } finally {
+      idempotentCreations.delete(taskId)
+    }
   }
 
   setTimeout(() => {

@@ -1,3 +1,0 @@
-{"file": "AGENTS.md", "reason": "质量检查基准：语义 token 约束、max-md 触屏约定、服务端错误处理风格、运维红线"}
-{"file": ".trellis/tasks/08-15-smart-cutout-editor/prd.md", "reason": "验收依据：§32 用例、§39.6 能力边界、§35 开发约束（像素对齐/版本控制/不覆盖手改）"}
-{"file": ".trellis/tasks/08-15-smart-cutout-editor/info.md", "reason": "技术设计：分辨率体系、幂等/并发/错误模型、测试覆盖要求与质量门禁命令"}

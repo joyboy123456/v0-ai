@@ -1,25 +1,3 @@
-<!-- TRELLIS:START -->
-# Trellis Instructions
-
-These instructions are for AI assistants working in this project.
-
-This project is managed by Trellis. The working knowledge you need lives under `.trellis/`:
-
-- `.trellis/workflow.md` — development phases, when to create tasks, skill routing
-- `.trellis/spec/` — package- and layer-scoped coding guidelines (read before writing code in a given layer)
-- `.trellis/workspace/` — per-developer journals and session traces
-- `.trellis/tasks/` — active and archived tasks (PRDs, research, jsonl context)
-
-If a Trellis command is available on your platform (e.g. `/trellis:finish-work`, `/trellis:continue`), prefer it over manual steps. Not every platform exposes every command.
-
-If you're using Codex or another agent-capable tool, additional project-scoped helpers may live in:
-- `.agents/skills/` — reusable Trellis skills
-- `.codex/agents/` — optional custom subagents
-
-Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
-
-<!-- TRELLIS:END -->
-
 ## 开发测试站（pm2 yibai-preview，2026-08-15 起）
 
 - **访问入口**：`http://121.40.34.214:3100`（需阿里云安全组放行 TCP 3100）；另有一条备用的 nginx 反代 `/etc/nginx/conf.d/yibai-preview.conf`（`preview.jjwlai.cn:80 → 127.0.0.1:3100`，DNS 就绪后可用）
@@ -29,6 +7,42 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 - **账号**：搭建时从生产 `data/users.json` + `invite-codes.json` 复制了一次，登录密码与生产一致；之后两边独立演进
 - **容量**：dev 实例较吃内存（上限 3072M）；4C/8G 上生产 + 测试站 + dsh 共存已实测 OK，但测试站上别跑大批量生图
 - **收尾注意**：改配置后 `pm2 delete yibai-preview && pm2 start ecosystem.preview.config.cjs`（restart 不更新 env/node_args）；不用了 `pm2 delete yibai-preview && pm2 save`，并同步删 nginx 反代配置
+
+## 测试站验收与生产发布流程（yibai-fission 项目专属）
+
+> 本机 4C/8G 同时跑三套服务：生产 `pm2 yibai-fission`（:3000）、开发测试站 `pm2 yibai-preview`（:3100，next dev 热更新）、DSH 宿主。测试站与生产同仓库同代码，但数据完全隔离。**之后所有新功能统一走：开发 → 测试站验收 → 生产发布**，禁止未经测试站验收直接发生产。
+
+### 1. 开发期间
+
+- 正常改代码；提交后测试站**无需任何操作**——next dev 热更新，代码保存即生效。
+- 后端未就绪的功能用「**前端 mock 先行**」模式：纯函数时间轴模拟任务生命周期 + `mock-gd-` 式 taskId 前缀 + 模型列表 mock 下发，范例 `lib/garment-detail-mock.ts`；界面验收通过后再另建任务接真后端。
+- 测试站是开发中间态：改到一半的代码用户可能会看到报错，属正常，验收以「当前状态说明」为准。
+
+### 2. 测试站验收（每个功能必做，代替"直接发生产"）
+
+- 入口：`http://121.40.34.214:3100`（安全组 TCP 3100；备选 nginx `preview.jjwlai.cn`），账号 user01 + 生产同款密码。
+- 验收清单：功能主流程、参数联动、任务进度/结果渲染、失败与重试路径、移动端（<768px 外壳，hover 操作 `max-md:opacity-100`）、双主题（暗/亮）。
+- **体验边界**：测试站已有功能（AI服装大片等）是真实出图、花真实供应商额度；验收时不要大批量生图（额度与服务器资源与生产共享）。
+- 验收结论须明确记录：通过 / 需修改项。
+
+### 3. 验收通过 → 生产发布
+
+```bash
+pnpm typecheck && pnpm lint && pnpm build   # 必须全绿
+pm2 restart yibai-fission                  # 生产立即切到新构建
+```
+
+- 发布后验证：生产首页 200 + 页面引用的静态资源全部 200（`curl` 检查 buildId/chunk 一致性）。
+- **未通过验收不得发布生产**：build 只允许在准备发布时执行；验收不过就继续在测试站迭代，直到通过。
+- 收尾：新约定沉淀到 AGENTS.md（写入时给本流程留指针）。
+
+### 4. 铁律（血泪教训）
+
+1. `pnpm build` 会用当前工作区覆盖生产 `.next`——**只允许在准备发布时 build**。临时 build 后生产必须 `pm2 restart yibai-fission`，否则线上进程与磁盘构建不一致、静态资源 500。
+2. 数据隔离靠 cwd：测试站 cwd=`.preview-runtime/`（独立 data/、public/、日志）。绝不手动在生产与测试站之间拷贝 `data/` 下文件（搭建时的一次性账号复制除外）。
+3. 换公网 IP 必改 `next.config.mjs` 的 `allowedDevOrigins` 并 `pm2 restart yibai-preview`，否则测试站所有 JS chunk 403、页面永远停在「正在加载工作台」SSR 骨架。
+4. 改测试站 pm2 配置后 `pm2 delete yibai-preview && pm2 start ecosystem.preview.config.cjs`（restart 不更新 env/node_args）。
+5. dev 与生产共用源码，生产 `next-env.d.ts` / `tsconfig.json` 的 distDir 引用会被 dev 改写，提交前 `git checkout` 还原。
 
 ## 运维信息（2026-07-06 OOM 事故后加固）
 

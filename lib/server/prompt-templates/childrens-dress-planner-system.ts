@@ -4,7 +4,6 @@
  * 设计来源：
  * - v4 `childrens-dress.ts`（手写 9 段叙事 + 外景常量 + 椅子规则 + 气质锚点）
  * - 衣百 AIGC 3,977 条 gemini3pro 案例的「场景叙事」公式
- *   （参考 `.trellis/tasks/05-18-pose-fission/research/yibaiaigc-prompt-engineering.md`）
  * - v5 brainstorm 终稿 + 设计审稿（D7-D18）
  *
  * v5 关键决议：

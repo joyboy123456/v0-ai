@@ -1,3 +1,0 @@
-{"file": ".trellis/tasks/08-03-billing-observatory/research/laozhang-usage-api.md", "reason": "上游 /api/data/self 和 /api/log/self 接口字段、分页限制、认证方式——实现 laozhang-usage-service 的核心依据"}
-{"file": ".trellis/tasks/07-08-billing-system/research/laozhang-balance-api.md", "reason": "老张余额查询接口 /api/user/self 的换算系数和认证方式，新服务复用同一 token 和模式"}
-{"file": ".trellis/tasks/08-03-billing-observatory/prd.md", "reason": "需求文档：API 设计、组件拆分、设计概念、验收标准"}

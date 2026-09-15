@@ -11,7 +11,7 @@ import {
 import {
   createCutoutExportPostHandler,
 // @ts-expect-error Node 原生 TypeScript 测试运行器要求显式扩展名。
-} from './route.ts'
+} from './handler.ts'
 
 function exportResult(): CutoutExportResult {
   return {

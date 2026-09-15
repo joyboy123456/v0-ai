@@ -1,2 +1,0 @@
-{"file": ".trellis/tasks/08-03-billing-observatory/prd.md", "reason": "验收标准和已知边界，用于检查实现是否达标"}
-{"file": ".trellis/tasks/08-03-billing-observatory/research/laozhang-usage-api.md", "reason": "上游接口字段和分页限制，用于检查服务层实现正确性"}

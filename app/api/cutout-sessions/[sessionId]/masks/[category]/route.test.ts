@@ -10,7 +10,7 @@ import {
 import {
   createCategoryMaskGetHandler,
 // @ts-expect-error Node 原生 TypeScript 测试运行器要求显式扩展名。
-} from './route.ts'
+} from './handler.ts'
 
 function request(sessionId: string, category: string) {
   return new NextRequest(

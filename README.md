@@ -150,6 +150,8 @@ public/generated/              # 默认本地图片目录
 
 MIT
 
+本地创作助手 Beta 的使用与开放方式见 [说明](docs/agent-beta.md)。其中标注的 VOZEB-PRO 改编代码适用独立许可，详见 [第三方说明](third-party/vozeb-pro/NOTICE.md)。
+
 ---
 
-由 [v0.app](https://v0.app/chat/projects/prj_jMqd0I9XVhws1Dzeg5yIBfriIJU7) 协同开发，开发流程使用 [Trellis](https://github.com/) 管理。
+由 [v0.app](https://v0.app/chat/projects/prj_jMqd0I9XVhws1Dzeg5yIBfriIJU7) 协同开发。

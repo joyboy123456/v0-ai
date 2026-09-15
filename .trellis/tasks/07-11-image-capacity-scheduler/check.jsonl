@@ -1,1 +1,0 @@
-{"file":".trellis/tasks/07-11-image-capacity-scheduler/research/capacity-findings.md","reason":"核对公平队列、动态并发、单逻辑入口上限及不触碰生产约束"}

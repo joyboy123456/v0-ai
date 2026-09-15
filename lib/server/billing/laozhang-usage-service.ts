@@ -4,8 +4,6 @@
  * 两个上游接口（均用 LAOZHANG_ACCESS_TOKEN 认证，不带 Bearer）：
  * - GET /api/data/self?start_timestamp&end_timestamp → 按天×按模型聚合（实际扣费）
  * - GET /api/log/self?p&start_timestamp&end_timestamp → 逐条调用流水（10条/页，无总数）
- *
- * 调研文档：.trellis/tasks/08-03-billing-observatory/research/laozhang-usage-api.md
  */
 
 import { getUnitPriceUsd } from './pricing'
