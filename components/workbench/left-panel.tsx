@@ -70,6 +70,7 @@ import {
   FASHION_MODEL_PROVIDER_LABELS,
   FASHION_PROMPT_MODES,
   FASHION_RESOLUTIONS,
+  FASHION_RESULT_COUNTS,
   PHOTO_FISSION_CHILDRENS_CATEGORIES,
   PHOTO_FISSION_CATEGORIES,
   PHOTO_FISSION_RATIOS_EXTRA,
@@ -87,6 +88,7 @@ import {
   type FashionReferenceImage,
   type FashionRemixRequest,
   type FashionResolution,
+  type FashionResultCount,
   type FeatureType,
   type GarmentDetailCategory,
   type GarmentDetailParams,
@@ -196,6 +198,8 @@ export function LeftPanel({
     useState<FashionImageRatio>("3:4");
   const [fashionResolution, setFashionResolution] =
     useState<FashionResolution>("4k");
+  const [fashionResultCount, setFashionResultCount] =
+    useState<FashionResultCount>(1);
   const [fashionImage, setFashionImage] = useState<UploadedImage | null>(null);
   const [photoFissionModel, setPhotoFissionModel] = useState<FashionModelId>(
     DEFAULT_FASHION_MODEL,
@@ -412,6 +416,14 @@ export function LeftPanel({
     ) {
       setFashionResolution(params.resolution);
     }
+
+    // 出图数量回填：仅白名单值（1/2/4）恢复，历史任务无该字段时保持默认 1 张
+    if (
+      params.resultCount &&
+      FASHION_RESULT_COUNTS.some((option) => option.id === params.resultCount)
+    ) {
+      setFashionResultCount(params.resultCount);
+    }
   }, [fashionRemixRequest]);
 
   // photo-fission 案例库「使用此案例」回填：
@@ -567,8 +579,9 @@ export function LeftPanel({
         referenceImageCount: fashionReferences.length,
         imageRatio: fashionImageRatio,
         resolution: fashionResolution,
-        resultCount: 1,
-        creditsCost: 35,
+        resultCount: fashionResultCount,
+        // 内部展示口径：35 × 张数；真实计费走现有 billing 事件体系
+        creditsCost: 35 * fashionResultCount,
       };
     }
 
@@ -978,6 +991,7 @@ export function LeftPanel({
                 model={fashionModel}
                 imageRatio={fashionImageRatio}
                 resolution={fashionResolution}
+                resultCount={fashionResultCount}
                 helperText={helperText}
                 companyModels={companyModels}
                 onOpenCompanyModelLibrary={onOpenCompanyModelLibrary}
@@ -1010,6 +1024,7 @@ export function LeftPanel({
                 onModelChange={setFashionModel}
                 onImageRatioChange={setFashionImageRatio}
                 onResolutionChange={setFashionResolution}
+                onResultCountChange={setFashionResultCount}
               />
             ) : feature === "photo-fission" ? (
               <PhotoFissionForm
@@ -1413,6 +1428,7 @@ function AiFashionPhotoForm({
   model,
   imageRatio,
   resolution,
+  resultCount,
   helperText,
   companyModels,
   onOpenCompanyModelLibrary,
@@ -1426,6 +1442,7 @@ function AiFashionPhotoForm({
   onModelChange,
   onImageRatioChange,
   onResolutionChange,
+  onResultCountChange,
 }: {
   references: FashionReferenceImage[];
   prompt: string;
@@ -1433,6 +1450,7 @@ function AiFashionPhotoForm({
   model: FashionModelId;
   imageRatio: FashionImageRatio;
   resolution: FashionResolution;
+  resultCount: FashionResultCount;
   helperText: string;
   companyModels: CompanyModel[];
   onOpenCompanyModelLibrary: () => void;
@@ -1449,6 +1467,7 @@ function AiFashionPhotoForm({
   onModelChange: (value: FashionModelId) => void;
   onImageRatioChange: (value: FashionImageRatio) => void;
   onResolutionChange: (value: FashionResolution) => void;
+  onResultCountChange: (value: FashionResultCount) => void;
 }) {
   const referencedModelIds = useMemo(
     () =>
@@ -1549,6 +1568,13 @@ function AiFashionPhotoForm({
         <FashionResolutionSelector
           value={resolution}
           onChange={onResolutionChange}
+        />
+      </div>
+
+      <div className={sectionClass}>
+        <FashionResultCountSelector
+          value={resultCount}
+          onChange={onResultCountChange}
         />
       </div>
     </div>
@@ -2659,6 +2685,38 @@ function FashionResolutionSelector({
             {option.id === "4k" && (
               <Zap className="mr-1.5 h-3.5 w-3.5 fill-current" />
             )}
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** AI服装大片出图数量选择器：1 / 2 / 4 张，样式与画质选择器对齐 */
+function FashionResultCountSelector({
+  value,
+  onChange,
+}: {
+  value: FashionResultCount;
+  onChange: (value: FashionResultCount) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <RequiredLabel label="出图数量" />
+      <div className="grid grid-cols-3 gap-2">
+        {FASHION_RESULT_COUNTS.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => onChange(option.id)}
+            className={cn(
+              "flex h-10 items-center justify-center rounded-md border text-xs font-medium transition-colors",
+              value === option.id
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border bg-secondary text-muted-foreground hover:border-primary/50",
+            )}
+          >
             {option.label}
           </button>
         ))}

@@ -3,7 +3,7 @@ import test from 'node:test'
 import type { Mock } from 'node:test'
 
 // @ts-expect-error Node 的原生 TypeScript 测试运行器要求显式扩展名。
-import { runGrsaiImageEdit } from './grsai-image-adapter.ts'
+import { runGrsaiImageEdit, resolveGrsaiGptImageAspectRatio } from './grsai-image-adapter.ts'
 // @ts-expect-error Node 的原生 TypeScript 测试运行器要求显式扩展名。
 import { GoogleImageError } from './google-image-retry.ts'
 
@@ -207,4 +207,57 @@ test('Grsai adapter count>1：并发循环生成多张', async () => {
   } finally {
     restore()
   }
+})
+
+test('Grsai adapter gpt-image-2.5-sunburst：像素尺寸映射 + 请求体构造', async () => {
+  const { calls, restore } = mockFetchReturning({
+    id: 'task-7',
+    status: 'succeeded',
+    results: [{ url: 'https://file.example.com/gpt25.png' }],
+  })
+
+  try {
+    const results = await runGrsaiImageEdit(
+      baseInput({ model: 'gpt-image-2.5-sunburst', aspectRatio: '3:4', imageSize: '4K' }),
+    )
+    assert.equal(results.length, 1)
+    assert.equal(calls.length, 1)
+    const body = JSON.parse(calls[0].init.body as string)
+    // 裸模型名直发（不加 openai/ 前缀），grsai 已注册该名字
+    assert.equal(body.model, 'gpt-image-2.5-sunburst')
+    // sunburst 不接受 '3:4'，必须映射为像素值
+    assert.equal(body.aspectRatio, '2480x3312')
+    assert.equal(body.imageSize, '4K')
+    assert.equal(body.replyType, 'json')
+  } finally {
+    restore()
+  }
+})
+
+test('Grsai adapter nano 模型不受像素映射影响：比例字符串原样透传', async () => {
+  const { calls, restore } = mockFetchReturning({
+    id: 'task-8',
+    status: 'succeeded',
+    results: [{ url: 'https://file.example.com/nb.png' }],
+  })
+
+  try {
+    await runGrsaiImageEdit(baseInput({ aspectRatio: '1:1', imageSize: '2K' }))
+    const body = JSON.parse(calls[0].init.body as string)
+    assert.equal(body.model, 'nano-banana-2')
+    assert.equal(body.aspectRatio, '1:1')
+  } finally {
+    restore()
+  }
+})
+
+test('resolveGrsaiGptImageAspectRatio 像素值换算', () => {
+  assert.equal(resolveGrsaiGptImageAspectRatio('gpt-image-2.5-sunburst', '1:1', '2K'), '2048x2048')
+  assert.equal(resolveGrsaiGptImageAspectRatio('gpt-image-2.5-flare', '3:4', '4K'), '2480x3312')
+  assert.equal(resolveGrsaiGptImageAspectRatio('gpt-image-2.5-sunburst', '1:1', '4K'), '2880x2880')
+  assert.equal(resolveGrsaiGptImageAspectRatio('gpt-image-2.5-sunburst', '3:4', undefined), '1536x2048')
+  assert.equal(resolveGrsaiGptImageAspectRatio('gpt-image-2.5-sunburst', '9:9', '2K'), '2048x2048') // 未知比例回退 1:1
+  assert.equal(resolveGrsaiGptImageAspectRatio('gpt-image-2.5-sunburst', '2048x1536', '4K'), '2048x1536') // 已是像素值透传
+  assert.equal(resolveGrsaiGptImageAspectRatio('nano-banana-2', '1:1', '2K'), '1:1') // 非 gpt 模型不动
+  assert.equal(resolveGrsaiGptImageAspectRatio('gpt-image-2.5-sunburst', undefined, '2K'), undefined) // more 场景透传
 })

@@ -55,6 +55,8 @@ export function getBalanceLevel(
 export const MODEL_LABELS: Record<string, string> = {
   "gemini-3.1-flash-image-preview": "Nano Banana",
   "gpt-image-2": "GPT Image 2",
+  "gpt-image-2.5-sunburst": "GPT Image 2.5 Sunburst",
+  "gpt-image-2.5-flare": "GPT Image 2.5 Flare",
   "gemini-3-pro-image-preview": "Nano Banana Pro",
   "nano-banana-2-lite": "Grsai NB 2 Lite",
   "nano-banana-2": "Grsai NB 2",

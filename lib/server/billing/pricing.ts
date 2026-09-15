@@ -16,6 +16,9 @@ const MODEL_UNIT_PRICE_USD: Record<string, number> = {
   // GPT 系列（OpenAI）
   'gpt-image-2': 0.03,
   'gpt-image-2-vip': 0.03,
+  // gpt-image-2.5 系列走 Grsai：￥0.15/张 → ~$0.021（以真实账单校准）
+  'gpt-image-2.5-sunburst': 0.021,
+  'gpt-image-2.5-flare': 0.021,
 
   // SeeDream 系列（字节跳动火山方舟）
   'seedream-4-5-251128': 0.045,
@@ -44,7 +47,8 @@ const MODEL_UNIT_PRICE_USD: Record<string, number> = {
  */
 const ACTIVE_MODEL_IDS: readonly string[] = [
   'gemini-3.1-flash-image-preview',
-  'gpt-image-2',
+  'gpt-image-2.5-sunburst',
+  'gpt-image-2.5-flare',
   'gemini-3-pro-image-preview',
   'nano-banana-2-lite',
   'nano-banana-2',

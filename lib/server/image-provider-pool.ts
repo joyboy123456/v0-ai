@@ -544,8 +544,19 @@ export function isGoogleImageModel(model: string | undefined): boolean {
   return model.trim().toLowerCase().startsWith('gemini-')
 }
 
+/**
+ * gpt-image-2.5 系列目前只接入 Grsai 渠道（老张渠道已弃用、七牛未配置），
+ * 必须从七牛/老张的兼容判定中排除，避免 failover 链误打已废渠道。
+ */
+export function isGrsaiOnlyGptImageModel(model: string | undefined): boolean {
+  if (!model) return false
+  const lower = model.trim().toLowerCase()
+  return lower.startsWith('gpt-image-2.5') || lower.startsWith('openai/gpt-image-2.5')
+}
+
 export function isQiniuImageModel(model: string | undefined): boolean {
   if (!model) return true
+  if (isGrsaiOnlyGptImageModel(model)) return false
   const lower = model.trim().toLowerCase()
   return (
     lower.startsWith('gemini-') ||
@@ -576,6 +587,7 @@ export function isVolcesImageModel(model: string | undefined): boolean {
 
 export function isLaozhangImageModel(model: string | undefined): boolean {
   if (!model) return true
+  if (isGrsaiOnlyGptImageModel(model)) return false
   const lower = model.trim().toLowerCase()
   return (
     lower.startsWith('gemini-') ||
@@ -587,13 +599,14 @@ export function isLaozhangImageModel(model: string | undefined): boolean {
 }
 
 /**
- * Grsai 原生 /v1/api/generate 接口只接受 nano-banana-* 系列模型名。
- * 见 lib/server/grsai-image-adapter.ts 和 grsai 官方文档。
+ * Grsai 原生 /v1/api/generate 接受的模型名：
+ * - nano-banana-* 全系列（见 lib/server/grsai-image-adapter.ts 和 grsai 官方文档）
+ * - gpt-image-2.5-* 系列（grsai 已注册 gpt-image-2.5 / -flare / -sunburst，实测校验通过）
  */
 export function isGrsaiImageModel(model: string | undefined): boolean {
   if (!model) return true
   const lower = model.trim().toLowerCase()
-  return lower.startsWith('nano-banana-')
+  return lower.startsWith('nano-banana-') || lower.startsWith('gpt-image-2.5')
 }
 
 function normalizeVolcesModelId(model: string | undefined): string {
@@ -628,7 +641,7 @@ export function isImageProviderModelCompatible(
 
 /**
  * 获取当前可用且支持指定模型的 provider。
- * 例如 gpt-image-* 只能走七牛 OpenAI 兼容渠道，不能分发给 Google 官方 adapter。
+ * 例如 gpt-image-2.5-* 只走 Grsai 渠道，gemini 官方名不能分发给 Grsai adapter。
  */
 export function getAvailableProvidersForModel(
   model: string | undefined,
@@ -688,20 +701,23 @@ export function getNoAvailableProviderMessage(model: string | undefined): string
   if (!model) return '没有可用的生图渠道（所有 provider 均不可用）'
 
   const lower = model.trim().toLowerCase()
-  if (lower.startsWith('gpt-image-') || lower.startsWith('openai/gpt-image-')) {
+  if (isGrsaiOnlyGptImageModel(model)) {
     const providers = getAllProviders()
-    const qiniuProviders = providers.filter((provider) => provider.type === 'openai')
-    const availableQiniuProviders = getAvailableProviders().filter(
-      (provider) => provider.type === 'openai',
+    const grsaiProviders = providers.filter((provider) => provider.type === 'grsai')
+    const availableGrsaiProviders = getAvailableProviders().filter(
+      (provider) => provider.type === 'grsai',
     )
 
     return [
       `没有可用的生图渠道支持模型 ${model}`,
-      'GPT Image 2 只走 OpenAI 格式的渠道（qiniu type），不能落到 Google 官方 adapter',
-      '请确认 IMAGE_PROVIDERS 中至少有一个 type="qiniu" 且 apiKey 不为空的 provider，或配置 QINIU_IMAGE_API_KEY',
-      `当前已加载 qiniu provider ${qiniuProviders.length} 个，可用 ${availableQiniuProviders.length} 个`,
+      'GPT Image 2.5 只走 Grsai 渠道，不能落到老张/七牛/Google adapter',
+      '请确认 IMAGE_PROVIDERS 中至少有一个 type="grsai" 且 apiKey 不为空的 provider',
+      `当前已加载 grsai provider ${grsaiProviders.length} 个，可用 ${availableGrsaiProviders.length} 个`,
       '如果刚修改过 .env.local，请重启 pnpm dev 让 Next.js 重新读取环境变量',
     ].join('。')
+  }
+  if (lower.startsWith('gpt-image-') || lower.startsWith('openai/gpt-image-')) {
+    return `没有可用的生图渠道支持模型 ${model}（GPT Image 2 的老张/七牛渠道已下线，请改用 GPT Image 2.5）`
   }
 
   return `没有可用的生图渠道支持模型 ${model}`

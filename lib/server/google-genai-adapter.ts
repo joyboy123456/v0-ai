@@ -123,7 +123,6 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
   const baseUrl = (input.baseUrl || googleApiBaseUrl).replace(/\/+$/, '')
   const url = `${baseUrl}/models/${encodeURIComponent(input.model)}:generateContent`
   const startedAt = Date.now()
-  const results: ResultAsset[] = []
 
   logImageEvent(
     'gimg.attempt',
@@ -163,85 +162,96 @@ export async function runGoogleImageEdit(input: GoogleEditInput): Promise<Result
     return preparedRequest
   }
 
-  // Gemini's generateContent returns one candidate per request, so we issue `count` calls in series.
-  // 每个 call 由 callGoogleImageWithRetry 包装，独立计算 attempts / backoff / throttle。
-  for (let index = 0; index < input.count; index += 1) {
-    const callTraceId = input.count > 1 ? `${traceId}_v${index + 1}` : traceId
-    const ctx: LogContext = {
-      traceId: callTraceId,
-      taskId: input.taskId,
-      shotId: input.shotId,
-    }
-
-    const inline = await callGoogleImageWithRetry(
-      async (attempt, attemptSignal) => {
-        const prepared = await prepareRequest()
-        const callStart = Date.now()
-        logImageEvent('gimg.attempt', { ...ctx, attempt }, {
-          model: input.model,
-          promptLen: input.prompt.length,
-          refs: prepared.referenceCount,
-          aspect: input.aspectRatio,
-          size: input.imageSize,
-          providerId: input.providerId,
-          bodyBytes: prepared.requestBodyBytes,
-          imageCount: prepared.imageCount,
-        })
-
-        let data: GeminiInlineData
-        try {
-          data = await performSingleCall({
-            url,
-            apiKey: input.apiKey,
-            body: prepared.requestBody,
-            serializedBody: prepared.serializedBody,
-            requestBodyBytes: prepared.requestBodyBytes,
-            timeoutMs: input.timeoutMs,
-            signal: attemptSignal,
-          })
-        } catch (error) {
-          // 退避等待期间不保留大型序列化请求体；下一次 attempt 在拿到调度槽后重建。
-          preparedRequest = undefined
-          throw error
+  // Gemini's generateContent returns one candidate per request, so we issue `count` calls.
+  // 2026-09-02 起由串行 for 循环改为并发发起（Promise.all）：每张图由独立的
+  // callGoogleImageWithRetry 分支承担，重试 / 退避 / 节流互不影响，真实并发量由
+  // provider 级令牌桶（maxIpm/maxRpm）与生图调度槽位约束，不会打爆上游。
+  // 保序策略：每个分支固定占据循环下标对应的槽位（index），结果按 index 放入固定位置，
+  // assetId 按循环下标编号（第 N 个并发位固定叫 _N），与完成先后无关。
+  // 失败语义保持 all-or-nothing：任一分支抛错则 Promise.all 整体失败，整任务失败。
+  const imageTasks: Promise<ResultAsset>[] = Array.from(
+    { length: input.count },
+    (_, index) =>
+      (async (): Promise<ResultAsset> => {
+        const callTraceId = input.count > 1 ? `${traceId}_v${index + 1}` : traceId
+        const ctx: LogContext = {
+          traceId: callTraceId,
+          taskId: input.taskId,
+          shotId: input.shotId,
         }
 
-        logImageEvent('gimg.success', { ...ctx, attempt }, {
-          tookMs: Date.now() - callStart,
-          providerId: input.providerId,
-        })
+        const inline = await callGoogleImageWithRetry(
+          async (attempt, attemptSignal) => {
+            const prepared = await prepareRequest()
+            const callStart = Date.now()
+            logImageEvent('gimg.attempt', { ...ctx, attempt }, {
+              model: input.model,
+              promptLen: input.prompt.length,
+              refs: prepared.referenceCount,
+              aspect: input.aspectRatio,
+              size: input.imageSize,
+              providerId: input.providerId,
+              bodyBytes: prepared.requestBodyBytes,
+              imageCount: prepared.imageCount,
+            })
 
-        return data
-      },
-      ctx,
-      {
-        apiKey: input.apiKey,
-        providerId: input.providerId,
-        rateLimitKey: input.rateLimitKey,
-        maxIpm: input.maxIpm,
-        maxRpm: input.maxRpm,
-        signal: input.signal,
-        onRetryAttempt: input.onRetryAttempt,
-        scheduler: {
-          userId: input.userId,
-          taskId: input.taskId,
-          providerId: input.providerId ?? input.apiKey,
-          resolution: input.imageSize,
-        },
-      },
-    )
+            let data: GeminiInlineData
+            try {
+              data = await performSingleCall({
+                url,
+                apiKey: input.apiKey,
+                body: prepared.requestBody,
+                serializedBody: prepared.serializedBody,
+                requestBodyBytes: prepared.requestBodyBytes,
+                timeoutMs: input.timeoutMs,
+                signal: attemptSignal,
+              })
+            } catch (error) {
+              // 退避等待期间不保留大型序列化请求体；下一次 attempt 在拿到调度槽后重建。
+              preparedRequest = undefined
+              throw error
+            }
 
-    // Google Imagen API 不支持 outputFormat 参数控制输出格式，
-    // API 可能返回 JPEG（有损压缩）。为保证图片质量，强制标记为 PNG。
-    const dataUrl = `data:image/png;base64,${inline.data}`
-    const resultIndex = results.length + 1
-    results.push({
-      assetId: `result_${input.taskId}_${resultIndex}`,
-      url: dataUrl,
-      downloadUrl: dataUrl,
-      width: 0,
-      height: 0,
-    })
-  }
+            logImageEvent('gimg.success', { ...ctx, attempt }, {
+              tookMs: Date.now() - callStart,
+              providerId: input.providerId,
+            })
+
+            return data
+          },
+          ctx,
+          {
+            apiKey: input.apiKey,
+            providerId: input.providerId,
+            rateLimitKey: input.rateLimitKey,
+            maxIpm: input.maxIpm,
+            maxRpm: input.maxRpm,
+            signal: input.signal,
+            onRetryAttempt: input.onRetryAttempt,
+            scheduler: {
+              userId: input.userId,
+              taskId: input.taskId,
+              providerId: input.providerId ?? input.apiKey,
+              resolution: input.imageSize,
+            },
+          },
+        )
+
+        // Google Imagen API 不支持 outputFormat 参数控制输出格式，
+        // API 可能返回 JPEG（有损压缩）。为保证图片质量，强制标记为 PNG。
+        const dataUrl = `data:image/png;base64,${inline.data}`
+        // assetId 按循环下标固定编号（第 N 个并发位固定 _N），保序不依赖完成顺序。
+        return {
+          assetId: `result_${input.taskId}_${index + 1}`,
+          url: dataUrl,
+          downloadUrl: dataUrl,
+          width: 0,
+          height: 0,
+        }
+      })(),
+  )
+
+  const results = await Promise.all(imageTasks)
 
   logImageEvent(
     'gimg.success',

@@ -61,6 +61,8 @@ export type SceneStyle = 'studio' | 'outdoor' | 'street' | 'lifestyle'
 export type GenerateCount = 4 | 8 | 12 | 16
 export type ImageRatio = '1:1' | '3:4' | '4:3' | '2:3'
 export type FashionImageRatio = '1:1' | '3:2' | '2:3' | '3:4' | '4:3' | 'more'
+/** AI服装大片单次任务的出图数量（1 / 2 / 4 张），服务端白名单校验。 */
+export type FashionResultCount = 1 | 2 | 4
 /**
  * 姿势裂变（pose-fission）支持的全部 10 个真实比例 + 1 个 UI 概念 'more'。
  * 与 PhotoFissionImageRatio 完全对齐（PRD D6），「更多」按钮只是 UI 概念，
@@ -105,6 +107,8 @@ export type FashionModelId =
   | 'gemini-3.1-flash-image-preview'
   | 'gemini-3-pro-image-preview'
   | 'gpt-image-2'
+  | 'gpt-image-2.5-sunburst'
+  | 'gpt-image-2.5-flare'
   | 'jimeng-seedream-4.6'
   | 'doubao-seedream-4.5'
   | 'doubao-seedream-5.0-lite'
@@ -236,8 +240,8 @@ export interface AiFashionPhotoParams {
   referenceImageCount: number
   imageRatio: FashionImageRatio
   resolution: FashionResolution
-  resultCount: 1
-  creditsCost: 35
+  resultCount: FashionResultCount
+  creditsCost: number
 }
 
 export interface PhotoFissionShot {
@@ -641,6 +645,13 @@ export const PHOTO_FISSION_RESULT_COUNTS = [
   { id: 10, label: '10张' },
 ] satisfies { id: PhotoFissionResultCount; label: string }[]
 
+/** AI服装大片出图数量选项：1 / 2 / 4 张，与服务端白名单（readFashionResultCount）一致。 */
+export const FASHION_RESULT_COUNTS = [
+  { id: 1, label: '1张' },
+  { id: 2, label: '2张' },
+  { id: 4, label: '4张' },
+] satisfies { id: FashionResultCount; label: string }[]
+
 export const ELEMENT_REPLACE_TYPES = [
   { id: 'clothing', label: '服装' },
   { id: 'environment', label: '环境' },
@@ -733,7 +744,7 @@ export const FASHION_MODEL_PROVIDER_LABELS: Record<FashionModelProvider, string>
  * 生图模型元数据。
  *
  * selectable !== false 的条目会出现在本阶段模型选择器中。
- * 当前可用模型：Google 两个（Nano Banana / Nano Banana Pro）+ GPT Image 2。
+ * 当前可用模型：Google 两个（Nano Banana / Nano Banana Pro）+ Grsai 渠道三个 NB2/NB Pro + GPT Image 2.5。
  */
 export const FASHION_MODELS: FashionModelOption[] = [
   {
@@ -749,9 +760,10 @@ export const FASHION_MODELS: FashionModelOption[] = [
     id: 'gpt-image-2',
     label: 'GPT Image 2',
     alias: 'OpenAI 兼容',
-    description: '适合走七牛 OpenAI 图像模型渠道；使用前需配置支持 openai/gpt-image-* 的 qiniu provider',
+    description: '旧渠道（七牛/老张）已下线，暂不可选；请改用 GPT Image 2.5',
     maxInputImages: 10,
     maxResolutionLabel: '4K',
+    selectable: false,
     provider: 'laozhang',
   },
   {
@@ -816,6 +828,24 @@ export const FASHION_MODELS: FashionModelOption[] = [
     alias: 'Grsai NB Pro',
     description: '走 Grsai 渠道 Nano Banana Pro 旗舰画质，支持 1K/2K/4K（约 $0.018/张）',
     maxInputImages: 14,
+    maxResolutionLabel: '4K',
+    provider: 'grsai',
+  },
+  {
+    id: 'gpt-image-2.5-sunburst',
+    label: 'GPT Image 2.5',
+    alias: 'Grsai Sunburst',
+    description: 'OpenAI 最新旗舰图像模型（Sunburst 高端档），走 Grsai 渠道，支持 2K/4K 出图（约 $0.021/张）',
+    maxInputImages: 10,
+    maxResolutionLabel: '4K',
+    provider: 'grsai',
+  },
+  {
+    id: 'gpt-image-2.5-flare',
+    label: 'GPT Image 2.5',
+    alias: 'Grsai Flare',
+    description: 'OpenAI 最新图像模型（Flare 快速档），出图速度更快、适合批量生成，走 Grsai 渠道，支持 2K/4K（约 $0.021/张）',
+    maxInputImages: 10,
     maxResolutionLabel: '4K',
     provider: 'grsai',
   },

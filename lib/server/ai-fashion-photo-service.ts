@@ -4,12 +4,14 @@ import {
   FASHION_MODELS,
   FASHION_PROMPT_MODES,
   FASHION_RESOLUTIONS,
+  FASHION_RESULT_COUNTS,
   SELECTABLE_FASHION_MODELS,
   type AiFashionPhotoParams,
   type FashionImageRatio,
   type FashionModelId,
   type FashionPromptMode,
   type FashionResolution,
+  type FashionResultCount,
 } from '@/lib/types'
 
 const fashionPhotoCreditsCost = 35
@@ -26,6 +28,9 @@ const fashionPromptModeIds = new Set<FashionPromptMode>(
 )
 const fashionModelIds = new Set<FashionModelId>(
   SELECTABLE_FASHION_MODELS.map((option) => option.id),
+)
+const fashionResultCountIds = new Set<FashionResultCount>(
+  FASHION_RESULT_COUNTS.map((option) => option.id),
 )
 
 export interface ComposeAiFashionPhotoPromptInput {
@@ -124,6 +129,7 @@ export function normalizeAiFashionPhotoParams(
   const referenceImageCount = readReferenceImageCount(params.referenceImageCount)
   const imageRatio = readFashionImageRatio(params.imageRatio)
   const resolution = readFashionResolution(params.resolution)
+  const resultCount = readFashionResultCount(params.resultCount)
 
   if (referenceImageCount !== inputAssetCount) {
     throw new Error('AI服装大片参考图数量与素材数量不一致')
@@ -153,8 +159,9 @@ export function normalizeAiFashionPhotoParams(
     referenceImageCount,
     imageRatio,
     resolution,
-    resultCount: 1,
-    creditsCost: fashionPhotoCreditsCost,
+    resultCount,
+    // 内部展示口径：单张单价 35 × 张数；真实计费走现有 billing 事件体系（按实际张数记账）。
+    creditsCost: fashionPhotoCreditsCost * resultCount,
   }
 }
 
@@ -196,6 +203,20 @@ function readReferenceImageCount(value: unknown) {
   }
 
   throw new Error('AI服装大片参考图数量无效')
+}
+
+/**
+ * 出图数量白名单读取：仅放行 {1,2,4}，防客户端伪造超大值。
+ * undefined/null/'' → 1（兼容旧客户端：历史链路固定 1 张）。
+ */
+function readFashionResultCount(value: unknown): FashionResultCount {
+  if (value === undefined || value === null || value === '') {
+    return 1
+  }
+  if (typeof value === 'number' && fashionResultCountIds.has(value as FashionResultCount)) {
+    return value as FashionResultCount
+  }
+  throw new Error('AI服装大片出图数量无效')
 }
 
 function readPromptMode(value: unknown): FashionPromptMode {

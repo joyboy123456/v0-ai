@@ -31,7 +31,7 @@
  * - 输入图+输出图总数: ≤ 15 张
  *
  * 重要：
- * - 不支持 `n` 参数，单图模式需串行调用
+ * - 不支持 `n` 参数，需按张发起调用（2026-09-02 起由串行改为并发发起）
  * - 不支持独立的 `aspect_ratio` 参数，需用具体宽高像素值
  * - 5.0-lite 支持输出格式选择（PNG 无损 / JPEG 有损）
  */
@@ -118,7 +118,7 @@ export interface VolcesEditInput {
   prompt: string
   /** 输入图片（data URL 数组）；非空时自动进入图生图模式 */
   inputImages: string[]
-  /** 要生成的图片数量（豆包不支持 n 参数，需串行调用） */
+  /** 要生成的图片数量（豆包不支持 n 参数，按张发起调用，当前为并发发起） */
   count: number
   /**
    * 图片尺寸参数
@@ -400,7 +400,10 @@ async function fetchWithTimeout(
  * 输入：count 张图待生成
  * 输出：ResultAsset[]，长度等于 count
  *
- * 注意：豆包不支持 n 参数，单图模式需串行调用。
+ * 注意：豆包不支持 n 参数；2026-09-02 起由串行 for 循环改为并发发起（Promise.all），
+ * 真实并发量由 provider 级令牌桶与生图调度槽位约束。保序策略：每个分支固定占据
+ * 循环下标对应的槽位，Promise.all 结果按 index 对齐请求顺序。
+ * 失败语义保持 all-or-nothing：任一分支抛错则整体失败。
  */
 export async function runVolcesImageEdit(
   input: VolcesEditInput,
@@ -415,64 +418,51 @@ export async function runVolcesImageEdit(
     return []
   }
 
-  const results: ResultAsset[] = []
-
-  // 豆包不支持 n 参数，需要串行调用
-  for (let i = 0; i < input.count; i++) {
-    let item: VolcesImageItem
-    try {
-      item = await callVolcesOnce(input, { ...logCtx, attempt: i + 1 })
-    } catch (err) {
-      // 如果 API 不支持 output_format（如 Seedream 4.5），自动回退到 JPEG 重试
-      if (
-        err instanceof GoogleImageError &&
-        err.message.startsWith('__OUTPUT_FORMAT_UNSUPPORTED__')
-      ) {
-        logImageEvent('volces.output_format_fallback', logCtx, {
-          reason: 'API 不支持 output_format 参数，回退到默认 JPEG',
-          model: input.model,
+  const imageTasks: Promise<ResultAsset>[] = Array.from(
+    { length: input.count },
+    (_, i) =>
+      (async (): Promise<ResultAsset> => {
+        const item = await generateSingleImage(input, {
+          ...logCtx,
+          attempt: i + 1,
         })
-        item = await callVolcesOnce(
-          { ...input, outputFormat: undefined },
-          { ...logCtx, attempt: i + 1 },
-        )
-      } else {
-        throw err
-      }
-    }
 
-    const assetId = `${input.taskId}-volces-${Date.now()}-${i}`
+        const assetId = `${input.taskId}-volces-${Date.now()}-${i}`
 
-    let dataUrl: string
-    if (item.url) {
-      dataUrl = item.url
-    } else if (item.b64_json) {
-      const mime = item.b64_json.startsWith('data:') ? item.b64_json : `data:image/jpeg;base64,${item.b64_json}`
-      dataUrl = mime
-    } else {
-      throw new GoogleImageError({
-        category: 'api_error',
-        message: `火山引擎 API 返回的图片项缺少 url 和 b64_json`,
-      })
-    }
+        let dataUrl: string
+        if (item.url) {
+          dataUrl = item.url
+        } else if (item.b64_json) {
+          const mime = item.b64_json.startsWith('data:') ? item.b64_json : `data:image/jpeg;base64,${item.b64_json}`
+          dataUrl = mime
+        } else {
+          throw new GoogleImageError({
+            category: 'api_error',
+            message: `火山引擎 API 返回的图片项缺少 url 和 b64_json`,
+          })
+        }
 
-    results.push({
-      assetId,
-      url: dataUrl,
-      downloadUrl: dataUrl,
-      width: input.resolvedSize?.width ?? 0,
-      height: input.resolvedSize?.height ?? 0,
-      kind: 'generated',
-      metadata: {
-        provider: 'volces',
-        model: input.model,
-        size: item.size,
-        requestedSize: input.resolvedSize?.size ?? input.size,
-        requestedResolution: input.resolvedSize?.resolution,
-        requestedRatio: input.resolvedSize?.ratio,
-      },
-    })
-  }
+        return {
+          assetId,
+          url: dataUrl,
+          downloadUrl: dataUrl,
+          width: input.resolvedSize?.width ?? 0,
+          height: input.resolvedSize?.height ?? 0,
+          kind: 'generated',
+          metadata: {
+            provider: 'volces',
+            model: input.model,
+            size: item.size,
+            requestedSize: input.resolvedSize?.size ?? input.size,
+            requestedResolution: input.resolvedSize?.resolution,
+            requestedRatio: input.resolvedSize?.ratio,
+          },
+        }
+      })(),
+  )
+
+  // Promise.all 按输入顺序对齐结果槽位，天然保序
+  const results = await Promise.all(imageTasks)
 
   logImageEvent('volces.batch_complete', logCtx, {
     requested: input.count,
@@ -480,4 +470,31 @@ export async function runVolcesImageEdit(
   })
 
   return results
+}
+
+/**
+ * 单张生成（含带内 output_format 回退）：
+ * 先按入参带 output_format 尝试，API 明确报错不支持时（如 Seedream 4.5）
+ * 自动回退到默认 JPEG 再试一次。并发化后每个并发分支独立走该逻辑。
+ */
+async function generateSingleImage(
+  input: VolcesEditInput,
+  logCtx: LogContext,
+): Promise<VolcesImageItem> {
+  try {
+    return await callVolcesOnce(input, logCtx)
+  } catch (err) {
+    // 如果 API 不支持 output_format（如 Seedream 4.5），自动回退到 JPEG 重试
+    if (
+      err instanceof GoogleImageError &&
+      err.message.startsWith('__OUTPUT_FORMAT_UNSUPPORTED__')
+    ) {
+      logImageEvent('volces.output_format_fallback', logCtx, {
+        reason: 'API 不支持 output_format 参数，回退到默认 JPEG',
+        model: input.model,
+      })
+      return callVolcesOnce({ ...input, outputFormat: undefined }, logCtx)
+    }
+    throw err
+  }
 }

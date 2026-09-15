@@ -41,6 +41,16 @@ function estimateTaskUnits(featureType: FeatureType, params: TaskParams): number
     return Math.min(raw, 4)
   }
 
+  if (featureType === 'ai-fashion-photo') {
+    // 估算发生在 createTask 归一化之前，客户端可能伪造超大 resultCount 占满队列；
+    // 白名单只有 1/2/4，这里同样上限 4 防御，非法值降级 1（归一化阶段会再校验）。
+    const resultCount = (params as { resultCount?: unknown }).resultCount
+    if (typeof resultCount === 'number' && resultCount > 0) {
+      return Math.min(Math.floor(resultCount), 4)
+    }
+    return 1
+  }
+
   const count =
     'resultCount' in params
       ? params.resultCount

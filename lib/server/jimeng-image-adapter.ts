@@ -310,7 +310,6 @@ export async function runJimengImageEdit(input: JimengEditInput): Promise<Result
   const ctx: LogContext = { traceId, taskId: input.taskId, shotId: input.shotId }
   const resolvedSize =
     input.resolvedSize ?? resolveImageSize(input.aspectRatio, input.imageSize)
-  const results: ResultAsset[] = []
 
   logImageEvent('gimg.attempt', ctx, {
     adapter: 'jimeng', stage: 'enter', model: input.model,
@@ -330,77 +329,88 @@ export async function runJimengImageEdit(input: JimengEditInput): Promise<Result
     )
   }
 
-  // 串行调用（即梦一次可能返回多张，但为了控制 count 用 force_single）
-  for (let i = 0; i < input.count; i++) {
-    const iterTraceId = input.count > 1 ? `${traceId}_v${i + 1}` : traceId
+  // 2026-09-02 起由串行改并发（即梦一次可能返回多张，但为了控制 count 用 force_single 固定单张）：
+  // 每张图由独立的 callGoogleImageWithRetry 分支承担，重试 / 轮询互不影响，
+  // 真实并发量由 provider 级令牌桶与生图调度槽位约束。
+  // 保序策略：Promise.all 后按 index 顺序收集，任一分支抛错则整体失败（与现状一致）。
+  const imageTasks: Promise<string[]>[] = Array.from(
+    { length: input.count },
+    (_, i) => {
+      const iterTraceId = input.count > 1 ? `${traceId}_v${i + 1}` : traceId
 
-    const result = await callGoogleImageWithRetry(
-      async (_attempt, attemptSignal) => {
-        const callStart = Date.now()
-        const requestBody: Record<string, unknown> = {
-          req_key: JIMENG_REQ_KEY,
-          prompt: input.prompt,
-          force_single: true,
-          size: Math.min(resolvedSize.pixels, JIMENG_MAX_PIXELS),
-          width: resolvedSize.width,
-          height: resolvedSize.height,
-          return_url: true,
-        }
-        if (imageUrls.length > 0) requestBody.image_urls = imageUrls
+      return callGoogleImageWithRetry(
+        async (_attempt, attemptSignal) => {
+          const callStart = Date.now()
+          const requestBody: Record<string, unknown> = {
+            req_key: JIMENG_REQ_KEY,
+            prompt: input.prompt,
+            force_single: true,
+            size: Math.min(resolvedSize.pixels, JIMENG_MAX_PIXELS),
+            width: resolvedSize.width,
+            height: resolvedSize.height,
+            return_url: true,
+          }
+          if (imageUrls.length > 0) requestBody.image_urls = imageUrls
 
-        logImageEvent('gimg.attempt', { ...ctx, traceId: iterTraceId }, {
-          adapter: 'jimeng',
-          iteration: i + 1,
-          providerId: input.providerId,
-          size: resolvedSize.size,
-          width: resolvedSize.width,
-          height: resolvedSize.height,
-        })
+          logImageEvent('gimg.attempt', { ...ctx, traceId: iterTraceId }, {
+            adapter: 'jimeng',
+            iteration: i + 1,
+            providerId: input.providerId,
+            size: resolvedSize.size,
+            width: resolvedSize.width,
+            height: resolvedSize.height,
+          })
 
-        const taskId = await submitTask(
-          accessKeyId,
-          secretKey,
-          requestBody,
-          input.timeoutMs,
-          attemptSignal,
-        )
-        const { images } = await pollResult(
-          accessKeyId,
-          secretKey,
-          taskId,
-          input.timeoutMs - (Date.now() - callStart),
-          attemptSignal,
-        )
+          const taskId = await submitTask(
+            accessKeyId,
+            secretKey,
+            requestBody,
+            input.timeoutMs,
+            attemptSignal,
+          )
+          const { images } = await pollResult(
+            accessKeyId,
+            secretKey,
+            taskId,
+            input.timeoutMs - (Date.now() - callStart),
+            attemptSignal,
+          )
 
-        logImageEvent('gimg.success', { ...ctx, traceId: iterTraceId }, {
-          adapter: 'jimeng', tookMs: Date.now() - callStart, items: images.length, providerId: input.providerId,
-        })
+          logImageEvent('gimg.success', { ...ctx, traceId: iterTraceId }, {
+            adapter: 'jimeng', tookMs: Date.now() - callStart, items: images.length, providerId: input.providerId,
+          })
 
-        return images
-      },
-      { ...ctx, traceId: iterTraceId },
-      {
-        apiKey: input.apiKey,
-        providerId: input.providerId,
-        rateLimitKey: input.rateLimitKey,
-        maxIpm: input.maxIpm,
-        maxRpm: input.maxRpm,
-        signal: input.signal,
-        scheduler: {
-          userId: input.userId,
-          taskId: input.taskId,
-          providerId: input.providerId ?? input.apiKey,
-          resolution: resolvedSize.resolution,
+          return images
         },
-      },
-      {
-        attempts: 3,
-        perCategoryMaxAttempts: { server_error: 1, rate_limit: 3 },
-      },
-    )
+        { ...ctx, traceId: iterTraceId },
+        {
+          apiKey: input.apiKey,
+          providerId: input.providerId,
+          rateLimitKey: input.rateLimitKey,
+          maxIpm: input.maxIpm,
+          maxRpm: input.maxRpm,
+          signal: input.signal,
+          scheduler: {
+            userId: input.userId,
+            taskId: input.taskId,
+            providerId: input.providerId ?? input.apiKey,
+            resolution: resolvedSize.resolution,
+          },
+        },
+        {
+          attempts: 3,
+          perCategoryMaxAttempts: { server_error: 1, rate_limit: 3 },
+        },
+      )
+    },
+  )
 
-    for (let j = 0; j < result.length; j++) {
-      const imageUrl = result[j]
+  const allImages = await Promise.all(imageTasks)
+
+  // 按 index 顺序收集保序：assetId 编号与串行版完全一致
+  const results: ResultAsset[] = []
+  for (const images of allImages) {
+    for (const imageUrl of images) {
       const idx = results.length
       results.push({
         assetId: `result_${input.taskId}_${idx}`,

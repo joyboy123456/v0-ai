@@ -19,6 +19,8 @@
  * - nano-banana-2: ￥0.06~0.12/张（1K/2K/4K）
  * - nano-banana-pro: ￥0.09~0.18/张（1K/2K/4K）
  * - nano-banana-2-cl / nano-banana-pro-vip / nano-banana-pro-4k-vip 等高阶型号
+ * - gpt-image-2.5-sunburst（及 -flare / 普通版）: ￥0.15/张（1K/2K/4K），
+ *   注意其 aspectRatio 不接受 '1:1' 等比例字符串，必须像素值（见 resolveGrsaiGptImageAspectRatio）
  *
  * 注意：
  * - 单次请求只生成 1 张图（results 通常单元素），count > 1 时并发循环
@@ -312,7 +314,10 @@ function buildGrsaiRequestBody(
   }
 
   if (input.aspectRatio) {
-    body.aspectRatio = input.aspectRatio
+    const ratio = resolveGrsaiGptImageAspectRatio(model, input.aspectRatio, input.imageSize)
+    if (ratio) {
+      body.aspectRatio = ratio
+    }
   }
 
   if (input.imageSize) {
@@ -350,6 +355,41 @@ function sanitizeImageSize(model: string, imageSize: string): string | null {
   }
   // 其它未知型号：保守透传，让上游决定
   return normalized || null
+}
+
+/**
+ * gpt-image-2.5 系列在 Grsai 统一接口上不支持 '1:1' 等比例字符串，
+ * aspectRatio 必须传像素值（WxH），实测约束（与 OpenAI 官方一致）：
+ * 宽高均为 16 的倍数、长边 <= 3840、总像素 ∈ [655360, 8294400]。
+ * 下表按「比例 × 分辨率档」映射到满足约束的标准像素值。
+ */
+const GPT_IMAGE_PIXEL_SIZE_TABLE: Record<string, Record<'1K' | '2K' | '4K', string>> = {
+  '1:1': { '1K': '1024x1024', '2K': '2048x2048', '4K': '2880x2880' },
+  '3:2': { '1K': '1536x1024', '2K': '2048x1360', '4K': '3520x2336' },
+  '2:3': { '1K': '1024x1536', '2K': '1360x2048', '4K': '2336x3520' },
+  '3:4': { '1K': '768x1024', '2K': '1536x2048', '4K': '2480x3312' },
+  '4:3': { '1K': '1024x768', '2K': '2048x1536', '4K': '3312x2480' },
+}
+
+/**
+ * 为 gpt-image-2.5 系列把比例字符串转成上游要求的像素值；
+ * 其它模型、未指定比例（如 'more' 场景）或已是像素值时原样透传。
+ */
+export function resolveGrsaiGptImageAspectRatio(
+  model: string,
+  aspectRatio: string | undefined,
+  imageSize: string | undefined,
+): string | undefined {
+  if (!aspectRatio) return aspectRatio
+  const trimmed = aspectRatio.trim()
+  if (/^\d+x\d+$/i.test(trimmed)) return trimmed.toLowerCase()
+  if (!model.trim().toLowerCase().startsWith('gpt-image-2.5')) return aspectRatio
+
+  const size = (imageSize ?? '').trim().toUpperCase()
+  const tier: '1K' | '2K' | '4K' = size === '1K' || size === '4K' ? size : '2K'
+  const row =
+    GPT_IMAGE_PIXEL_SIZE_TABLE[trimmed.toLowerCase()] ?? GPT_IMAGE_PIXEL_SIZE_TABLE['1:1']
+  return row[tier]
 }
 
 function buildGrsaiHttpError(
