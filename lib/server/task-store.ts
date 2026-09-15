@@ -509,6 +509,77 @@ export async function getAsset(assetId: string) {
 }
 
 /**
+ * 判断某任务是否把该 assetId 当作输入引用。
+ * 覆盖：通用输入图 inputAssetIds、photo-fission 的五官模特 faceIdModelId、
+ * 以及人脸 mask faceMaskAssetId。命中任一即视为被引用。
+ */
+function taskReferencesAsset(task: GenerationTask, assetId: string): boolean {
+  if (task.inputAssetIds.includes(assetId)) return true
+  const params = task.params as Partial<PhotoFissionParams> | undefined
+  if (params && typeof params === 'object') {
+    if (params.faceIdModelId === assetId) return true
+    if (params.faceMaskAssetId === assetId) return true
+  }
+  return false
+}
+
+/**
+ * 物理删除一个资产（OSS/local 文件 + 记录），带「引用保护」。
+ *
+ * 用于从模特库删除模特时连带清理云端文件。若该素材被该用户任一历史任务引用
+ * （作为输入图 / 五官模特 / 人脸 mask），则保留文件、仅返回不删，避免历史任务
+ * 详情的输入图裂开。物理文件删除是 best-effort（吞掉 not-found / 权限异常）。
+ *
+ * 跨库保护（同一张图同时被 company / faceId 两个库引用）由调用方（DELETE 路由）
+ * 通过 company-model-store.hasModelInAnyLibrary 判断后再决定是否调用本函数，
+ * 本函数不 import company-model-store，保持模块解耦。
+ */
+export async function deleteAssetWithFile(
+  assetId: string,
+  userId: string,
+): Promise<{ fileDeleted: boolean; reason?: 'not-found' | 'referenced' }> {
+  await ensureStoreReady()
+
+  const asset = store.assets.get(assetId)
+  const bypassOwnership = shouldBypassOwnership(userId)
+  const ownerUserId = asset?.userId ?? defaultUserId
+  if (!asset || (!bypassOwnership && ownerUserId !== userId?.trim())) {
+    return { fileDeleted: false, reason: 'not-found' }
+  }
+
+  // 引用保护：任一历史任务把该素材当输入则保留文件。
+  const tasks = await listTasks({ userId })
+  if (tasks.some((task) => taskReferencesAsset(task, assetId))) {
+    return { fileDeleted: false, reason: 'referenced' }
+  }
+
+  // 解析存储 key：OSS 模式从 publicUrl 提取 object key；local 模式 key 与 fileUrl 同形
+  // （见 storage-adapter local getImage/deleteImage 注释）。
+  const key = extractOssKeyFromUrl(asset.fileUrl) ?? asset.fileUrl
+  try {
+    await storage().deleteImage(key)
+    const thumbKey = deriveThumbnailKey(key)
+    if (thumbKey) await storage().deleteImage(thumbKey)
+  } catch (error) {
+    // best-effort：文件可能已被 Lifecycle 清理 / 并发删除，不阻断记录删除。
+    console.error(
+      '[task-store] deleteAssetWithFile 物理文件删除失败（忽略，继续删记录）:',
+      error,
+    )
+  }
+
+  store.assets.delete(assetId)
+  try {
+    await taskRepo().deleteAsset(assetId)
+  } catch (error) {
+    console.error('[task-store] deleteAssetWithFile deleteAsset 记录失败:', error)
+  }
+  await persistStore()
+
+  return { fileDeleted: true }
+}
+
+/**
  * 列出任务。PR4 起支持按 userId 过滤。
  *
  * - 不传 opts.userId（或传 undefined / 空字符串）：返回全表（兼容历史调用）

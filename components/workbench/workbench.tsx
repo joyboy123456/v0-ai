@@ -33,6 +33,48 @@ function releaseBlobPreview(preview: string | undefined) {
   }
 }
 
+/**
+ * 读取并清洗 legacy localStorage 模特列表（存量迁移用）。
+ * 沿用历史规则：必须是数组、preview 为字符串、丢弃 `blob:` 临时预览。
+ */
+function readLegacyModels(storageKey: string): CompanyModel[] {
+  try {
+    const stored = window.localStorage.getItem(storageKey)
+    if (!stored) return []
+    const parsed = JSON.parse(stored) as CompanyModel[]
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((model) => {
+      if (!model || typeof model.preview !== 'string') return false
+      if (model.preview.startsWith('blob:')) return false
+      return true
+    })
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 把 legacy 列表合并上传到服务端（幂等，按 assetId 去重）。
+ * 成功返回合并后的服务端列表；失败返回 null（调用方据此决定是否清本地键）。
+ */
+async function syncLegacyModels(
+  library: 'company' | 'faceId',
+  models: CompanyModel[],
+): Promise<CompanyModel[] | null> {
+  try {
+    const response = await fetch('/api/models/sync', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ library, models }),
+    })
+    if (!response.ok) return null
+    const data = (await response.json()) as { models?: CompanyModel[] }
+    return Array.isArray(data.models) ? data.models : null
+  } catch {
+    return null
+  }
+}
+
 export function Workbench() {
   const router = useRouter()
   const pathname = usePathname()
@@ -64,10 +106,8 @@ export function Workbench() {
   const [selectedPoses, setSelectedPoses] = useState<SavedPose[]>([])
   const [companyModelLibraryRequestKey, setCompanyModelLibraryRequestKey] = useState(0)
   const [companyModels, setCompanyModels] = useState<CompanyModel[]>([])
-  const [companyModelsHydrated, setCompanyModelsHydrated] = useState(false)
   const [faceIdLibraryRequestKey, setFaceIdLibraryRequestKey] = useState(0)
   const [faceIdModels, setFaceIdModels] = useState<CompanyModel[]>([])
-  const [faceIdModelsHydrated, setFaceIdModelsHydrated] = useState(false)
   const [selectedFaceIdModel, setSelectedFaceIdModel] = useState<CompanyModel | null>(null)
   const [fashionReferences, setFashionReferences] = useState<FashionReferenceImage[]>([])
   const [fashionRemixRequest, setFashionRemixRequest] = useState<FashionRemixRequest | null>(null)
@@ -330,58 +370,6 @@ export function Workbench() {
   }, [loadTasks, user])
 
   useEffect(() => {
-    if (!companyModelsHydrated) return
-    window.localStorage.setItem(companyModelsStorageKey, JSON.stringify(companyModels))
-  }, [companyModels, companyModelsHydrated])
-
-  useEffect(() => {
-    try {
-      const storedModels = window.localStorage.getItem(companyModelsStorageKey)
-      if (storedModels) {
-        const parsed = JSON.parse(storedModels) as CompanyModel[]
-        const validModels = Array.isArray(parsed)
-          ? parsed.filter((model) => {
-              if (!model || typeof model.preview !== 'string') return false
-              if (model.preview.startsWith('blob:')) return false
-              return true
-            })
-          : []
-        setCompanyModels(validModels)
-      }
-    } catch {
-      // ignore unreadable storage
-    } finally {
-      setCompanyModelsHydrated(true)
-    }
-  }, [])
-
-  useEffect(() => {
-    try {
-      const storedModels = window.localStorage.getItem(faceIdModelsStorageKey)
-      if (storedModels) {
-        const parsed = JSON.parse(storedModels) as CompanyModel[]
-        const validModels = Array.isArray(parsed)
-          ? parsed.filter((model) => {
-              if (!model || typeof model.preview !== 'string') return false
-              if (model.preview.startsWith('blob:')) return false
-              return true
-            })
-          : []
-        setFaceIdModels(validModels)
-      }
-    } catch {
-      // ignore unreadable storage
-    } finally {
-      setFaceIdModelsHydrated(true)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!faceIdModelsHydrated) return
-    window.localStorage.setItem(faceIdModelsStorageKey, JSON.stringify(faceIdModels))
-  }, [faceIdModels, faceIdModelsHydrated])
-
-  useEffect(() => {
     if (!user || !activeTaskId) return
     void loadTask(activeTaskId)
   }, [activeTaskId, loadTask, user])
@@ -602,6 +590,188 @@ export function Workbench() {
     setSelectedPoses((current) => current.filter((pose) => pose.id !== poseId))
   }, [])
 
+  // 模特库：数据源为服务端（按用户持久化，跨设备一致）。挂载/用户变化时拉取，
+  // 并把老用户 localStorage 里的 legacy 列表一次性迁移上云。
+  const loadModels = useCallback(async () => {
+    if (!user) return
+    try {
+      const response = await fetch('/api/models', { cache: 'no-store' })
+      if (!response.ok) return
+      const data = (await response.json()) as {
+        companyModels?: CompanyModel[]
+        faceIdModels?: CompanyModel[]
+      }
+      let companyNext = Array.isArray(data.companyModels) ? data.companyModels : []
+      let faceIdNext = Array.isArray(data.faceIdModels) ? data.faceIdModels : []
+
+      // 存量迁移：合并 legacy 列表到服务端，成功后清除本地键。清除后 readLegacyModels
+      // 返回空，天然幂等，无需额外标志位。
+      const legacyCompany = readLegacyModels(companyModelsStorageKey)
+      if (legacyCompany.length) {
+        const merged = await syncLegacyModels('company', legacyCompany)
+        if (merged) {
+          companyNext = merged
+          window.localStorage.removeItem(companyModelsStorageKey)
+        }
+      }
+      const legacyFaceId = readLegacyModels(faceIdModelsStorageKey)
+      if (legacyFaceId.length) {
+        const merged = await syncLegacyModels('faceId', legacyFaceId)
+        if (merged) {
+          faceIdNext = merged
+          window.localStorage.removeItem(faceIdModelsStorageKey)
+        }
+      }
+
+      setCompanyModels(companyNext)
+      setFaceIdModels(faceIdNext)
+    } catch {
+      // 静默失败：空列表会在 UI 呈现，下次挂载会重试
+    }
+  }, [user])
+
+  useEffect(() => {
+    if (!user) return
+    void loadModels()
+  }, [loadModels, user])
+
+  // 以下 6 个 handler：乐观更新本地 state + 异步落服务端；失败则 loadModels 纠正。
+  const handleAddCompanyModel = useCallback((model: CompanyModel) => {
+    setCompanyModels((current) =>
+      current.some((item) => item.assetId === model.assetId)
+        ? current
+        : [model, ...current],
+    )
+    void (async () => {
+      try {
+        const response = await fetch('/api/models', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            library: 'company',
+            assetId: model.assetId,
+            url: model.preview,
+            name: model.name,
+            width: model.width,
+            height: model.height,
+          }),
+        })
+        if (!response.ok) void loadModels()
+      } catch {
+        void loadModels()
+      }
+    })()
+  }, [loadModels])
+
+  const handleDeleteCompanyModel = useCallback((assetId: string) => {
+    setCompanyModels((current) =>
+      current.filter((item) => item.assetId !== assetId),
+    )
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/models/${encodeURIComponent(assetId)}?library=company`,
+          { method: 'DELETE' },
+        )
+        if (!response.ok) void loadModels()
+      } catch {
+        void loadModels()
+      }
+    })()
+  }, [loadModels])
+
+  const handleRenameCompanyModel = useCallback((assetId: string, name: string) => {
+    setCompanyModels((current) =>
+      current.map((item) => (item.assetId === assetId ? { ...item, name } : item)),
+    )
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/models/${encodeURIComponent(assetId)}`,
+          {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ library: 'company', name }),
+          },
+        )
+        if (!response.ok) void loadModels()
+      } catch {
+        void loadModels()
+      }
+    })()
+  }, [loadModels])
+
+  const handleAddFaceIdModel = useCallback((model: CompanyModel) => {
+    setFaceIdModels((current) =>
+      current.some((item) => item.assetId === model.assetId)
+        ? current
+        : [model, ...current],
+    )
+    void (async () => {
+      try {
+        const response = await fetch('/api/models', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            library: 'faceId',
+            assetId: model.assetId,
+            url: model.preview,
+            name: model.name,
+            width: model.width,
+            height: model.height,
+          }),
+        })
+        if (!response.ok) void loadModels()
+      } catch {
+        void loadModels()
+      }
+    })()
+  }, [loadModels])
+
+  const handleDeleteFaceIdModel = useCallback((assetId: string) => {
+    setFaceIdModels((current) =>
+      current.filter((item) => item.assetId !== assetId),
+    )
+    setSelectedFaceIdModel((current) =>
+      current?.assetId === assetId ? null : current,
+    )
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/models/${encodeURIComponent(assetId)}?library=faceId`,
+          { method: 'DELETE' },
+        )
+        if (!response.ok) void loadModels()
+      } catch {
+        void loadModels()
+      }
+    })()
+  }, [loadModels])
+
+  const handleRenameFaceIdModel = useCallback((assetId: string, name: string) => {
+    setFaceIdModels((current) =>
+      current.map((item) => (item.assetId === assetId ? { ...item, name } : item)),
+    )
+    setSelectedFaceIdModel((current) =>
+      current?.assetId === assetId ? { ...current, name } : current,
+    )
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/models/${encodeURIComponent(assetId)}`,
+          {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ library: 'faceId', name }),
+          },
+        )
+        if (!response.ok) void loadModels()
+      } catch {
+        void loadModels()
+      }
+    })()
+  }, [loadModels])
+
   if (isAuthLoading || redirectingToLogin || !user || authError) {
     // 三态视图（彻底解决「文案误导客户」的顽疾）：
     //   1) authError —— 后端真的失败：显示错误 + 重试 / 去登录两个出口，绝不自动死循环
@@ -702,44 +872,12 @@ export function Workbench() {
       faceIdModels={faceIdModels}
       faceIdLibraryRequestKey={faceIdLibraryRequestKey}
       selectedFaceIdModel={selectedFaceIdModel}
-      onAddCompanyModel={(model) => {
-        setCompanyModels((currentModels) => {
-          if (currentModels.some((item) => item.assetId === model.assetId)) return currentModels
-          return [model, ...currentModels]
-        })
-      }}
-      onDeleteCompanyModel={(assetId) => {
-        setCompanyModels((currentModels) =>
-          currentModels.filter((item) => item.assetId !== assetId),
-        )
-      }}
-      onRenameCompanyModel={(assetId, name) => {
-        setCompanyModels((currentModels) =>
-          currentModels.map((item) =>
-            item.assetId === assetId ? { ...item, name } : item,
-          ),
-        )
-      }}
-      onAddFaceIdModel={(model) => {
-        setFaceIdModels((currentModels) => {
-          if (currentModels.some((item) => item.assetId === model.assetId)) return currentModels
-          return [model, ...currentModels]
-        })
-      }}
-      onDeleteFaceIdModel={(assetId) => {
-        setFaceIdModels((currentModels) =>
-          currentModels.filter((item) => item.assetId !== assetId),
-        )
-        setSelectedFaceIdModel((current) => current?.assetId === assetId ? null : current)
-      }}
-      onRenameFaceIdModel={(assetId, name) => {
-        setFaceIdModels((currentModels) =>
-          currentModels.map((item) =>
-            item.assetId === assetId ? { ...item, name } : item,
-          ),
-        )
-        setSelectedFaceIdModel((current) => current?.assetId === assetId ? { ...current, name } : current)
-      }}
+      onAddCompanyModel={handleAddCompanyModel}
+      onDeleteCompanyModel={handleDeleteCompanyModel}
+      onRenameCompanyModel={handleRenameCompanyModel}
+      onAddFaceIdModel={handleAddFaceIdModel}
+      onDeleteFaceIdModel={handleDeleteFaceIdModel}
+      onRenameFaceIdModel={handleRenameFaceIdModel}
       onSelectFaceIdModel={setSelectedFaceIdModel}
       onAddFashionReference={handleAddFashionReference}
       onUseTaskAsFashionReference={handleUseTaskAsFashionReference}
