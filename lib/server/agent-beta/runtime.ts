@@ -1,5 +1,6 @@
 import { AgentBetaRepository } from './repository'
 import { AgentBetaService } from './service'
+import { resolveAgentBetaLlmConfig } from './llm-config'
 import { plannerOutputSchema } from './validation'
 
 const globalBeta = globalThis as typeof globalThis & { agentBetaService?: Promise<AgentBetaService> }
@@ -24,6 +25,8 @@ export function getAgentBetaService(): Promise<AgentBetaService> {
         ...input, outputSchema: plannerOutputSchema, feature: 'agent-beta',
         plannerName: '服饰创作助手', temperature: 0.4, reasoningEnabled: false,
         retryOnSchemaFailure: false,
+        // 画布专属 LLM（AGENT_LLM_*），未配置时由 planner 回退 TEXT_LLM_*；生图仍走供应商池
+        llm: resolveAgentBetaLlmConfig(),
       }),
     })
   })()

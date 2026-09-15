@@ -30,6 +30,13 @@ export interface InvokeFissionPromptPlannerInput<TOutput> {
   temperature?: number
   reasoningEnabled?: boolean
   retryOnSchemaFailure?: boolean
+  /** 可选：专属 LLM 接入配置（如 Agent Beta 画布）。未传/缺项时回退 TEXT_LLM_* 环境变量 */
+  llm?: {
+    baseUrl?: string
+    model?: string
+    apiKey?: string
+    timeoutMs?: number
+  }
 }
 
 export class FissionPromptPlannerError extends Error {
@@ -59,20 +66,27 @@ const DEFAULT_MAX_ATTEMPTS = 2
 export async function invokeFissionPromptPlanner<TOutput>(
   input: InvokeFissionPromptPlannerInput<TOutput>,
 ): Promise<TOutput> {
-  const apiKey = resolveTextLlmApiKey()
+  const llm = input.llm
+  const apiKey = llm?.apiKey?.trim() || resolveTextLlmApiKey()
   const plannerLabel = input.plannerName ?? input.feature ?? 'fission'
   if (!apiKey) {
     throw new FissionPromptPlannerError(
-      'TEXT_LLM_API_KEY is not configured (and no qiniu provider found in IMAGE_PROVIDERS)',
+      'TEXT_LLM_API_KEY / llm.apiKey is not configured (and no qiniu provider found in IMAGE_PROVIDERS)',
       { plannerName: plannerLabel },
       'config',
     )
   }
 
   const baseUrl =
-    process.env.TEXT_LLM_BASE_URL?.trim().replace(/\/$/, '') || DEFAULT_BASE_URL
-  const model = process.env.TEXT_LLM_MODEL?.trim() || DEFAULT_MODEL
-  const timeoutMs = parseTimeout(process.env.TEXT_LLM_TIMEOUT_MS)
+    llm?.baseUrl?.trim().replace(/\/$/, '') ||
+    process.env.TEXT_LLM_BASE_URL?.trim().replace(/\/$/, '') ||
+    DEFAULT_BASE_URL
+  const model =
+    llm?.model?.trim() || process.env.TEXT_LLM_MODEL?.trim() || DEFAULT_MODEL
+  const timeoutMs =
+    llm?.timeoutMs && llm.timeoutMs > 0
+      ? llm.timeoutMs
+      : parseTimeout(process.env.TEXT_LLM_TIMEOUT_MS)
   const endpoint = `${baseUrl}/v1/chat/completions`
   const useDeepSeekThinkingControls = supportsDeepSeekThinkingControls(
     baseUrl,
