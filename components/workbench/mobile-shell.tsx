@@ -75,7 +75,7 @@ export function MobileShell({
   children,
 }: MobileShellProps) {
   const router = useRouter()
-  const agentBetaEnabled = useAgentBetaAccess()
+  const { enabled: agentBetaEnabled } = useAgentBetaAccess()
   const [menuOpen, setMenuOpen] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [cleanupOpen, setCleanupOpen] = useState(false)

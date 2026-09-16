@@ -749,6 +749,7 @@ export const FASHION_MODEL_PROVIDER_LABELS: Record<FashionModelProvider, string>
 export const FASHION_MODELS: FashionModelOption[] = [
   {
     id: 'gemini-3.1-flash-image-preview',
+    selectable: false,
     label: 'Nano Banana',
     alias: 'Gemini 3.1 Flash',
     description: '推荐默认。走 Google Gemini / 七牛 Gemini 图像渠道，最多 14 张参考图，支持 4K 出图',
@@ -768,6 +769,7 @@ export const FASHION_MODELS: FashionModelOption[] = [
   },
   {
     id: 'gemini-3-pro-image-preview',
+    selectable: false,
     label: 'Nano Banana Pro',
     alias: 'Gemini 3 Pro',
     description: 'Google 旗舰画质，thinking 模式，最多 14 张参考图，速度较慢',
@@ -854,7 +856,7 @@ export const FASHION_MODELS: FashionModelOption[] = [
 export const SELECTABLE_FASHION_MODELS: FashionModelOption[] =
   FASHION_MODELS.filter((option) => option.selectable !== false)
 
-export const DEFAULT_FASHION_MODEL: FashionModelId = 'gemini-3.1-flash-image-preview'
+export const DEFAULT_FASHION_MODEL: FashionModelId = 'nano-banana-2'
 
 /**
  * 服装大片裂变（photo-fission）案例库。

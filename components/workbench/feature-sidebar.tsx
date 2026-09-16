@@ -48,7 +48,7 @@ export function FeatureSidebar({
   onRefreshTasks,
 }: FeatureSidebarProps) {
   const router = useRouter();
-  const agentBetaEnabled = useAgentBetaAccess();
+  const { enabled: agentBetaEnabled } = useAgentBetaAccess();
   const [loggingOut, setLoggingOut] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);

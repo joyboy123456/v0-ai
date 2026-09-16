@@ -295,7 +295,19 @@ export interface ProviderRequestToken {
   halfOpenProbe: boolean
 }
 
+/** 老张已停用；同时识别 google 兼容配置，阻止旧任务与故障切换重新使用。 */
+export function isRetiredImageProvider(provider: Pick<ImageProvider, 'id' | 'type' | 'baseUrl'>): boolean {
+  if (provider.type === 'laozhang' || /laozhang/i.test(provider.id)) return true
+  try {
+    const hostname = new URL(provider.baseUrl ?? '').hostname.toLowerCase()
+    return hostname === 'laozhang.ai' || hostname.endsWith('.laozhang.ai')
+  } catch {
+    return false
+  }
+}
+
 function isProviderAvailable(pool: ProviderPool, provider: ImageProvider): boolean {
+  if (isRetiredImageProvider(provider)) return false
   if (!provider.enabled) return false
   if (!provider.apiKey) return false
 
@@ -355,7 +367,7 @@ export function beginProviderRequest(
 ): ProviderRequestToken | null {
   const pool = getPool()
   const provider = pool.providers.find((item) => item.id === providerId)
-  if (!provider || !provider.enabled || !provider.apiKey) return null
+  if (!provider || isRetiredImageProvider(provider) || !provider.enabled || !provider.apiKey) return null
   const credentialKey = getProviderCredentialKey(provider)
   const openUntil = pool.circuitOpenUntil.get(providerId)
   let halfOpenProbe = false
@@ -620,6 +632,7 @@ export function isImageProviderModelCompatible(
   provider: ImageProvider,
   model: string | undefined,
 ): boolean {
+  if (isRetiredImageProvider(provider)) return false
   const candidate = model || provider.model
   if (provider.type === 'google') return isGoogleImageModel(candidate)
   if (provider.type === 'openai') {

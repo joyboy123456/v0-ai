@@ -12,9 +12,11 @@ export class AgentBetaError extends Error {
 export const identifier = z.string().min(1).max(160).regex(/^[a-zA-Z0-9_-]+$/)
 export const promptText = z.string().trim().min(1).max(8000)
 const settingsSchema = z.object({
-  model: z.string().default(DEFAULT_FASHION_MODEL).refine((model) => SELECTABLE_FASHION_MODELS.some((item) => item.id === model), '模型无效'),
+  model: z.string().default(DEFAULT_FASHION_MODEL).refine((model) => SELECTABLE_FASHION_MODELS.some((item) => item.id === model && item.provider === 'grsai'), '模型无效'),
   imageRatio: z.string().refine((ratio) => ratio !== 'more' && FASHION_IMAGE_RATIOS.some((item) => item.id === ratio), '图片比例无效'),
   resolution: z.string().refine((resolution) => FASHION_RESOLUTIONS.some((item) => item.id === resolution), '分辨率无效'),
+  // 规划 LLM 宽松校验：未知/过期 id 由 runtime 回退目录默认项，不拒绝用户请求
+  plannerLlm: z.string().max(60).optional(),
 }).strict().superRefine((value, context) => {
   const model = SELECTABLE_FASHION_MODELS.find((item) => item.id === value.model)
   if (model && Number.parseInt(value.resolution, 10) > Number.parseInt(model.maxResolutionLabel, 10)) {

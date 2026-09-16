@@ -9,6 +9,7 @@ import { DEFAULT_FASHION_MODEL, FASHION_IMAGE_RATIOS, FASHION_RESOLUTIONS, SELEC
 import { cn } from '@/lib/utils'
 import { NodeImage } from './agent-canvas'
 import { AgentActionButton } from './agent-action-button'
+import { useAgentBetaAccess } from './use-agent-beta-access'
 
 const examples = [
   { title: '做一张模特图', text: '参考这件衣服，生成一张自然光下的电商模特展示图，保持服装款式、颜色和图案。' },
@@ -17,7 +18,7 @@ const examples = [
 ]
 
 // Beta 的现有生图接口只有 2K / 4K，排除仅支持 1K 的模型。
-const betaModels = SELECTABLE_FASHION_MODELS.filter((model) => Number.parseInt(model.maxResolutionLabel, 10) >= 2)
+const betaModels = SELECTABLE_FASHION_MODELS.filter((model) => model.provider === 'grsai' && Number.parseInt(model.maxResolutionLabel, 10) >= 2)
 
 function PlanCard({ message, nodes, busy, onAction, onRetry }: {
   message: AgentBetaMessage
@@ -87,6 +88,7 @@ export function AgentChat({ session, selectedIds, onSelect, busy, disabled, onUp
 }) {
   const [text, setText] = useState('')
   const [settings, setSettings] = useState<AgentBetaSettings>({ model: DEFAULT_FASHION_MODEL, imageRatio: '3:4', resolution: '2k' })
+  const { llmOptions, defaultLlmId } = useAgentBetaAccess()
   const bottom = useRef<HTMLDivElement>(null)
   const input = useRef<HTMLTextAreaElement>(null)
   const nodes = session?.nodes ?? []
@@ -166,6 +168,14 @@ export function AgentChat({ session, selectedIds, onSelect, busy, disabled, onUp
             {FASHION_RESOLUTIONS.map((resolution) => <option key={resolution.id} value={resolution.id}>{resolution.label.toUpperCase()}</option>)}
           </select>
         </div>
+        {llmOptions.length ? (
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <span className="shrink-0 text-[10px] text-muted-foreground">规划模型</span>
+            <select aria-label="规划模型" value={settings.plannerLlm || defaultLlmId || ''} onChange={(event) => setSettings({ ...settings, plannerLlm: event.target.value })} disabled={disabled} className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-[10px] text-muted-foreground">
+              {llmOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </select>
+          </div>
+        ) : null}
         <p className={cn('mt-2 text-[10px] leading-4', tooManyReferences ? 'text-destructive' : 'text-muted-foreground')}>{tooManyReferences ? `当前模型最多使用 ${maxReferences} 张参考图，请取消部分选择。` : 'Beta 每次生成 1 张 · 准备方案不会自动开始生图'}</p>
       </div>
     </section>

@@ -102,3 +102,10 @@ pm2 restart yibai-fission                  # 生产立即切到新构建
 - 任务链路复用现有体系：useStreamingPersist + persistOneResult、retry-shots 按 featureType 分流（`retryGarmentDetailShots`）、task-recovery 认 `detailShots[].shotId`；`GARMENT_DETAIL_BACKEND_ENABLED=0` 时 /api/tasks 拒绝该 feature
 - 结果预览用 `garment-detail-compare.tsx`：滚轮/按钮缩放 + 拖拽平移 + 原图对比双窗格（读 `task.inputAssets[0].fileUrl`）
 - **node --test 原生跑 TS 的坑**：被测模块对 `./types` 只能 `import type`（运行时 import 必须带 `.ts` 扩展名，否则 ERR_MODULE_NOT_FOUND）；含 `@/lib` 运行时 import 的模块在裸 node --test 下不可跑，新服务端模块应保持「import type + 依赖注入 + 懒加载动态 import」
+
+
+## 生图渠道停用约定（2026-09-16）
+
+- 老张渠道已停用：供应商池按 type、id、laozhang.ai 域名拦截，候选路由及直接请求入口均禁止使用，旧任务重试也不得绕过。
+- 默认服装生图模型为 Grsai `nano-banana-2`；Agent 仅允许 Grsai 模型。旧 Gemini 方案须重新规划，不自动改写已提交任务的模型。
+- 发布仍遵循上方「测试站验收与生产发布流程」。

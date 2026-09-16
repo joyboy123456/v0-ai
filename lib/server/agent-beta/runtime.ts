@@ -25,8 +25,8 @@ export function getAgentBetaService(): Promise<AgentBetaService> {
         ...input, outputSchema: plannerOutputSchema, feature: 'agent-beta',
         plannerName: '服饰创作助手', temperature: 0.4, reasoningEnabled: false,
         retryOnSchemaFailure: false,
-        // 画布专属 LLM（AGENT_LLM_*），未配置时由 planner 回退 TEXT_LLM_*；生图仍走供应商池
-        llm: resolveAgentBetaLlmConfig(),
+        // 画布专属 LLM：按用户选择解析目录（AGENT_LLM_* / AGENT_LLM_ANTHROPIC_*），未配置时回退 TEXT_LLM_*；生图仍走供应商池
+        llm: resolveAgentBetaLlmConfig(input.plannerLlm),
       }),
     })
   })()

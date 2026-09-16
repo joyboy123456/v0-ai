@@ -5,6 +5,11 @@ export default [
   {
     ignores: [
       ".next/**",
+      ".next-*/**",
+      ".next.*/**",
+      ".preview-runtime/**",
+      ".claude/worktrees/**",
+      ".cache/**",
       "data/**",
       "logs/**",
       "node_modules/**",

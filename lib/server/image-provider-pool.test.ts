@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  isRetiredImageProvider,
+  getAvailableProvidersForModel,
+  beginProviderRequest,
   isGrsaiOnlyGptImageModel,
   isGrsaiImageModel,
   isImageProviderModelCompatible,
@@ -63,12 +66,41 @@ test('isImageProviderModelCompatible 路由矩阵：gpt-image-2.5-sunburst 只�
   assert.equal(isImageProviderModelCompatible(makeProvider({ type: 'volces' }), model), false)
 })
 
-test('isImageProviderModelCompatible 旧模型行为不变', () => {
+test('isImageProviderModelCompatible 停用老张且保留其他模型路由', () => {
   assert.equal(isImageProviderModelCompatible(makeProvider({ type: 'grsai' }), 'nano-banana-2'), true)
-  assert.equal(isImageProviderModelCompatible(makeProvider({ type: 'laozhang' }), 'gpt-image-2'), true)
+  assert.equal(isImageProviderModelCompatible(makeProvider({ type: 'laozhang' }), 'gpt-image-2'), false)
   assert.equal(
     isImageProviderModelCompatible(makeProvider({ type: 'google' }), 'gemini-3.1-flash-image-preview'),
     true,
   )
   assert.equal(isImageProviderModelCompatible(makeProvider({ type: 'grsai' }), 'gpt-image-2'), false)
+})
+
+test('停用老张，包括 google 兼容渠道，Grsai 保持可用', () => {
+  for (const provider of [
+    makeProvider({ type: 'laozhang' }),
+    makeProvider({ type: 'google', id: 'laozhang-gemini-1' }),
+    makeProvider({ type: 'google', baseUrl: 'https://api.laozhang.ai/v1beta' }),
+  ]) {
+    assert.equal(isRetiredImageProvider(provider), true)
+    assert.equal(isImageProviderModelCompatible(provider, 'gemini-3.1-flash-image-preview'), false)
+  }
+  assert.equal(isRetiredImageProvider(makeProvider({ type: 'grsai' })), false)
+  assert.equal(isImageProviderModelCompatible(makeProvider({ type: 'grsai' }), 'nano-banana-2'), true)
+})
+
+test('渠道池排除老张，旧任务无法直接请求，NB2 仅选择 Grsai', () => {
+  const previous = process.env.IMAGE_PROVIDERS
+  process.env.IMAGE_PROVIDERS = JSON.stringify([
+    makeProvider({ id: 'laozhang-gemini-1', type: 'google' }),
+    makeProvider({ id: 'grsai-1', type: 'grsai' }),
+  ])
+  try {
+    assert.deepEqual(getAvailableProvidersForModel('nano-banana-2').map(p => p.id), ['grsai-1'])
+    assert.deepEqual(getAvailableProvidersForModel('gemini-3.1-flash-image-preview'), [])
+    assert.equal(beginProviderRequest('laozhang-gemini-1'), null)
+  } finally {
+    if (previous === undefined) delete process.env.IMAGE_PROVIDERS
+    else process.env.IMAGE_PROVIDERS = previous
+  }
 })

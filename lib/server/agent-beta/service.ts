@@ -21,7 +21,7 @@ export interface AgentBetaDependencies {
   getTaskId: (userId: string, key: string) => string
   isTaskExecutionActive: (taskId: string) => boolean
   assertQueueCapacity: () => void
-  plan: (input: { systemPrompt: string; userPrompt: string; traceId: string }) => Promise<PlannerOutput>
+  plan: (input: { systemPrompt: string; userPrompt: string; traceId: string; plannerLlm?: string }) => Promise<PlannerOutput>
   now?: () => Date
 }
 
@@ -195,6 +195,7 @@ export class AgentBetaService {
             imagePixelsProvided: false,
           }),
           traceId: `${id}:${input.clientMessageId}`,
+          plannerLlm: input.settings.plannerLlm,
         }))
       } catch (error) {
         console.error('[agent-beta] 规划失败', error instanceof Error ? error.name : 'UnknownError')

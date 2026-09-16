@@ -36,6 +36,10 @@ export interface InvokeFissionPromptPlannerInput<TOutput> {
     model?: string
     apiKey?: string
     timeoutMs?: number
+    /** 上游协议：openai=chat/completions（默认）；anthropic=Messages API（x-api-key 鉴权） */
+    protocol?: 'openai' | 'anthropic'
+    /** 仅 anthropic 协议必填项，默认 4096 */
+    maxTokens?: number
   }
 }
 
@@ -87,38 +91,50 @@ export async function invokeFissionPromptPlanner<TOutput>(
     llm?.timeoutMs && llm.timeoutMs > 0
       ? llm.timeoutMs
       : parseTimeout(process.env.TEXT_LLM_TIMEOUT_MS)
-  const endpoint = `${baseUrl}/v1/chat/completions`
-  const useDeepSeekThinkingControls = supportsDeepSeekThinkingControls(
-    baseUrl,
-    model,
-  )
+  const protocol = llm?.protocol ?? 'openai'
+  const endpoint =
+    protocol === 'anthropic'
+      ? `${baseUrl}/v1/messages`
+      : `${baseUrl}/v1/chat/completions`
+  const useDeepSeekThinkingControls =
+    protocol === 'openai' && supportsDeepSeekThinkingControls(baseUrl, model)
 
   // response_format: json_object 让兼容 OpenAI 规范的模型（DeepSeek / GPT-4 /
   // qwen 等）强制返回合法 JSON，避免被 markdown 代码围栏包裹或附带说明文字。
   // 系统提示词已明确要求"直接输出 JSON"，满足 DeepSeek 对 prompt 含 "json"
   // 字样的要求。如果上游服务不支持该参数，会忽略它（不会报错）。
-  const body = {
-    model,
-    messages: [
-      { role: 'system' as const, content: input.systemPrompt },
-      { role: 'user' as const, content: input.userPrompt },
-    ],
-    stream: false,
-    temperature: input.temperature ?? DEFAULT_TEMPERATURE,
-    response_format: { type: 'json_object' as const },
-    ...(useDeepSeekThinkingControls
+  // Anthropic Messages 协议 shape 不同：system 为顶层字段、max_tokens 必填、
+  // 无 response_format——JSON 输出由系统提示词约束 + outputSchema 校验兜底。
+  const body: Record<string, unknown> =
+    protocol === 'anthropic'
       ? {
-          thinking: {
-            type: input.reasoningEnabled
-              ? ('enabled' as const)
-              : ('disabled' as const),
-          },
-          ...(input.reasoningEnabled
-            ? { reasoning_effort: 'high' as const }
+          model,
+          max_tokens: llm?.maxTokens ?? 4096,
+          system: input.systemPrompt,
+          messages: [{ role: 'user' as const, content: input.userPrompt }],
+        }
+      : {
+          model,
+          messages: [
+            { role: 'system' as const, content: input.systemPrompt },
+            { role: 'user' as const, content: input.userPrompt },
+          ],
+          stream: false,
+          temperature: input.temperature ?? DEFAULT_TEMPERATURE,
+          response_format: { type: 'json_object' as const },
+          ...(useDeepSeekThinkingControls
+            ? {
+                thinking: {
+                  type: input.reasoningEnabled
+                    ? ('enabled' as const)
+                    : ('disabled' as const),
+                },
+                ...(input.reasoningEnabled
+                  ? { reasoning_effort: 'high' as const }
+                  : {}),
+              }
             : {}),
         }
-      : {}),
-  }
 
   let lastError: FissionPromptPlannerError | null = null
   for (let attempt = 1; attempt <= DEFAULT_MAX_ATTEMPTS; attempt += 1) {
@@ -127,6 +143,7 @@ export async function invokeFissionPromptPlanner<TOutput>(
         endpoint,
         apiKey,
         body,
+        protocol,
         timeoutMs,
         plannerLabel,
         input,
@@ -161,15 +178,8 @@ export async function invokeFissionPromptPlanner<TOutput>(
 interface InvokePlannerOnceInput<TOutput> {
   endpoint: string
   apiKey: string
-  body: {
-    model: string
-    messages: Array<{ role: 'system' | 'user'; content: string }>
-    stream: boolean
-    temperature: number
-    response_format: { type: 'json_object' }
-    thinking?: { type: 'enabled' | 'disabled' }
-    reasoning_effort?: 'high'
-  }
+  body: Record<string, unknown>
+  protocol: 'openai' | 'anthropic'
   timeoutMs: number
   plannerLabel: string
   input: InvokeFissionPromptPlannerInput<TOutput>
@@ -179,6 +189,7 @@ async function invokePlannerOnce<TOutput>({
   endpoint,
   apiKey,
   body,
+  protocol,
   timeoutMs,
   plannerLabel,
   input,
@@ -189,10 +200,17 @@ async function invokePlannerOnce<TOutput>({
   try {
     response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers:
+        protocol === 'anthropic'
+          ? {
+              'Content-Type': 'application/json',
+              'x-api-key': apiKey,
+              'anthropic-version': '2023-06-01',
+            }
+          : {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+            },
       body: JSON.stringify(body),
       signal: controller.signal,
     })
@@ -241,7 +259,10 @@ async function invokePlannerOnce<TOutput>({
     )
   }
 
-  const content = extractAssistantContent(raw)
+  const content =
+    protocol === 'anthropic'
+      ? extractAnthropicContent(raw)
+      : extractAssistantContent(raw)
   if (!content) {
     throw new FissionPromptPlannerError(
       `Text LLM response for ${plannerLabel} missing assistant content`,
@@ -383,6 +404,24 @@ function extractAssistantContent(raw: unknown): string | null {
       .join('\n')
   }
   return null
+}
+
+/** Anthropic Messages 响应 shape：content 为块数组，拼接所有 text 块。 */
+function extractAnthropicContent(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return null
+  const content = (raw as { content?: unknown }).content
+  if (!Array.isArray(content)) return null
+  const text = content
+    .filter(
+      (block) =>
+        block &&
+        typeof block === 'object' &&
+        (block as { type?: unknown }).type === 'text' &&
+        typeof (block as { text?: unknown }).text === 'string',
+    )
+    .map((block) => (block as { text: string }).text)
+    .join('\n')
+  return text || null
 }
 
 /**

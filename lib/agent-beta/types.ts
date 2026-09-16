@@ -5,6 +5,8 @@ export interface AgentBetaSettings {
   model: FashionModelId
   imageRatio: Exclude<FashionImageRatio, 'more'>
   resolution: FashionResolution
+  /** 规划 LLM（大脑）选择，对应 access 接口下发的 llmOptions；缺省用服务端默认 */
+  plannerLlm?: string
 }
 
 export interface AgentBetaNode {
@@ -65,4 +67,8 @@ export interface AgentBetaAccess {
   allowed: boolean
   enabled: boolean
   localOnly: boolean
+  /** 可选规划 LLM 目录（access 路由下发；仅暴露 id/label，不含凭据） */
+  llmOptions?: Array<{ id: string; label: string }>
+  /** 默认规划 LLM id；null 表示目录为空（服务端回退 TEXT_LLM_*） */
+  defaultLlmId?: string | null
 }
