@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": ["next-env.d.ts", "app/whiteboard-demo/page.tsx", "components/creative-studio/**/*.ts", "components/creative-studio/**/*.tsx", "lib/creative-studio/**/*.ts"],
+  "exclude": ["node_modules"]
+}
