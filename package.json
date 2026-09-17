@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test:agent": "node scripts/test-agent.mjs"
+    "test:agent": "node scripts/test-agent.mjs",
+    "postinstall": "node scripts/patch-next-e1068.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
