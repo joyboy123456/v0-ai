@@ -15,7 +15,7 @@ module.exports = {
       name: 'yibai-fission',
       script: 'node_modules/next/dist/bin/next',
       args: 'start -H 0.0.0.0 -p 3000',
-      cwd: '/opt/yibai-fission',
+      cwd: '/tmp/cc-agent/71203793/project',
       interpreter: 'node',
       node_args: '--max-old-space-size=2560',
       exec_mode: 'fork',
