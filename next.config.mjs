@@ -25,6 +25,11 @@ const nextConfig = {
     '192.168.0.107',
     '121.40.34.214',
     'preview.jjwlai.cn',
+    // Bolt 预览窗口的访问域名不固定，放行全部本地预览子域，
+    // 避免预览拿不到 JS、页面永远停在空白骨架（allowedDevOrigins 支持 . 前缀通配）
+    '.bolt.preview.local',
+    '.local-credentialless.webcontainer.io',
+    '.bolt.blitzjs.com',
   ],
   turbopack: {
     root: projectRoot,
