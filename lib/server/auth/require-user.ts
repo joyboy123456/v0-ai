@@ -44,6 +44,31 @@ export interface RequestUser {
 export async function getRequestUser(
   request: NextRequest,
 ): Promise<RequestUser | null> {
+  return resolveUserFromSessionId(request.cookies.get(SESSION_COOKIE_NAME)?.value)
+}
+
+/**
+ * 服务器组件页面用：不从 NextRequest，而从 next/headers 的 cookies() 解析。
+ *
+ * Next.js 16 dev 模式下在渲染期手工构造 NextRequest 并 await headers() 会触发
+ * `Expected workStore to be initialized` 内部不变量错误（E1068），页面层应改用本入口。
+ */
+export async function requireUserFromCookies(
+  sessionId: string | undefined,
+): Promise<RequestUser | NextResponse> {
+  const result = await resolveUserFromSessionId(sessionId)
+  if (!result) {
+    return NextResponse.json(
+      { ok: false, error: 'UNAUTHORIZED' },
+      { status: 401 },
+    )
+  }
+  return result
+}
+
+async function resolveUserFromSessionId(
+  sessionId: string | undefined,
+): Promise<RequestUser | null> {
   // 1. local 内网演示：无需账号密码，统一按本地超管用户执行。
   const localSuperAdmin = await getLocalSuperAdminUser()
   if (localSuperAdmin) {
@@ -51,7 +76,6 @@ export async function getRequestUser(
   }
 
   // 2. 从 cookie session_id 反查；请求头永远不作为身份来源。
-  const sessionId = request.cookies.get(SESSION_COOKIE_NAME)?.value
   if (sessionId) {
     try {
       const session = await getSession(sessionId)
