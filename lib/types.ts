@@ -220,6 +220,30 @@ export interface GenerationTask {
   lastRecoveredAt?: string
   /** 当前恢复执行的幂等键，用于避免同一恢复批次被重复启动。 */
   recoveryExecutionKey?: string
+  /** 仅由 Agent 治理适配器写入；跨重启保留冻结执行方式，禁止旧恢复器自动重提。 */
+  agentExecution?: {
+    schemaVersion: 1
+    paramsDigest: string
+    assetDigests: string[]
+    resolvedModelId: string
+    promptTemplateVersion: string
+    normalizationSeed: string | null
+    /** 最近一次经批准的执行身份；重试仍绑定原任务。 */
+    requestDigest: string
+    idempotencyKey: string
+    /**
+     * C8 只由服务端任务边界追加。旧记录可缺失；不得根据 shotProgress 补造。
+     * priorResultAssetIds 是该轮调用前的有序结果基线，用于防止重试时旧图冒充新图。
+     */
+    attempts?: Array<{
+      actionKind: 'generate' | 'retry_shots'
+      requestDigest: string
+      idempotencyKey: string
+      shotIds: string[]
+      attempt: number | null
+      priorResultAssetIds: string[]
+    }>
+  }
   errorMessage?: string
   createdAt: string
   finishedAt?: string

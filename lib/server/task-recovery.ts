@@ -70,6 +70,9 @@ export function decideInterruptedTaskRecovery(
     return { kind: 'ignore' }
   }
 
+  // Agent 的未知副作用必须由治理账核实；不能通过旧恢复器绕过批准重跑。
+  if (task.agentExecution) return { kind: 'ignore' }
+
   if (
     task.featureType !== 'photo-fission' &&
     task.featureType !== 'pose-fission' &&

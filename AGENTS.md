@@ -109,3 +109,61 @@ pm2 restart yibai-fission                  # 生产立即切到新构建
 - 老张渠道已停用：供应商池按 type、id、laozhang.ai 域名拦截，候选路由及直接请求入口均禁止使用，旧任务重试也不得绕过。
 - 默认服装生图模型为 Grsai `nano-banana-2`；Agent 仅允许 Grsai 模型。旧 Gemini 方案须重新规划，不自动改写已提交任务的模型。
 - 发布仍遵循上方「测试站验收与生产发布流程」。
+
+## Agent A0/P0 本地开发约定（2026-09-16）
+
+- 实施契约以 `docs/agent-task-breakdown.md` §2.11 为准；进度和本地验收记录在 `docs/agent-p0-acceptance.md`。
+- 用户明确要求先在本地开发、集成与测试；本阶段不操作测试站、不同步服务器代码、不 build 或发布生产。后续发布仍须遵循上方测试站验收流程。
+- 生图积分由现有 access 供应商链路按实际扣除；Agent 不新增计费系统、金额预估、预扣、换算、退款或 billing 查询依赖。旧任务 `creditsCost/creditsUsed` 只是既有元数据，不能冒充供应商实扣。
+- ActionLedger 是执行去重/审批/任务状态记录，不是积分账。旧记录不得补造审批凭证；任务状态未知不得自动重提。
+- B1 观察缓存已经本地验收，进度见 `docs/agent-p1-acceptance.md`：命中也必须校验当前素材归属；key 绑定 assetDigest/observerVersion，24h 到期，损坏返回 null 不回退备份。同进程合并计算，不承诺跨进程只算一次；B2 真实分类仍须等待 C7。
+
+## Agent 工作区边界修订（2026-09-17，覆盖下方历史批次的“当前/后续”措辞）
+
+- 正式完成并经 Codex 独立核对/集成的基线为 **24/39**（新增 E1 Critic + AcceptancePolicy，shadow-only）。E1 由 Kiro 实现（自测 895/895），Codex 用基线哈希还原精确 diff 独立核对后发现 7 个问题并在白名单内返工，最终主目录 905/905、非增量 TypeScript、17 文件 lint、架构检查、`git diff --check` 全绿。当前状态与下一步以 `docs/agent-session-handoff.md` 为准，E1 细节见 `docs/agent-e1-acceptance.md`，过程见 `docs/agent-resume-progress.md`。
+- E1 只消费真实 C8 ADMITTED receipt，质量轴不改 C8；后台 best-effort shadow 不阻塞响应，不自动重生/重试/退款。`SHADOW_PASS` 只代表「已支持的确定性检查全通过」，八项 unsupported（含颜色/版型/肢体/审美）保存在完整 policy decision 与落盘评审记录中（精简返回值/事件尚不携带清单，未接 UI），不得读成质量通过。hard mode 必须等待单独灰度批准、一周人工标签、误杀率 ≤1%，并先定 review 表容量与裁剪策略（该表目前无 TTL/上限且整文件重写）。2026-09-17 后续 Codex 主会话已补齐 E1 返工独立复核，五项检查重跑全绿，见 `docs/agent-e1-takeover-review.md`；用户随后已授权以 Grok 为主继续开发，E2 已冻结任务书并派发隔离 Grok CLI，见 `docs/agent-e2-task.md`；尚未验收/集成，不增加计数。
+- Codex 负责调度、接口/文件白名单、独立代码审查、验收工具与记录、返工及集成；产品实现交本机 kiro-cli / Claude Code / Grok。本轮 Kiro 编码 C9/C13，Grok 编码 C12，Claude/Grok 参与辅助审查；辅助结论必须由 Codex 复核。
+- 编码 CLI 使用各自独立可写副本；Codex 可跨主项目、副本及审计材料核对。“不得访问原项目”仅约束隔离编码 CLI，不禁止 Codex 按白名单集成。主项目是已验收集成基线，副本是对应阶段交付。
+- Kiro 副本 `/Volumes/DevDisk/AgentStaging/dianshang-kiro-q56u5x1n/source` 截至 C13；Grok C12 副本 `/private/tmp/dianshang-agent-resume-BZRSor/grok-c12-source`。两者不应再被混称唯一最新工作区。
+- 持久证据在 `/Volumes/DevDisk/AgentStaging/dianshang-kiro-q56u5x1n/resume-20260917-BZRSor`，含独立日志、摘要、集成前备份与截图。具体集成与并发保护见 [工作区边界](docs/agent-workspace-boundary.md)。
+- `AGENT_RUNTIME_V1_ENABLED` 默认关闭；本轮未改用户配置启用真实调用，未运行 Next 生产构建、测试站、服务器、Git 分支/提交/push 或生产发布。真实供应商/样本业务验收另行安排。
+- 单任务单张、Grsai-only、UNKNOWN 不重提、v1 不回落 legacy、仅本次 C8 安全结果可上画布继续生效。C9 模型预算仍为 3；多模态、多步/多图付费及后续 P3～P5 不因本轮完成而自动开放。
+
+## Agent C8 开发协作约定（2026-09-17，历史批次记录）
+
+- 后续 Agent 开发由 **kiro-cli / Kiro 唯一编码执行**：实现、测试、修复和开发文档均由 Kiro 完成；Codex 主 Agent 只负责基线核对、集成审核和独立验收。C8 验收通过前不得启动 C9/C13/C12。
+- 本轮不调用 Claude、Grok 或其他外部编码 CLI。Kiro 可在先固定接口和文件所有权后使用内置子 Agent 并行处理互不冲突的文件；子 Agent 自报完成不能替代主会话复核与实际命令结果。
+- 主会话、首版三个子 Agent、Codex 首轮返工两个子 Agent及第二轮并发返工一个子 Agent均使用 `gpt-5.6-sol`；子 Agent 工具本身不提供 `effort` 参数，但用户提供的 root 日志已证明本轮主会话和各子 Agent实际 effort 均为 max。
+- 工作仅限不含 `.env`、业务 data、生产素材和 Git 的持久隔离源码副本 `/Volumes/DevDisk/AgentStaging/dianshang-kiro-q56u5x1n/source`；不得访问旧 TMP 或原项目，不绕过 sandbox，不安装依赖，不改认证/系统配置，不创建分支/提交/push，不 build，不访问测试站/服务器或真实 LLM、分类、抠图、生图 API。
+- Codex 对既有文件的逐字迁移、既有依赖复制及 tsconfig/components/Zod 环境恢复不是产品变更；`KIRO_ENVIRONMENT_NOTICE.md` 与父目录 baseline/迁移/运行日志不集成。
+- C8 当前结果记录在 `docs/agent-c8-acceptance.md`：Codex 首轮四项、第二轮历史 attempt 并发正例及最后可选参数兼容问题均已由 Kiro 测试先行修复；现 result-admission 定向 72/72、统一自测 698/698、TypeScript、4 文件 ESLint 与架构守卫通过，最终状态仍须等待 Codex 再次独立验收。
+
+## Agent B5/C3/C4 本地验收约定（2026-09-17）
+
+- 本批完成后统一回归 450 项通过，记录见 `docs/agent-b5-c3-c4-acceptance.md`；继续只在本地开发，不启用新主循环、不操作测试站、不 build 或发布。后续发布仍遵循上方测试站验收流程。
+- P0 上下文不裁剪；P3 只挂定位 handle，不提供授权。asset handle 必须绑定摘要；每次取数重查会话成员与资源归属。分类只能产生 GovernedAction，不进免费 runner。
+- `normalizePhotoFissionParams` 第四参 `{ normalizationSeed }` 仅供服务端冻结准备，旧表单继续原有行为。C7 不得直接复用会重跑 Planner 的旧裂变执行入口。
+- C4 默认预览存储只保证当前进程内重放；C7 须持久化、审批及执行全部 blocker。多张与姿势自由提示词未接线有明确决策 blocker，不能忽略。
+- 历史重试不能用当前模板常量补造证据；有真实模板凭证和完整原分镜的裤装任务可以缺 seed，仍须保持原摘要和计划。所有生成/重试均只允许 Grsai，不自动改写旧模型。
+
+## Agent B6/C7/C11 本地接线约定（2026-09-17）
+
+- 本批接口与验收见 `docs/agent-b6-c7-c11-acceptance.md`；继续只在本地开发。后续发布仍指向上方「测试站验收与生产发布流程」。下一批为 C8 → C9 → C13 → C12，新主循环尚未启用。
+- B6 `buildStagedPrompt` 输出带阶段版本的 A2 请求快照，必须通过 `recordThenInvoke` 先强写再调用；完整保留 P0，动态图片/工具/历史内容不能升为指令。
+- C7 必须使用持久化 `FileTaskPreparationArtifactStore` 和 `ApprovalStore`；`authenticate`/`readAuthenticatedIntent` 由已验证的服务端请求注入，不接受模型自证同意。生成沿用旧 `agent-beta:${sessionId}:${messageId}` 幂等键，不因编辑/切换 feature flag 产生新调用身份。
+- 当前预览版本检查与 `STARTING` 强写通过 `withCurrent` 共用工件锁；该 callback 内不得重入工件仓储。STARTING 是接受本次动作的边界，其后编辑不能撤销已接受调用。锁仅保证当前 Node 进程，不是跨进程互斥。
+- `GenerationTask.agentExecution` 必须跨 JSON/TaskRepo row 往返保留。Agent 创建/重试用专用 prepared 入口，photo-fission 传服务端 `preparedPlan` 跳过 Planner；旧恢复器不得自动重跑 Agent 中断任务，旧重试/变体入口不得绕开原批准。
+- 多张、姿势自由提示词 blocker 继续硬拦；只允许 Grsai 和执行器当前支持的模板版本。真实模板证据来自原任务参数或已保存凭证，不能用当前常量补造旧账。
+- C11 验证 `status=passed` 仍为 `authorization:not_granted`；旧 schema 只显式适配并记录返回 telemetry。C8 结果准入未完成前，不把 SUBMITTED/pending 当成功或将结果直接放上画布。
+- 抠图当前仅 garment；结果指向同源图片 API。持久化引用不代表恢复了底层 60 分钟内存会话，失效时不得静默重新调用供应商。
+
+## Agent C8 post-submit / result-admission 本地约定（2026-09-17）
+
+- `ControlledTaskGateway` 的付费任务返回后必须先调用 `PostSubmitPort` 强写 C8 证据，再更新 ActionLedger；pending/running 只表示已提交。任务身份、owner、feature、params/input 顺序或冻结执行凭证不符时写 `BLOCKED_POST_SUBMIT + QUARANTINED`，不退款、删除或重提。
+- 结果刷新通过 `ResultAdmissionPort`，只读取 Task/Asset、历史冻结工件、真实审批和 C8 证据。锁顺序固定为 **ActionLedger → Beta user file → C8 artifact/approval/evidence**；调用方把已持锁的 ledger context 传入，准入器不得再次获取同一本账锁。
+- `actionAdmissionFacts.common.params` 必须复用共享 `paramsDigestPayload(featureType, task.params)`；只归一化 TaskParams 明确声明的可选字段，不复制字段清单、不用 JSON 往返跳过任意非法值，strict canonical 继续拒绝未声明 `undefined` 与非 JSON 输入。
+- `GenerationTask.agentExecution.attempts` 只由服务端创建/重试边界追加，记录 actionKind/requestDigest/idempotencyKey/shotIds/attempt/有序 priorResultAssetIds。旧记录允许缺失，不得根据 `shotProgress.retryAttempt` 或当前常量补造历史。历史 attempt 的重复查询只比较自身冻结结果窗口、下一窗口边界和共同执行绑定；后续合法 retry 完成不得因共享 aggregate status/结果追加而误隔离旧窗口。
+- Beta 对真实 photo/pose retry 参数不得假定存在 `userPrompt/prompt`；只有当前任务参数提供非空字符串时才覆盖，否则 GET/PATCH/send 保留原 `plan.prompt`。
+- pending/running 不发布结果；终态只有 `ADMITTED` 的安全视图可上画布，URL、文件名和尺寸来自本次已鉴权 `AssetRecord`。已 ADMITTED 仍须每次重查；合法签名 URL 轮换继续准入并返回新 URL，资源删除、改属、URL 不安全、尺寸/不可变身份或有序 result/shot 绑定变化后永久隔离。
+- legacy 继续读旧写新且不补造批准；v1 UNKNOWN/STARTING/VERIFYING、缺任务和既有隔离不能凭 task success 解禁。C8 未改变单张批准、Grsai-only、多张/姿势自由提示词 blocker 或既有积分边界。
+- Kiro 本地自测记录见 `docs/agent-c8-acceptance.md`；仍须 Codex 再次独立核对白名单、基线与验收结果。本轮不启动 C9/C13/C12。

@@ -1,0 +1,61 @@
+{
+  "tests": {
+    "exitCode": 0,
+    "command": [
+      "pnpm",
+      "run",
+      "test:agent"
+    ]
+  },
+  "types": {
+    "exitCode": 0,
+    "command": [
+      "pnpm",
+      "exec",
+      "tsc",
+      "--noEmit",
+      "--incremental",
+      "false"
+    ]
+  },
+  "lint": {
+    "exitCode": 0,
+    "command": [
+      "pnpm",
+      "exec",
+      "eslint",
+      "lib/server/agent/reflection/critic.ts",
+      "lib/server/agent/reflection/critic.test.ts",
+      "lib/server/agent/reflection/acceptance-policy.ts",
+      "lib/server/agent/reflection/acceptance-policy.test.ts",
+      "lib/server/agent/reflection/review-store.ts",
+      "lib/server/agent/reflection/review-store.test.ts",
+      "lib/server/agent/reflection/result-review.ts",
+      "lib/server/agent/reflection/result-review.test.ts",
+      "lib/server/agent/ports.ts",
+      "lib/server/agent/governance/result-admission.ts",
+      "lib/server/agent/governance/result-admission.test.ts",
+      "lib/server/agent/observability/events.ts",
+      "lib/server/agent/observability/event-store.ts",
+      "lib/server/agent/observability/event-store.test.ts",
+      "lib/server/agent-beta/runtime.ts",
+      "lib/server/agent-beta/service.ts",
+      "lib/server/agent-beta/service.test.ts"
+    ]
+  },
+  "architecture": {
+    "exitCode": 0,
+    "command": [
+      "node",
+      "scripts/check-agent-architecture.mjs"
+    ]
+  },
+  "diffcheck": {
+    "exitCode": 0,
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ]
+  }
+}

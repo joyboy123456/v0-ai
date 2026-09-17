@@ -34,7 +34,19 @@ export const patchInputSchema = z.object({
   title: z.string().trim().min(1).max(80).optional(),
 }).strict()
 export const assetsInputSchema = z.object({ assetIds: z.array(identifier).min(1).max(10).refine((ids) => new Set(ids).size === ids.length) }).strict()
-export const executeInputSchema = z.object({ messageId: identifier, prompt: promptText.optional() }).strict()
+export const legacyExecuteInputSchema = z.object({ messageId: identifier, prompt: promptText.optional() }).strict()
+const previewIdentityShape = {
+  proposalId: identifier,
+  previewVersion: z.number().int().positive().safe(),
+  previewDigest: z.string().regex(/^[a-f0-9]{64}$/),
+}
+export const v1ExecuteInputSchema = z.object({ messageId: identifier, ...previewIdentityShape }).strict()
+export const executeInputSchema = z.union([v1ExecuteInputSchema, legacyExecuteInputSchema])
+export const repreviewInputSchema = z.object({
+  messageId: identifier,
+  ...previewIdentityShape,
+  prompt: promptText,
+}).strict()
 export const cancelInputSchema = z.object({ messageId: identifier }).strict()
 export const emptyInputSchema = z.object({}).strict()
 export const plannerOutputSchema = z.object({

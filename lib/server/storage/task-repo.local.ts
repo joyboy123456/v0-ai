@@ -80,6 +80,7 @@ function taskToRow(task: GenerationTask): TaskRow {
       recoveryAttempts: task.recoveryAttempts,
       lastRecoveredAt: task.lastRecoveredAt,
       recoveryExecutionKey: task.recoveryExecutionKey,
+      agentExecution: task.agentExecution,
     }),
     resultJson: safeJson({
       resultAssetIds: task.resultAssetIds,
@@ -106,6 +107,7 @@ function rowToTask(row: TaskRow): GenerationTask {
     recoveryAttempts?: number
     lastRecoveredAt?: string
     recoveryExecutionKey?: string
+    agentExecution?: GenerationTask['agentExecution']
   }>(row.payloadJson)
   const result = safeParse<{
     resultAssetIds?: string[]
@@ -130,6 +132,7 @@ function rowToTask(row: TaskRow): GenerationTask {
     recoveryAttempts: payload?.recoveryAttempts,
     lastRecoveredAt: payload?.lastRecoveredAt,
     recoveryExecutionKey: payload?.recoveryExecutionKey,
+    agentExecution: payload?.agentExecution,
     resultAssetIds: result?.resultAssetIds ?? [],
     results: result?.results ?? [],
     createdAt: new Date(row.createdAt).toISOString(),
@@ -232,6 +235,7 @@ export function createLocalTaskRepo(): TaskRepo {
           recoveryAttempts?: number
           lastRecoveredAt?: string
           recoveryExecutionKey?: string
+          agentExecution?: GenerationTask['agentExecution']
         }>(patch.payloadJson)
         if (parsed) {
           if (parsed.progress !== undefined) next.progress = parsed.progress
@@ -259,6 +263,9 @@ export function createLocalTaskRepo(): TaskRepo {
           }
           if (parsed.recoveryExecutionKey !== undefined) {
             next.recoveryExecutionKey = parsed.recoveryExecutionKey
+          }
+          if (parsed.agentExecution !== undefined) {
+            next.agentExecution = parsed.agentExecution
           }
         }
       }

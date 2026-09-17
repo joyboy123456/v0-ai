@@ -57,7 +57,7 @@ export function AgentBetaWorkbench() {
         </div>
         <div className="relative flex min-h-0 flex-1">
           <div className={cn('min-h-0 w-full shrink-0 border-border md:block md:w-[370px] md:border-r xl:w-[410px]', mobileTab !== 'chat' && 'hidden')}>
-            <AgentChat key={state.session?.id ?? 'new'} session={state.session} selectedIds={state.selectedIds} onSelect={state.setSelectedIds} busy={state.busy} disabled={disabled} onUpload={() => fileInput.current?.click()} onSend={state.sendMessage} onAction={state.planAction} />
+            <AgentChat key={state.session?.id ?? 'new'} session={state.session} selectedIds={state.selectedIds} onSelect={state.setSelectedIds} busy={state.busy} disabled={disabled} onUpload={() => fileInput.current?.click()} onSend={state.sendMessage} onAction={state.planAction} onRefresh={state.refreshSession} />
           </div>
           <div className={cn('min-h-0 min-w-0 flex-1 md:block', mobileTab !== 'canvas' && 'hidden')}>
             <AgentCanvas key={state.session?.id ?? 'new'} nodes={state.session?.nodes ?? []} selectedIds={state.selectedIds} onSelect={state.setSelectedIds} onMove={state.moveNodes} disabled={disabled} onUpload={() => fileInput.current?.click()} onPreview={setPreview} />

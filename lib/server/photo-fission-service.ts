@@ -184,7 +184,13 @@ export function normalizePhotoFissionParams(
   params: unknown,
   inputAssetCount: number,
   inputAssetIds: readonly string[] = [],
+  preparation: { normalizationSeed?: string } = {},
 ): PhotoFissionParams {
+  // 仅服务端准备边界可注入固定 seed；旧表单仍随机抽卡，不读取客户端 params 中的 seed。
+  if (preparation.normalizationSeed !== undefined
+    && (typeof preparation.normalizationSeed !== 'string' || !preparation.normalizationSeed.trim())) {
+    throw new Error('服装大片裂变准备种子无效')
+  }
   if (!isRecord(params)) {
     throw new Error('服装大片裂变参数格式错误')
   }
@@ -281,7 +287,8 @@ export function normalizePhotoFissionParams(
   const referenceAssetKey = buildPhotoFissionReferenceAssetKey(inputAssetIds)
   const pantsPoseDrawSeed =
     childrensCategory === 'pants'
-      ? `${referenceAssetKey ?? 'unknown-reference'}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+      ? preparation.normalizationSeed
+        ?? `${referenceAssetKey ?? 'unknown-reference'}:${Date.now()}:${Math.random().toString(36).slice(2)}`
       : undefined
   const shotPlan = buildPhotoFissionShotPlan({
     category,
@@ -320,6 +327,7 @@ export function normalizePhotoFissionParams(
     sideDetailCount,
     backDetailCount,
     pantsMainHandVisibility,
+    ...(preparation.normalizationSeed !== undefined && pantsPoseDrawSeed !== undefined ? { pantsPoseDrawSeed } : {}),
     imageRatio,
     resolution,
     shotPlan,
@@ -1579,6 +1587,8 @@ export interface RunPhotoFissionPipelineOptions {
   inputImages: string[]
   faceMaskImage?: string | null
   params: PhotoFissionParams
+  /** 仅供服务端已批准的冻结计划；旧表单缺省仍运行 Planner。 */
+  preparedPlan?: boolean
   apiKey: string
   timeoutMs: number
   signal?: AbortSignal
@@ -1684,7 +1694,7 @@ export async function runPhotoFissionPipeline(
   // 在分发到出图模型之前，先调用文本 LLM 镜头策划器（D15-D18）。
   // 当前仅保留童装连衣裙路径；LLM 调用必须成功，否则直接抛错。
   // 让前端显示"生成失败"——我们不再维护成人品类或 v4 兜底链路，避免双服务。
-  await applyShotPlannerOverride(fullPlan, params, taskId)
+  if (!options.preparedPlan) await applyShotPlannerOverride(fullPlan, params, taskId)
 
   // 过滤目标 shot：targetShotIds 非空时只跑子集
   const targetSet =

@@ -29,6 +29,8 @@ interface ThirdPartyWorkflowInput {
   inputImages: string[]
   faceMaskImage?: string | null
   params: TaskParams
+  /** 服务端冻结计划标记，不从表单参数读取。 */
+  preparedPlan?: boolean
   signal?: AbortSignal
   onShotProgress?: (shotId: string, message: string, retryAttempt?: number) => void
   /** 单 shot 成功后立刻回调（photo-fission 流式持久化使用，可选；其他 feature 不消费此字段） */
@@ -131,6 +133,7 @@ export async function runThirdPartyWorkflow(
       inputImages: input.inputImages,
       faceMaskImage: input.faceMaskImage,
       params: input.params as PhotoFissionParams,
+      preparedPlan: input.preparedPlan,
       apiKey: '',
       timeoutMs: defaultImageTimeoutMs,
       signal: input.signal,

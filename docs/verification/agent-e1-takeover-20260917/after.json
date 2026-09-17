@@ -1,0 +1,19 @@
+{
+  "lib/server/agent/reflection/critic.ts": "b7bfa7e3b355689894759a2cf37599cdfd285f8e60f9240a8a5f5a8b460bb4fb",
+  "lib/server/agent/reflection/critic.test.ts": "d35e72bfc22e0446ed6887c6ee8e1b4a547ca8c6a5efee2ea8780e10d4f5db9f",
+  "lib/server/agent/reflection/acceptance-policy.ts": "8d8b8f5fb5c6bc66d7c25781a51d8f49516778bc28a88cad54a552df31b1d39d",
+  "lib/server/agent/reflection/acceptance-policy.test.ts": "5cd1599f445d8129482f7e6e8916cd739b17769181d0c22854dce6e34ea814e9",
+  "lib/server/agent/reflection/review-store.ts": "2f45f7163a1531b90dc96f8f07fc7b75388999d1f55de91fe291e30c7b7c7b01",
+  "lib/server/agent/reflection/review-store.test.ts": "e7c279e90778db58216f05bf7de5942043244c0cd44810aabf08f0a587dcab70",
+  "lib/server/agent/reflection/result-review.ts": "7f942452dfb068082c4ad0f5d229bcd4c18283d7c28820010b336f25d9ec0e99",
+  "lib/server/agent/reflection/result-review.test.ts": "54a7945c135005bc8c9531c5ffc66f59aa30c0b631858ce03887a3048a4d418c",
+  "lib/server/agent/ports.ts": "e3d9584ae61747ba373825b578da2772e9cefd9754bb972b9682e8d5a7010c59",
+  "lib/server/agent/governance/result-admission.ts": "418c094364e88331bef954e2e9fe6647f6008ba17ad454b10740f67701f0b67f",
+  "lib/server/agent/governance/result-admission.test.ts": "17d0509f7d849fea959a636daeaaabed08d1c5bc2f22be304ffb808a496dd2c4",
+  "lib/server/agent/observability/events.ts": "f2c621374a3136e2bd63011a5ed2d5e8cc2a578ff153995cfb368fb6c1e317a6",
+  "lib/server/agent/observability/event-store.ts": "ca3fa6d2c79ef2a6cbcc5d6969afa6b068c5df6686a77e150a5dbfc20c889ffe",
+  "lib/server/agent/observability/event-store.test.ts": "e3b9442d04a856fa71221835e2ead850efdbdd914168d9275a99542c5ee28cab",
+  "lib/server/agent-beta/runtime.ts": "47f9abaeb4e841aa4b0094a0814d7e8a8fb234e3a91d9117355985a1e7ecd2da",
+  "lib/server/agent-beta/service.ts": "86bb5a51a6b17f0e70a04b7d3e567ea4f4509801db4528603479ab2af901e2b8",
+  "lib/server/agent-beta/service.test.ts": "3e895dcd719f93f2c74ce099d52bc8e3182e4f496aa609601dda083a1eb96c28"
+}

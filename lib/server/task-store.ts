@@ -58,6 +58,9 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import sharp from 'sharp'
 import { logImageEvent, type LogContext } from '@/lib/server/log'
+import { AGENT_BUDGET } from '@/lib/agent/budget'
+import { assetDigest, canonicalize, paramsDigest, requestDigest, type PreviewArtifact, type RetryPreviewArtifact } from '@/lib/agent/contracts'
+import { SELECTABLE_FASHION_MODELS } from '@/lib/types'
 
 const globalStore = globalThis as typeof globalThis & {
   fashionMvpStore?: {
@@ -155,6 +158,7 @@ function buildTaskRow(task: GenerationTask): TaskRow {
       recoveryAttempts: task.recoveryAttempts,
       lastRecoveredAt: task.lastRecoveredAt,
       recoveryExecutionKey: task.recoveryExecutionKey,
+      agentExecution: task.agentExecution,
     }),
     resultJson: JSON.stringify({
       resultAssetIds: task.resultAssetIds,
@@ -669,6 +673,15 @@ export async function cancelTask(taskId: string, userId?: string) {
   return hydrateTaskInputAssets(refreshed ?? task)
 }
 
+/** Agent 的取消也须强写；原表单取消入口保留原时序。 */
+export async function cancelPreparedTask(taskId: string, userId: string): Promise<GenerationTask> {
+  await ensureStoreReady()
+  if (store.tasks.get(taskId)?.userId !== userId) throw new Error('任务不存在')
+  const task = await cancelTask(taskId, userId)
+  await persistStore()
+  return task
+}
+
 /** 仅供服务端编排使用；相同用户和确认键始终绑定同一个任务。 */
 export function getIdempotentTaskId(userId: string, key: string): string {
   return `task_idem_${createHash('sha256').update(JSON.stringify([userId, key])).digest('hex')}`
@@ -679,7 +692,7 @@ export function isTaskExecutionActive(taskId: string): boolean {
   return runningTaskControllers.has(taskId)
 }
 
-export async function createTask(input: {
+interface CreateTaskInput {
   featureType: FeatureType
   inputAssetIds: string[]
   params: TaskParams
@@ -687,7 +700,9 @@ export async function createTask(input: {
   userId?: string
   /** 可选：持久化完成后才启动；旧调用不受影响。不得直接接受客户端自定义键。 */
   idempotencyKey?: string
-}) {
+}
+
+export async function createTask(input: CreateTaskInput) {
   await ensureStoreReady()
   if (!FEATURE_WORKFLOWS[input.featureType]) {
     throw new Error('不支持的功能类型')
@@ -700,13 +715,24 @@ export async function createTask(input: {
     input.inputAssetIds,
   )
 
+  return createNormalizedTask(input, normalizedParams)
+}
+
+/** 已归一化参数的内部创建边界；旧表单和 Agent 共用持久化与启动行为。 */
+async function createNormalizedTask(
+  input: CreateTaskInput,
+  normalizedParams: TaskParams,
+  agentExecution?: GenerationTask['agentExecution'],
+) {
+
   const effectiveUserId =
     input.userId && input.userId.trim() ? input.userId : defaultUserId
 
   const inaccessibleAsset = input.inputAssetIds.find((assetId) => {
     const asset = store.assets.get(assetId)
     if (!asset) return true
-    if (shouldBypassOwnership(effectiveUserId)) return false
+    if (!agentExecution && shouldBypassOwnership(effectiveUserId)) return false
+    if (agentExecution) return asset.userId !== effectiveUserId
     return (asset.userId ?? defaultUserId) !== effectiveUserId
   })
   if (inaccessibleAsset) {
@@ -729,7 +755,8 @@ export async function createTask(input: {
         existing.userId !== effectiveUserId ||
         existing.featureType !== input.featureType ||
         JSON.stringify(existing.inputAssetIds) !== JSON.stringify(input.inputAssetIds) ||
-        JSON.stringify(existing.params) !== JSON.stringify(normalizedParams)
+        JSON.stringify(existing.params) !== JSON.stringify(normalizedParams) ||
+        (agentExecution && existing.agentExecution?.requestDigest !== agentExecution.requestDigest)
       ) {
         throw new Error('幂等确认参数冲突')
       }
@@ -751,6 +778,7 @@ export async function createTask(input: {
     shotProgress: buildInitialShotProgress(input.featureType, normalizedParams),
     createdAt: new Date().toISOString(),
     creditsUsed: getCredits(normalizedParams),
+    ...(agentExecution ? { agentExecution } : {}),
   }
 
   store.tasks.set(taskId, task)
@@ -814,6 +842,124 @@ export async function createTask(input: {
   }, 0)
 
   return task
+}
+
+/** 此入口只供治理适配器消费服务端工件，不接受表单原始参数，不重新 normalize。 */
+export async function createPreparedTask(preview: PreviewArtifact, idempotencyKey: string): Promise<GenerationTask> {
+  await ensureStoreReady()
+  const frozen = JSON.parse(canonicalize(preview)) as PreviewArtifact
+  await assertPreparedTaskState(frozen, frozen.normalizedParams, frozen.inputAssetIds)
+  if (!('resultCount' in frozen.normalizedParams) || frozen.normalizedParams.resultCount !== frozen.estimatedResultCount) {
+    throw new Error('冻结输出数量不一致')
+  }
+  if (frozen.featureType === 'pose-fission') throw new Error('decision_gate:pose_prompt_not_supported')
+  if (!idempotencyKey.trim()) throw new Error('缺少已批准执行身份')
+  const actionDigest = await requestDigest({ actionKind: 'generate', payload: frozen })
+  return createNormalizedTask({
+    featureType: frozen.featureType, inputAssetIds: [...frozen.inputAssetIds],
+    params: frozen.normalizedParams, userId: frozen.userId, idempotencyKey,
+  }, frozen.normalizedParams, {
+    schemaVersion: 1, paramsDigest: frozen.paramsDigest, assetDigests: [...frozen.assetDigests],
+    resolvedModelId: frozen.resolvedModelId!, promptTemplateVersion: frozen.promptTemplateVersion!,
+    normalizationSeed: frozen.normalizationSeed, requestDigest: actionDigest, idempotencyKey,
+    attempts: [{ actionKind: 'generate', requestDigest: actionDigest, idempotencyKey,
+      shotIds: [], attempt: null, priorResultAssetIds: [] }],
+  })
+}
+
+async function assertPreparedTaskState(
+  preview: PreviewArtifact | RetryPreviewArtifact,
+  params: TaskParams,
+  inputAssetIds: string[],
+): Promise<void> {
+  if (preview.schemaVersion !== 1 || !preview.userId?.trim() || !FEATURE_WORKFLOWS[preview.featureType]
+    || !Number.isFinite(Date.parse(preview.expiresAt)) || Date.parse(preview.expiresAt) <= Date.now()
+    || preview.blockers.length || preview.estimatedResultCount !== AGENT_BUDGET.maxResultsPerApproval) {
+    throw new Error('冻结预览不可执行或已过期')
+  }
+  if (await paramsDigest(preview.featureType, params) !== preview.paramsDigest) throw new Error('冻结参数摘要不一致')
+  const model = 'resolvedModelId' in params ? params.resolvedModelId : 'model' in params ? params.model : undefined
+  if (!preview.resolvedModelId || model !== preview.resolvedModelId
+    || !SELECTABLE_FASHION_MODELS.some((item) => item.provider === 'grsai' && item.id === model)
+    || !preview.promptTemplateVersion) throw new Error('冻结模型或模板无效')
+  if (preview.featureType === 'garment-detail' && !isGarmentDetailBackendEnabled()) throw new Error('高清放大细节图功能未开放')
+  if (!inputAssetIds.length || new Set(inputAssetIds).size !== inputAssetIds.length
+    || inputAssetIds.length !== preview.assetDigests.length) throw new Error('冻结素材不一致')
+  for (const [index, assetId] of inputAssetIds.entries()) {
+    const asset = store.assets.get(assetId)
+    // Agent 不继承本地管理员的跨用户素材绕过。
+    if (!asset || asset.userId !== preview.userId || await assetDigest(asset) !== preview.assetDigests[index]) {
+      throw new Error('素材不存在或已变化')
+    }
+  }
+}
+
+/** 重试按已批准的原镜头启动，先持久化身份、结果基线与轮次，再返回 pending；不重跑旧重试 Planner。 */
+export async function retryPreparedShots(preview: RetryPreviewArtifact, idempotencyKey: string): Promise<GenerationTask> {
+  await ensureStoreReady()
+  const frozen = JSON.parse(canonicalize(preview)) as RetryPreviewArtifact
+  const task = store.tasks.get(frozen.taskId)
+  if (!task || task.userId !== frozen.userId || task.featureType !== frozen.featureType) throw new Error('任务不存在')
+  if (!idempotencyKey.trim()) throw new Error('缺少已批准执行身份')
+  await assertPreparedTaskState(frozen, task.params, task.inputAssetIds)
+  const actionDigest = await requestDigest({ actionKind: 'retry_shots', payload: frozen })
+  if (task.agentExecution?.idempotencyKey === idempotencyKey) {
+    if (task.agentExecution.requestDigest !== actionDigest) throw new Error('幂等重试参数冲突')
+    return idempotentCreations.get(task.taskId) ?? hydrateTaskInputAssets(task)
+  }
+  if (!['failed', 'partial'].includes(task.status) || runningTaskControllers.has(task.taskId)) throw new Error('任务尚不可重试')
+  if (frozen.shotIds.length !== 1 || new Set(frozen.shotIds).size !== frozen.shotIds.length) throw new Error('重试仅批准一个镜头')
+  const priorResultAssetIds = task.results.map((result) => result.assetId)
+  if (priorResultAssetIds.length !== task.resultAssetIds.length
+    || priorResultAssetIds.some((assetId, index) => assetId !== task.resultAssetIds[index])
+    || new Set(priorResultAssetIds).size !== priorResultAssetIds.length
+    || new Set(task.resultAssetIds).size !== task.resultAssetIds.length) {
+    throw new Error('任务结果基线已损坏')
+  }
+  const progress = task.shotProgress ?? []
+  const plannedIds = task.featureType === 'photo-fission'
+    ? (task.params as PhotoFissionParams).shotPlan.map((shot) => shot.shotId)
+    : task.featureType === 'pose-fission'
+      ? (task.params as PoseFissionParams).poses.map((pose) => pose.id)
+      : task.featureType === 'garment-detail'
+        ? (task.params as GarmentDetailParams).detailShots.map((shot) => shot.shotId) : []
+  let highestAttempt = 0
+  for (const shotId of frozen.shotIds) {
+    const shot = progress.find((item) => item.shotId === shotId)
+    if (!plannedIds.includes(shotId) || !shot || shot.status !== 'failed'
+      || task.results.some((item) => item.shotId === shotId)) throw new Error('重试镜头已变化')
+    highestAttempt = Math.max(highestAttempt, shot.retryAttempt ?? 0)
+  }
+  if (frozen.attempt !== highestAttempt + 1) throw new Error('重试轮次已变化')
+  const next: GenerationTask = { ...task, status: 'pending', message: '已批准重试，等待执行',
+    shotProgress: progress.map((shot) => frozen.shotIds.includes(shot.shotId)
+      ? { ...shot, status: 'retrying', retryAttempt: frozen.attempt } : shot),
+    agentExecution: { schemaVersion: 1, paramsDigest: frozen.paramsDigest, assetDigests: [...frozen.assetDigests],
+      resolvedModelId: frozen.resolvedModelId!, promptTemplateVersion: frozen.promptTemplateVersion!,
+      normalizationSeed: task.agentExecution?.normalizationSeed ?? null, requestDigest: actionDigest, idempotencyKey,
+      attempts: [...(task.agentExecution?.attempts ?? []),
+        { actionKind: 'retry_shots', requestDigest: actionDigest, idempotencyKey,
+          shotIds: [...frozen.shotIds], attempt: frozen.attempt,
+          priorResultAssetIds: [...priorResultAssetIds] }],
+    },
+  }
+  // 在最后一次 await 后再次比对对象，避免另一条重试或取消同时占用任务；同身份并发重放复用首轮。
+  const current = store.tasks.get(task.taskId)
+  if (current !== task) {
+    if (current?.agentExecution?.idempotencyKey === idempotencyKey) {
+      if (current.agentExecution.requestDigest !== actionDigest) throw new Error('幂等重试参数冲突')
+      return idempotentCreations.get(task.taskId) ?? hydrateTaskInputAssets(current)
+    }
+    throw new Error('任务状态已变化')
+  }
+  store.tasks.set(task.taskId, next)
+  const execution = (async () => {
+    try { await persistStore() } catch (error) { store.tasks.set(task.taskId, task); throw error }
+    setTimeout(() => { void runTask(task.taskId, { targetUnitIds: [...frozen.shotIds] }) }, 0)
+    return hydrateTaskInputAssets(next)
+  })()
+  idempotentCreations.set(task.taskId, execution)
+  try { return await execution } finally { idempotentCreations.delete(task.taskId) }
 }
 
 async function normalizeTaskParams(
@@ -1203,6 +1349,7 @@ async function runTask(taskId: string, options: RunTaskOptions = {}) {
         workflowId: task.workflowId,
         inputImages,
         params: task.params,
+        preparedPlan: Boolean(task.agentExecution),
         faceMaskImage,
         signal: controller.signal,
         onShotProgress: (shotId, message, retryAttempt) => {
@@ -1996,6 +2143,7 @@ export async function retryPhotoFissionShots(
     // 与「任务不存在」语义对齐，避免暴露任务存在性给非授权用户
     throw new Error('任务不存在')
   }
+  if (task.agentExecution) throw new Error('Agent 任务须通过原批准链路操作')
   if (task.featureType !== 'photo-fission') {
     throw new Error('仅服装大片裂变支持重跑失败镜头')
   }
@@ -2269,6 +2417,7 @@ function assertOwnedPhotoFissionTask(
   ) {
     throw new Error('任务不存在')
   }
+  if (task.agentExecution) throw new Error('Agent 任务须通过原批准链路操作')
   if (task.featureType !== 'photo-fission') {
     throw new Error('仅服装大片裂变支持该操作')
   }
@@ -2369,6 +2518,7 @@ export async function retryPoseFissionShots(
   ) {
     throw new Error('任务不存在')
   }
+  if (task.agentExecution) throw new Error('Agent 任务须通过原批准链路操作')
   if (task.featureType !== 'pose-fission') {
     throw new Error('仅姿势裂变支持重跑失败姿势')
   }
@@ -2510,6 +2660,7 @@ export async function retryGarmentDetailShots(
     // 与「任务不存在」语义对齐，避免暴露任务存在性给非授权用户
     throw new Error('任务不存在')
   }
+  if (task.agentExecution) throw new Error('Agent 任务须通过原批准链路操作')
   if (task.featureType !== 'garment-detail') {
     throw new Error('仅高清放大细节图支持重跑失败细节图')
   }
