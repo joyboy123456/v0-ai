@@ -56,7 +56,7 @@ export const Canvas = forwardRef<CanvasHandle,Props>(function Canvas({studio,mod
   useEffect(()=>{
     const el=host.current;if(!el)return
     const wheel=(e:WheelEvent)=>{
-      if((e.target as HTMLElement).closest('[data-ui]'))return
+      if((e.target as HTMLElement).closest('[data-ui],[role="menu"],[role="dialog"]'))return
       e.preventDefault()
       const rect=el.getBoundingClientRect(),p={x:e.clientX-rect.left,y:e.clientY-rect.top}
       if(e.ctrlKey||e.metaKey)setViewport(zoomAround(doc.viewport,p,doc.viewport.zoom*Math.exp(-e.deltaY*.006)))
@@ -67,7 +67,7 @@ export const Canvas = forwardRef<CanvasHandle,Props>(function Canvas({studio,mod
   const screen=(e:{clientX:number;clientY:number})=>{const b=host.current!.getBoundingClientRect();return{x:e.clientX-b.left,y:e.clientY-b.top}}
   const down=(e:ReactPointerEvent<HTMLDivElement>)=>{
     if(e.button!==0&&e.button!==1)return
-    if((e.target as HTMLElement).closest('[data-ui]'))return
+    if((e.target as HTMLElement).closest('[data-ui],[role="menu"],[role="dialog"]'))return
     const target=e.target as HTMLElement,p=screen(e),nodeId=target.closest<HTMLElement>('[data-node]')?.dataset.node,group=target.closest<HTMLElement>('[data-group]')?.dataset.group
     const pan=mode==='hand'||space.current||e.button===1
     let ids=[...selected],type:Gesture['type']='box'
@@ -79,7 +79,9 @@ export const Canvas = forwardRef<CanvasHandle,Props>(function Canvas({studio,mod
       type=target.closest('[data-resize]')?'resize':'move'
     } else if(!e.shiftKey){ids=[];select([])}
     gesture.current={type,start:p,view:doc.viewport,ids,original:doc.nodes.filter(n=>ids.includes(n.id)),delta:{x:0,y:0},shift:e.shiftKey}
-    e.currentTarget.setPointerCapture(e.pointerId)
+    // Keep click/double-click targeted at the image instead of the canvas host.
+    const captureTarget = target.closest<HTMLElement>('[data-node]') ?? e.currentTarget
+    captureTarget.setPointerCapture(e.pointerId)
     if(pan)e.preventDefault()
   }
   const move=(e:ReactPointerEvent<HTMLDivElement>)=>{
